@@ -3,7 +3,7 @@ const seedFile = '/public/data/DispositivosWialon_Abril2026.xlsx'
 const paymentSeedFile = '/public/data/Klifnet_Admon_Mensual_Pagos.xlsx'
 const quoteTemplateFile = '/public/templates/cotizacion_CalidadSP.xlsx'
 const paymentImportVersion = 4
-const lineAutoImportVersion = 1
+const lineAutoImportVersion = 2
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -1169,7 +1169,7 @@ async function loadSeedFile() {
     const parsed = await parseWorkbookFile(buffer, seedFile)
     const normalized = normalizeRows(parsed.rows, parsed.mapping, 'vigente')
     const devices = state.devices.length ? mergeDevices(state.devices, normalized) : normalized
-    const lineMerge = mergeLineRows(state.lines, parsed.rows, 'DispositivosWialon_Abril2026.xlsx', { allowImeiOnly: false, markMissing: false, devices })
+    const lineMerge = mergeLineRows(state.lines, parsed.rows, 'DispositivosWialon_Abril2026.xlsx', { requireIcc: true, markMissing: false, devices })
     setState({
       rawRows: parsed.rows,
       columns: parsed.columns,
@@ -1197,7 +1197,7 @@ async function handleFile(file) {
   const parsed = await parseWorkbookFile(buffer, file.name)
   const normalized = normalizeRows(parsed.rows, parsed.mapping, 'vigente')
   const merged = mergeDevices(state.devices, normalized)
-  const lineMerge = mergeLineRows(state.lines, parsed.rows, file.name, { allowImeiOnly: false, markMissing: false, devices: merged })
+  const lineMerge = mergeLineRows(state.lines, parsed.rows, file.name, { requireIcc: true, markMissing: false, devices: merged })
   const stats = {
     nuevos: merged.filter((device) => device.recordState === 'nuevo').length,
     actualizados: merged.filter((device) => device.recordState === 'actualizado').length,
@@ -1362,7 +1362,7 @@ function applyPaymentRows(rows, label, options = {}) {
 
   stats.unmatchedRules = rules.filter((rule) => !usedRules.has(rule)).length
   const matchedTotal = stats.matchedById + stats.matchedByCompanyName + stats.matchedByName
-  const lineMerge = mergeLineRows(state.lines, rows, label, { allowImeiOnly: false, markMissing: false, devices })
+  const lineMerge = mergeLineRows(state.lines, rows, label, { requireIcc: true, markMissing: false, devices })
 
   setState({
     devices,
@@ -1398,8 +1398,8 @@ function normalizePhone(value) {
 }
 
 const linePhoneCandidates = ['Linea', 'Linea celular', 'Telefono', 'Telefono linea', 'MSISDN', 'Numero', 'Numero celular', 'DN', 'Celular']
-const lineIccCandidates = ['ICCID', 'ICC', 'ICCID / ICC', 'SIM', 'Numero SIM', 'No SIM', 'Simcard', 'Chip', 'Numero chip', 'No chip', 'SIM ID', 'ID SIM']
-const lineImeiCandidates = ['IMEI', 'IMEI largo', 'IMEI corto', 'IMEI equipo', 'IMEI dispositivo', 'Equipo IMEI', 'Dispositivo', 'UID', 'Identificador']
+const lineIccCandidates = ['ICCID', 'ICC', 'ICCID / ICC', 'SIM ICCID', 'SIM', 'Numero SIM', 'No SIM', 'Simcard', 'Chip', 'Numero chip', 'No chip', 'SIM ID', 'ID SIM']
+const lineImeiCandidates = ['IMEI', 'IMEI largo', 'IMEI corto', 'IMEI equipo', 'IMEI dispositivo', 'Equipo IMEI', 'Device IMEI', 'IMEI Lock', 'IMEI locked', 'Dispositivo', 'UID', 'Identificador']
 
 function normalizeIccid(value) {
   const clean = textValue(value).replace(/\D/g, '')
@@ -1427,15 +1427,7 @@ function extractIccidFromRow(row) {
 }
 
 function lineKey(line) {
-  const iccid = normalizeIdentifier(line.iccid)
-  const phone = normalizePhone(line.phone)
-  const imei = normalizeIdentifier(line.imei)
-  const keys = []
-  if (iccid) keys.push(`iccid:${iccid}`)
-  if (phone) keys.push(`phone:${phone}`)
-  if (imei) keys.push(`imei:${imei}`)
-  keys.push(`line:${normalizeHeader(`${line.company || ''}-${line.carrier || ''}-${line.plan || ''}`)}`)
-  return keys[0]
+  return lineIdentifierKeys(line)[0]
 }
 
 function lineIdentifierKeys(line) {
@@ -1494,8 +1486,19 @@ function parseBernardoRenewalText(value) {
 
 function normalizeLineStatus(value) {
   const clean = normalizeHeader(value)
-  if (!clean || clean === 'activa' || clean === 'activo' || clean === 'vigente' || clean === 'alta') return 'activa'
-  if (clean.includes('desactiv') || clean.includes('inactiv') || clean.includes('suspend') || clean.includes('baja') || clean.includes('cancel')) return 'desactivada'
+  if (!clean || clean === 'activa' || clean === 'activo' || clean === 'vigente' || clean === 'alta' || clean.includes('activated') || clean.includes('enabled')) return 'activa'
+  if (
+    clean.includes('desactiv') ||
+    clean.includes('deactiv') ||
+    clean.includes('inactiv') ||
+    clean.includes('suspend') ||
+    clean.includes('baja') ||
+    clean.includes('cancel') ||
+    clean.includes('disabled') ||
+    clean.includes('deleted') ||
+    clean.includes('terminated')
+  )
+    return 'desactivada'
   return clean
 }
 
@@ -1549,7 +1552,7 @@ function normalizeLine(line, index = 0) {
   return clean
 }
 
-function lineFromRow(row, index, label) {
+function lineFromRow(row, index, label, options = {}) {
   const rowText = Object.values(row).join(' ')
   const bernardoRenewal = parseBernardoRenewalText(rowText)
   const type = rowValueLoose(row, ['Tipo', 'Tipo servicio', 'Servicio', 'Modalidad', 'Producto'])
@@ -1557,19 +1560,20 @@ function lineFromRow(row, index, label) {
   const imei = rowValue(row, lineImeiCandidates)
   const billing = rowValueLoose(row, ['Cobro', 'Forma de pago', 'Tipo de pago', 'Periodicidad', 'Renovacion'])
   const payments = rowValueLoose(row, ['No. Pagos', 'Pagos'])
-  const status = rowValueLoose(row, ['Estado', 'Estatus', 'Status'])
+  const status = rowValueLoose(row, ['Estado', 'Estatus', 'Status', 'SIM Status', 'Lifecycle status', 'Connectivity status'])
   const notes = rowValueLoose(row, ['Notas', 'Comentario', 'Comentarios', 'Observaciones'])
   const renewalDate = rowValueLoose(row, ['Fecha renovacion', 'Renovacion', 'Vencimiento', 'Fecha vencimiento', 'Fecha pago', 'Proximo pago']) || bernardoRenewal?.renewalDate || ''
+  const carrier = rowValueLoose(row, ['Compania', 'Operador', 'Carrier', 'Proveedor', 'Red']) || options.defaultCarrier || ''
 
   return normalizeLine(
     {
-      company: rowValueLoose(row, ['Cliente', 'Empresa', 'Razon social', 'Cuenta', 'Nombre cliente', 'Customer']) || bernardoRenewal?.company || '',
+      company: rowValueLoose(row, ['Cliente', 'Empresa', 'Razon social', 'Cuenta', 'Nombre cliente', 'Customer', 'Organization']) || bernardoRenewal?.company || options.defaultCompany || '',
       phone: rowValue(row, linePhoneCandidates),
-      lineType: normalizeLineType(lineType || rowText),
+      lineType: options.forceLineType || normalizeLineType(lineType || rowText),
       iccid: extractIccidFromRow(row),
       imei,
-      carrier: rowValueLoose(row, ['Compania', 'Operador', 'Carrier', 'Proveedor', 'Red']),
-      plan: rowValueLoose(row, ['Plan', 'Paquete', 'Producto', 'Servicio contratado']),
+      carrier,
+      plan: rowValueLoose(row, ['Plan', 'Paquete', 'Producto', 'Servicio contratado', 'Tariff profile', 'Rate plan', 'Service profile']),
       status: status || 'activa',
       billingCycle: normalizeCycle(billing || 'anual', payments),
       renewalDate,
@@ -1607,51 +1611,135 @@ function lineMatchLabel(line) {
   return line.clientOnly ? 'Solo linea celular' : 'Sin match'
 }
 
+function lineMatchKeys(line, devices = state.devices) {
+  const keys = [...lineIdentifierKeys(line)]
+  const device = matchLineDevice(line, devices)
+  if (device) keys.push(...deviceIdentifierKeys(device).map((key) => `device-match:${key}`))
+  const company = normalizeHeader(line.company)
+  const phone = normalizePhone(line.phone)
+  const imei = normalizeIdentifier(line.imei)
+  const iccid = normalizeIdentifier(line.iccid)
+  if (company && phone) keys.push(`company-phone:${company}|${phone}`)
+  if (company && imei) keys.push(`company-imei:${company}|${imei}`)
+  if (company && iccid) keys.push(`company-iccid:${company}|${iccid}`)
+  return unique(keys)
+}
+
+function mergeLineRecord(oldLine, normalizedLine) {
+  const next = {
+    ...oldLine,
+    company: normalizedLine.company || oldLine.company,
+    phone: normalizedLine.phone || oldLine.phone,
+    lineType: normalizedLine.lineType || oldLine.lineType,
+    iccid: normalizedLine.iccid || oldLine.iccid,
+    imei: normalizedLine.imei || oldLine.imei,
+    carrier: normalizedLine.carrier || oldLine.carrier,
+    plan: normalizedLine.plan || oldLine.plan,
+    status: normalizedLine.status || oldLine.status,
+    billingCycle: normalizedLine.billingCycle || oldLine.billingCycle,
+    renewalDate: normalizedLine.renewalDate || oldLine.renewalDate,
+    annualPrice: normalizedLine.annualPrice || oldLine.annualPrice,
+    clientOnly: Boolean(oldLine.clientOnly || normalizedLine.clientOnly),
+    notes: normalizedLine.notes || oldLine.notes,
+    source: normalizedLine.source || oldLine.source,
+    id: oldLine.id
+  }
+  const changed = [
+    'company',
+    'phone',
+    'lineType',
+    'iccid',
+    'imei',
+    'carrier',
+    'plan',
+    'status',
+    'billingCycle',
+    'renewalDate',
+    'annualPrice',
+    'clientOnly',
+    'notes',
+    'source'
+  ].some((field) => String(oldLine[field] ?? '') !== String(next[field] ?? ''))
+  return {
+    ...next,
+    recordState: changed ? 'actualizado' : oldLine.recordState === 'nuevo' ? 'nuevo' : 'vigente'
+  }
+}
+
 function mergeLines(previous, incoming, options = {}) {
-  if (!previous.length) return incoming.map((line) => ({ ...line, recordState: 'vigente' }))
+  const devices = options.devices || state.devices
   const markMissing = options.markMissing !== false
   const previousByKey = new Map()
-  previous.map((line) => normalizeLine(line)).forEach((line) => {
-    lineIdentifierKeys(line).forEach((key) => {
-      if (!previousByKey.has(key)) previousByKey.set(key, line)
-    })
-  })
-  const incomingKeys = new Set()
-  const merged = incoming.map((line, index) => {
-    const normalized = normalizeLine(line, index)
-    const keys = lineIdentifierKeys(normalized)
-    keys.forEach((key) => incomingKeys.add(key))
-    const oldLine = keys.map((key) => previousByKey.get(key)).find(Boolean)
-    if (!oldLine) return { ...normalized, recordState: 'nuevo' }
-    const changed =
-      oldLine.company !== normalized.company ||
-      oldLine.phone !== normalized.phone ||
-      oldLine.lineType !== normalized.lineType ||
-      oldLine.iccid !== normalized.iccid ||
-      oldLine.imei !== normalized.imei ||
-      oldLine.carrier !== normalized.carrier ||
-      oldLine.status !== normalized.status ||
-      oldLine.renewalDate !== normalized.renewalDate
+  const previousLines = dedupeLines(
+    previous.map((line, index) => normalizeLine(line, index)),
+    devices
+  )
+  const mergedById = new Map()
+  const orderedIds = []
+  const touchedIds = new Set()
 
-    return {
-      ...oldLine,
-      ...normalized,
-      id: oldLine.id,
-      billingCycle: oldLine.billingCycle || normalized.billingCycle,
-      annualPrice: oldLine.annualPrice || normalized.annualPrice,
-      clientOnly: oldLine.clientOnly || normalized.clientOnly,
-      notes: oldLine.notes || normalized.notes,
-      recordState: changed ? 'actualizado' : 'vigente'
-    }
-  })
-
-  if (markMissing) {
-    previous.forEach((line) => {
-      if (!lineIdentifierKeys(line).some((key) => incomingKeys.has(key))) merged.push({ ...line, recordState: 'no_encontrado' })
+  const indexLine = (line) => {
+    lineMatchKeys(line, devices).forEach((key) => {
+      if (!previousByKey.has(key)) previousByKey.set(key, line.id)
     })
   }
 
-  return merged
+  previousLines.forEach((line) => {
+    mergedById.set(line.id, line)
+    orderedIds.push(line.id)
+    indexLine(line)
+  })
+
+  incoming.forEach((line, index) => {
+    const normalized = normalizeLine(line, index)
+    const existingId = lineMatchKeys(normalized, devices).map((key) => previousByKey.get(key)).find(Boolean)
+    if (existingId) {
+      const oldLine = mergedById.get(existingId)
+      const next = mergeLineRecord(oldLine, normalized)
+      mergedById.set(existingId, next)
+      touchedIds.add(existingId)
+      indexLine(next)
+      return
+    }
+
+    const id = normalized.id || `${lineKey(normalized)}-${Date.now()}-${index}`
+    const next = { ...normalized, id, recordState: 'nuevo' }
+    mergedById.set(id, next)
+    orderedIds.push(id)
+    touchedIds.add(id)
+    indexLine(next)
+  })
+
+  return orderedIds.map((id) => {
+    const line = mergedById.get(id)
+    if (markMissing && previousLines.some((previousLine) => previousLine.id === id) && !touchedIds.has(id)) {
+      return { ...line, recordState: 'no_encontrado' }
+    }
+    return line
+  })
+}
+
+function dedupeLines(lines, devices = state.devices) {
+  const normalizedLines = lines.map((line, index) => normalizeLine(line, index))
+  const byKey = new Map()
+  const byId = new Map()
+  const orderedIds = []
+
+  normalizedLines.forEach((line) => {
+    const existingId = lineMatchKeys(line, devices).map((key) => byKey.get(key)).find(Boolean)
+    if (existingId) {
+      const merged = mergeLineRecord(byId.get(existingId), line)
+      byId.set(existingId, merged)
+      lineMatchKeys(merged, devices).forEach((key) => byKey.set(key, existingId))
+      return
+    }
+
+    byId.set(line.id, line)
+    orderedIds.push(line.id)
+    lineMatchKeys(line, devices).forEach((key) => byKey.set(key, line.id))
+  })
+
+  return orderedIds.map((id) => byId.get(id))
 }
 
 function lineStats(lines = state.lines, devices = state.devices) {
@@ -1712,12 +1800,13 @@ function lineRowsForStatus(lines, active) {
 }
 
 function lineShouldImport(line, options = {}) {
+  if (options.requireIcc && !line.iccid) return false
   if (line.phone || line.iccid) return true
   return Boolean(options.allowImeiOnly && line.imei)
 }
 
 function linesFromRows(rows, label, options = {}) {
-  return rows.map((row, index) => lineFromRow(row, index, label)).filter((line) => lineShouldImport(line, options))
+  return rows.map((row, index) => lineFromRow(row, index, label, options)).filter((line) => lineShouldImport(line, options))
 }
 
 function mergeLineRows(previous, rows, label, options = {}) {
@@ -1726,7 +1815,7 @@ function mergeLineRows(previous, rows, label, options = {}) {
     const stats = lineStats(previous, options.devices || state.devices)
     return { lines: previous, imported, stats }
   }
-  const merged = mergeLines(previous, imported, { markMissing: options.markMissing })
+  const merged = mergeLines(previous, imported, { markMissing: options.markMissing, devices: options.devices })
   const stats = lineStats(merged, options.devices || state.devices)
   return { lines: merged, imported, stats }
 }
@@ -1754,6 +1843,23 @@ async function handleLineFile(file) {
     lineImport: lineImportState(file.name, parsed.rows.length, imported, stats),
     view: 'lineas',
     notice: `Lineas importadas: ${imported.length}; ${imported.filter((line) => line.iccid).length} con ICC, ${stats.matched} ligadas a equipo, ${stats.clientOnly} solo linea, ${stats.unmatched} sin match.`
+  })
+}
+
+async function handleEmnifyFile(file) {
+  const buffer = await file.arrayBuffer()
+  const parsed = await parseWorkbookFile(buffer, file.name)
+  const { lines: merged, imported, stats } = mergeLineRows(state.lines, parsed.rows, `Emnify - ${file.name}`, {
+    allowImeiOnly: true,
+    markMissing: false,
+    forceLineType: 'emnify',
+    defaultCarrier: 'Emnify'
+  })
+  setState({
+    lines: merged,
+    lineImport: lineImportState(`Emnify - ${file.name}`, parsed.rows.length, imported, stats),
+    view: 'lineas',
+    notice: `Emnify importado: ${imported.length} lineas; ${imported.filter((line) => line.iccid).length} con ICC, ${stats.matched} ligadas a equipo. Se actualizaron coincidencias antes de crear nuevas.`
   })
 }
 
@@ -3377,6 +3483,7 @@ function renderLineas(companies) {
       </datalist>
       <div class="billing-settings line-actions">
         <button class="button primary" id="uploadLineFile">${icon('upload')}Importar lineas XLSX</button>
+        <button class="button" id="uploadEmnifyFile">${icon('cloud-upload')}Importar Emnify</button>
         <button class="button" id="exportLinesXlsx">${icon('download')}Exportar lineas</button>
         <label>
           <span>Estatus</span>
@@ -3878,6 +3985,7 @@ function render() {
       <input class="hidden-input" id="fileInput" type="file" accept=".xlsx,.csv">
       <input class="hidden-input" id="paymentFileInput" type="file" accept=".xlsx,.csv">
       <input class="hidden-input" id="lineFileInput" type="file" accept=".xlsx,.csv">
+      <input class="hidden-input" id="emnifyFileInput" type="file" accept=".xlsx,.csv">
       <header class="topbar">
         <div class="brand-lockup">
           <img class="brand-logo" src="/public/assets/klifnet-logo.jpg" alt="KLIFNET">
@@ -3937,6 +4045,12 @@ function bindEvents() {
     await handleLineFile(file)
     event.target.value = ''
   })
+  document.getElementById('emnifyFileInput')?.addEventListener('change', async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    await handleEmnifyFile(file)
+    event.target.value = ''
+  })
   document.getElementById('exportCsv')?.addEventListener('click', exportCsv)
   document.getElementById('exportJson')?.addEventListener('click', exportJson)
   document.getElementById('reloadSeed')?.addEventListener('click', loadSeedFile)
@@ -3975,6 +4089,7 @@ function bindEvents() {
 
   document.getElementById('addManualLine')?.addEventListener('click', addManualLine)
   document.getElementById('uploadLineFile')?.addEventListener('click', () => document.getElementById('lineFileInput')?.click())
+  document.getElementById('uploadEmnifyFile')?.addEventListener('click', () => document.getElementById('emnifyFileInput')?.click())
   document.getElementById('exportLinesXlsx')?.addEventListener('click', exportLinesXlsx)
 
   document.getElementById('lineSearchInput')?.addEventListener('input', (event) => {
@@ -4305,6 +4420,12 @@ async function init() {
         sourceLabel: parsed.sourceLabel || '',
         lastImportAt: parsed.lastImportAt || ''
       })
+      const previousLineCount = state.lines.length
+      state.lines = dedupeLines(state.lines, state.devices)
+      if (state.lines.length !== previousLineCount) {
+        state.notice = `Lineas duplicadas consolidadas: ${previousLineCount - state.lines.length} repetidas.`
+        persistState()
+      }
     } catch {
       localStorage.removeItem(storageKey)
     }
@@ -4316,7 +4437,7 @@ async function init() {
 
   if (state.rawRows.length && state.lineImport?.autoVersion !== lineAutoImportVersion) {
     const label = state.sourceLabel || 'Base guardada'
-    const lineMerge = mergeLineRows(state.lines, state.rawRows, label, { allowImeiOnly: false, markMissing: false })
+    const lineMerge = mergeLineRows(state.lines, state.rawRows, label, { requireIcc: true, markMissing: false })
     if (lineMerge.imported.length) {
       state.lines = lineMerge.lines
       state.lineImport = lineImportState(label, state.rawRows.length, lineMerge.imported, lineMerge.stats, {
