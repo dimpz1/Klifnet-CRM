@@ -2,7 +2,8 @@ const storageKey = 'crm-wialon-prefacturacion-v1'
 const seedFile = '/public/data/DispositivosWialon_Abril2026.xlsx'
 const paymentSeedFile = '/public/data/Klifnet_Admon_Mensual_Pagos.xlsx'
 const quoteTemplateFile = '/public/templates/cotizacion_CalidadSP.xlsx'
-const paymentImportVersion = 3
+const paymentImportVersion = 4
+const lineAutoImportVersion = 1
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -188,6 +189,8 @@ const fieldLabels = {
   deactivatedAt: 'Desactivacion',
   uid: 'UID',
   imei: 'IMEI',
+  imeiLong: 'IMEI largo',
+  imeiShort: 'IMEI corto',
   phone: 'Telefono',
   lastMessage: 'Ultimo mensaje',
   createdAt: 'Creada',
@@ -201,6 +204,8 @@ const fieldOrder = [
   'unitName',
   'uid',
   'imei',
+  'imeiLong',
+  'imeiShort',
   'deviceType',
   'phone',
   'lastMessage',
@@ -304,6 +309,8 @@ const state = {
     unitName: '',
     uid: '',
     imei: '',
+    imeiLong: '',
+    imeiShort: '',
     deviceType: '',
     phone: '',
     agreedPrice: '',
@@ -377,19 +384,68 @@ function normalizeIdentifier(value) {
   return normalizeHeader(value).replace(/\s+/g, '')
 }
 
+function deriveShortImei(value) {
+  const clean = textValue(value).replace(/\D/g, '')
+  if (!clean) return ''
+  return clean.length > 6 ? clean.slice(-6) : clean
+}
+
+function isDerivedShortIdentifier(value, source) {
+  const cleanValue = textValue(value).replace(/\D/g, '')
+  const cleanSource = textValue(source).replace(/\D/g, '')
+  return Boolean(cleanValue && cleanSource.length > cleanValue.length && cleanValue === deriveShortImei(cleanSource))
+}
+
+function deviceImeiLong(device) {
+  return textValue(device.imeiLong || device.imei)
+}
+
+function deviceImeiShort(device) {
+  return textValue(device.imeiShort) || deriveShortImei(deviceImeiLong(device))
+}
+
+function deviceIdentifierValues(device) {
+  return unique([device.uid, device.imei, device.imeiLong, device.imeiShort, deviceImeiLong(device), deviceImeiShort(device)])
+}
+
+function deviceIdentifierKeys(device) {
+  const keys = deviceIdentifierValues(device).map(normalizeIdentifier).filter(Boolean)
+  if (keys.length) return unique(keys.map((key) => `device:${key}`))
+  return [`unit:${normalizeHeader(`${device.company}-${device.unitName}-${device.deviceType}`)}`]
+}
+
 function deviceKey(device) {
-  const identifier = device.imei || device.uid
-  if (identifier) return `device:${normalizeIdentifier(identifier)}`
-  return `unit:${normalizeHeader(`${device.company}-${device.unitName}-${device.deviceType}`)}`
+  return deviceIdentifierKeys(device)[0]
+}
+
+function deviceMatchesIdentifier(device, identifier) {
+  const clean = normalizeIdentifier(identifier)
+  return Boolean(clean && deviceIdentifierValues(device).some((value) => normalizeIdentifier(value) === clean))
+}
+
+function devicesShareIdentifier(firstDevice, secondDevice) {
+  const firstKeys = new Set(deviceIdentifierKeys(firstDevice))
+  return deviceIdentifierKeys(secondDevice).some((key) => firstKeys.has(key))
 }
 
 function normalizeDeviceIdentifiers(device) {
   const uid = textValue(device.uid)
-  const imei = textValue(device.imei)
+  const rawImei = textValue(device.imei)
+  const rawImeiLong = textValue(device.imeiLong)
+  const imeiLong =
+    rawImeiLong && !isDerivedShortIdentifier(rawImeiLong, uid)
+      ? rawImeiLong
+      : rawImei && !isDerivedShortIdentifier(rawImei, uid)
+        ? rawImei
+        : uid || rawImeiLong || rawImei
+  const imeiShort = textValue(device.imeiShort) || deriveShortImei(imeiLong || rawImei || uid)
+  const mainImei = rawImei && !isDerivedShortIdentifier(rawImei, uid) ? rawImei : imeiLong || uid || imeiShort
   return {
     ...device,
-    uid: uid || imei,
-    imei: imei || uid
+    uid: uid || mainImei,
+    imei: mainImei || uid,
+    imeiLong: imeiLong || mainImei || uid,
+    imeiShort
   }
 }
 
@@ -397,10 +453,10 @@ function createManualDevice() {
   const draft = state.newDevice
   const company = textValue(draft.company)
   const unitName = textValue(draft.unitName)
-  const identifier = textValue(draft.imei || draft.uid)
+  const identifier = textValue(draft.imeiLong || draft.imei || draft.imeiShort || draft.uid)
 
   if (!company || !unitName || !identifier) {
-    setState({ notice: 'Para agregar equipo captura empresa, nombre del equipo y UID o IMEI.', view: 'equipos' })
+    setState({ notice: 'Para agregar equipo captura empresa, nombre del equipo y UID, IMEI largo o IMEI corto.', view: 'equipos' })
     return
   }
 
@@ -413,6 +469,8 @@ function createManualDevice() {
     deactivatedAt: '',
     uid: textValue(draft.uid),
     imei: textValue(draft.imei),
+    imeiLong: textValue(draft.imeiLong || draft.imei),
+    imeiShort: textValue(draft.imeiShort) || deriveShortImei(draft.imeiLong || draft.imei),
     phone: textValue(draft.phone),
     lastMessage: '',
     createdAt: new Date().toISOString().slice(0, 10),
@@ -429,9 +487,9 @@ function createManualDevice() {
   })
   device.id = `${deviceKey(device)}-${Date.now()}`
 
-  const existing = state.devices.some((current) => deviceKey(current) === deviceKey(device))
+  const existing = state.devices.some((current) => devicesShareIdentifier(current, device))
   if (existing) {
-    setState({ notice: 'Ya existe un equipo con ese UID o IMEI.', view: 'equipos' })
+    setState({ notice: 'Ya existe un equipo con ese UID, IMEI largo o IMEI corto.', view: 'equipos' })
     return
   }
 
@@ -441,7 +499,7 @@ function createManualDevice() {
       ...state.companyMeta,
       [company]: { ...blankMeta(company), ...(state.companyMeta[company] || {}) }
     },
-    newDevice: { company: '', groups: '', unitName: '', uid: '', imei: '', deviceType: '', phone: '', agreedPrice: '', saleDate: '', priceNote: '' },
+    newDevice: { company: '', groups: '', unitName: '', uid: '', imei: '', imeiLong: '', imeiShort: '', deviceType: '', phone: '', agreedPrice: '', saleDate: '', priceNote: '' },
     notice: `Equipo agregado: ${unitName}`,
     view: 'equipos'
   })
@@ -878,6 +936,8 @@ function detectMapping(columns) {
     deactivatedAt: pick(['Desactivacion', 'Desactivación', 'Desactivado', 'Disabled']),
     uid: pick(['UID', 'Unique ID', 'ID unico', 'Identificador']),
     imei: pick(['IMEI', 'IMEI equipo', 'IMEI dispositivo', 'Device IMEI', 'Serial IMEI']),
+    imeiLong: pick(['IMEI largo', 'IMEI completo', 'IMEI full', 'Long IMEI', 'IMEI largo equipo']),
+    imeiShort: pick(['IMEI corto', 'Short IMEI', 'IMEI short', 'IMEI abreviado']),
     phone: pick(['Telefono', 'Teléfono', 'Phone', 'MSISDN']),
     lastMessage: pick(['Hora de ultimo mensaje', 'Hora de último mensaje', 'Ultimo mensaje', 'Last message']),
     createdAt: pick(['Creada', 'Created', 'Fecha alta']),
@@ -905,6 +965,8 @@ function normalizeRows(rows, mapping, recordState) {
     const mappedGroups = splitGroups(get(row, 'groups'))
     const rawUid = get(row, 'uid')
     const rawImei = get(row, 'imei')
+    const rawImeiLong = get(row, 'imeiLong') || rawImei
+    const rawImeiShort = get(row, 'imeiShort') || deriveShortImei(rawImeiLong || rawImei || rawUid)
     const device = normalizeDeviceIdentifiers({
       id: '',
       unitName: inferred.unitName || rawUnitName || `Equipo ${index + 1}`,
@@ -914,6 +976,8 @@ function normalizeRows(rows, mapping, recordState) {
       deactivatedAt: get(row, 'deactivatedAt'),
       uid: rawUid,
       imei: rawImei,
+      imeiLong: rawImeiLong,
+      imeiShort: rawImeiShort,
       phone: get(row, 'phone'),
       lastMessage: get(row, 'lastMessage'),
       createdAt: get(row, 'createdAt'),
@@ -936,12 +1000,17 @@ function mergeDevices(previous, incoming) {
   if (!previous.length) return incoming.map((device) => normalizeDeviceIdentifiers({ ...device, recordState: 'vigente' }))
 
   const cleanPrevious = previous.map(normalizeDeviceIdentifiers)
-  const previousByKey = new Map(cleanPrevious.map((device) => [deviceKey(device), device]))
+  const previousByKey = new Map()
+  cleanPrevious.forEach((device) => {
+    deviceIdentifierKeys(device).forEach((key) => {
+      if (!previousByKey.has(key)) previousByKey.set(key, device)
+    })
+  })
   const incomingKeys = new Set()
   const merged = incoming.map((device) => {
-    const key = deviceKey(device)
-    incomingKeys.add(key)
-    const oldDevice = previousByKey.get(key)
+    const keys = deviceIdentifierKeys(device)
+    keys.forEach((key) => incomingKeys.add(key))
+    const oldDevice = keys.map((key) => previousByKey.get(key)).find(Boolean)
     if (!oldDevice) return { ...device, recordState: 'nuevo' }
 
     const changed =
@@ -949,6 +1018,8 @@ function mergeDevices(previous, incoming) {
       oldDevice.company !== device.company ||
       oldDevice.deviceType !== device.deviceType ||
       oldDevice.phone !== device.phone ||
+      oldDevice.imeiLong !== device.imeiLong ||
+      oldDevice.imeiShort !== device.imeiShort ||
       oldDevice.deactivatedAt !== device.deactivatedAt ||
       oldDevice.lastMessage !== device.lastMessage ||
       oldDevice.groups.join('|') !== device.groups.join('|')
@@ -959,6 +1030,8 @@ function mergeDevices(previous, incoming) {
       id: oldDevice.id,
       uid: device.uid || oldDevice.uid || '',
       imei: device.imei || oldDevice.imei || '',
+      imeiLong: device.imeiLong || oldDevice.imeiLong || device.imei || oldDevice.imei || '',
+      imeiShort: device.imeiShort || oldDevice.imeiShort || deriveShortImei(device.imeiLong || device.imei || oldDevice.imeiLong || oldDevice.imei),
       billingCycle: oldDevice.billingCycle || device.billingCycle || 'mensual',
       annualMonth: oldDevice.annualMonth || device.annualMonth || String(new Date().getMonth() + 1),
       renewalDate: oldDevice.renewalDate || '',
@@ -970,7 +1043,7 @@ function mergeDevices(previous, incoming) {
   })
 
   cleanPrevious.forEach((device) => {
-    if (!incomingKeys.has(deviceKey(device))) {
+    if (!deviceIdentifierKeys(device).some((key) => incomingKeys.has(key))) {
       merged.push(isImportedWialonDevice(device) ? { ...device, recordState: 'no_encontrado' } : device)
     }
   })
@@ -1096,14 +1169,23 @@ async function loadSeedFile() {
     const parsed = await parseWorkbookFile(buffer, seedFile)
     const normalized = normalizeRows(parsed.rows, parsed.mapping, 'vigente')
     const devices = state.devices.length ? mergeDevices(state.devices, normalized) : normalized
+    const lineMerge = mergeLineRows(state.lines, parsed.rows, 'DispositivosWialon_Abril2026.xlsx', { allowImeiOnly: false, markMissing: false, devices })
     setState({
       rawRows: parsed.rows,
       columns: parsed.columns,
       mapping: parsed.mapping,
       devices,
+      ...(lineMerge.imported.length
+        ? {
+            lines: lineMerge.lines,
+            lineImport: lineImportState('DispositivosWialon_Abril2026.xlsx', parsed.rows.length, lineMerge.imported, lineMerge.stats, {
+              autoVersion: lineAutoImportVersion
+            })
+          }
+        : {}),
       sourceLabel: 'DispositivosWialon_Abril2026.xlsx',
       lastImportAt: new Date().toISOString(),
-      notice: `Base cargada: ${normalized.length} equipos de Wialon.`
+      notice: `Base cargada: ${normalized.length} equipos de Wialon.${lineMerge.imported.length ? ` Lineas detectadas: ${lineMerge.imported.length} (${lineMerge.imported.filter((line) => line.iccid).length} con ICC).` : ''}`
     })
   } catch (error) {
     setState({ notice: error.message || 'Carga tu archivo Wialon para comenzar.' })
@@ -1115,6 +1197,7 @@ async function handleFile(file) {
   const parsed = await parseWorkbookFile(buffer, file.name)
   const normalized = normalizeRows(parsed.rows, parsed.mapping, 'vigente')
   const merged = mergeDevices(state.devices, normalized)
+  const lineMerge = mergeLineRows(state.lines, parsed.rows, file.name, { allowImeiOnly: false, markMissing: false, devices: merged })
   const stats = {
     nuevos: merged.filter((device) => device.recordState === 'nuevo').length,
     actualizados: merged.filter((device) => device.recordState === 'actualizado').length,
@@ -1126,9 +1209,17 @@ async function handleFile(file) {
     columns: parsed.columns,
     mapping: parsed.mapping,
     devices: merged,
+    ...(lineMerge.imported.length
+      ? {
+          lines: lineMerge.lines,
+          lineImport: lineImportState(file.name, parsed.rows.length, lineMerge.imported, lineMerge.stats, {
+            autoVersion: lineAutoImportVersion
+          })
+        }
+      : {}),
     sourceLabel: file.name,
     lastImportAt: new Date().toISOString(),
-    notice: `Actualizado: ${normalized.length} equipos leidos, ${stats.nuevos} nuevos, ${stats.actualizados} actualizados, ${stats.noEncontrados} no encontrados.`
+    notice: `Actualizado: ${normalized.length} equipos leidos, ${stats.nuevos} nuevos, ${stats.actualizados} actualizados, ${stats.noEncontrados} no encontrados.${lineMerge.imported.length ? ` Lineas/chips detectados: ${lineMerge.imported.length} (${lineMerge.imported.filter((line) => line.iccid).length} con ICC).` : ''}`
   })
 }
 
@@ -1142,9 +1233,26 @@ function rowValue(row, candidates) {
   return ''
 }
 
+function rowValueLoose(row, candidates) {
+  const exact = rowValue(row, candidates)
+  if (exact) return exact
+  const entries = Object.entries(row)
+  for (const candidate of candidates) {
+    const cleanCandidate = normalizeHeader(candidate)
+    const match = entries.find(([key]) => {
+      const cleanKey = normalizeHeader(key)
+      return cleanKey.includes(cleanCandidate) || cleanCandidate.includes(cleanKey)
+    })
+    if (match) return textValue(match[1])
+  }
+  return ''
+}
+
 function paymentRuleFromRow(row) {
   const name = rowValue(row, ['Nombre', 'Equipo', 'Unidad'])
   const uid = rowValue(row, ['UID', 'IMEI', 'Identificador'])
+  const imeiLong = rowValue(row, ['IMEI largo', 'IMEI completo', 'IMEI full', 'Long IMEI'])
+  const imeiShort = rowValue(row, ['IMEI corto', 'Short IMEI', 'IMEI short'])
   const company = rowValue(row, ['Cuenta', 'Empresa'])
   const tipo = rowValue(row, ['Tipo de Pago', 'Forma de pago'])
   const noPagos = rowValue(row, ['No. Pagos', 'Pagos'])
@@ -1161,6 +1269,9 @@ function paymentRuleFromRow(row) {
   return {
     name,
     uid,
+    imeiLong,
+    imeiShort,
+    identifiers: unique([uid, imeiLong, imeiShort]),
     company,
     cycle,
     price,
@@ -1193,8 +1304,10 @@ function applyPaymentRows(rows, label, options = {}) {
   rules.forEach((rule) => {
     const nameKey = normalizeHeader(rule.name)
     const companyKey = normalizeHeader(rule.company)
-    const idKey = normalizeIdentifier(rule.uid)
-    if (idKey) byId.set(idKey, rule)
+    rule.identifiers.forEach((identifier) => {
+      const idKey = normalizeIdentifier(identifier)
+      if (idKey && !byId.has(idKey)) byId.set(idKey, rule)
+    })
     if (companyKey && nameKey && !byCompanyName.has(`${companyKey}|${nameKey}`)) byCompanyName.set(`${companyKey}|${nameKey}`, rule)
     if (nameKey && !byName.has(nameKey)) byName.set(nameKey, rule)
   })
@@ -1202,11 +1315,13 @@ function applyPaymentRows(rows, label, options = {}) {
   const usedRules = new Set()
   const devices = state.devices.map((device) => {
     if (!isImportedWialonDevice(device)) return device
-    const idRule = byId.get(normalizeIdentifier(device.imei || device.uid))
+    const idRule = deviceIdentifierValues(device)
+      .map((identifier) => byId.get(normalizeIdentifier(identifier)))
+      .find(Boolean)
     const companyNameRule = byCompanyName.get(`${normalizeHeader(device.company)}|${normalizeHeader(device.unitName)}`)
     const nameRule = byName.get(normalizeHeader(device.unitName))
     const rule = idRule || companyNameRule || nameRule
-    const matchedBy = idRule ? 'UID/IMEI' : companyNameRule ? 'empresa+nombre' : nameRule ? 'nombre' : ''
+    const matchedBy = idRule ? 'UID/IMEI largo/corto' : companyNameRule ? 'empresa+nombre' : nameRule ? 'nombre' : ''
 
     if (!rule) {
       stats.defaultMonthly += 1
@@ -1221,7 +1336,7 @@ function applyPaymentRows(rows, label, options = {}) {
     }
 
     usedRules.add(rule)
-    if (matchedBy === 'UID/IMEI') stats.matchedById += 1
+    if (matchedBy === 'UID/IMEI largo/corto') stats.matchedById += 1
     else if (matchedBy === 'empresa+nombre') stats.matchedByCompanyName += 1
     else stats.matchedByName += 1
     if (rule.cycle === 'semestral') stats.semestral += 1
@@ -1247,11 +1362,20 @@ function applyPaymentRows(rows, label, options = {}) {
 
   stats.unmatchedRules = rules.filter((rule) => !usedRules.has(rule)).length
   const matchedTotal = stats.matchedById + stats.matchedByCompanyName + stats.matchedByName
+  const lineMerge = mergeLineRows(state.lines, rows, label, { allowImeiOnly: false, markMissing: false, devices })
 
   setState({
     devices,
+    ...(lineMerge.imported.length
+      ? {
+          lines: lineMerge.lines,
+          lineImport: lineImportState(label, rows.length, lineMerge.imported, lineMerge.stats, {
+            autoVersion: lineAutoImportVersion
+          })
+        }
+      : {}),
     paymentImport: stats,
-    notice: `Pagos pactados aplicados: ${matchedTotal} equipos; ${stats.semestral} semestrales, ${stats.annual} anuales; ${stats.defaultMonthly} quedaron mensuales.`,
+    notice: `Pagos pactados aplicados: ${matchedTotal} equipos; ${stats.semestral} semestrales, ${stats.annual} anuales; ${stats.defaultMonthly} quedaron mensuales.${lineMerge.imported.length ? ` Lineas/chips detectados: ${lineMerge.imported.length} (${lineMerge.imported.filter((line) => line.iccid).length} con ICC).` : ''}`,
     view: options.keepView ? state.view : 'facturacion'
   })
 }
@@ -1273,14 +1397,62 @@ function normalizePhone(value) {
   return String(value ?? '').replace(/\D/g, '')
 }
 
+const linePhoneCandidates = ['Linea', 'Linea celular', 'Telefono', 'Telefono linea', 'MSISDN', 'Numero', 'Numero celular', 'DN', 'Celular']
+const lineIccCandidates = ['ICCID', 'ICC', 'ICCID / ICC', 'SIM', 'Numero SIM', 'No SIM', 'Simcard', 'Chip', 'Numero chip', 'No chip', 'SIM ID', 'ID SIM']
+const lineImeiCandidates = ['IMEI', 'IMEI largo', 'IMEI corto', 'IMEI equipo', 'IMEI dispositivo', 'Equipo IMEI', 'Dispositivo', 'UID', 'Identificador']
+
+function normalizeIccid(value) {
+  const clean = textValue(value).replace(/\D/g, '')
+  return /^89\d{16,22}$/.test(clean) ? clean : textValue(value)
+}
+
+function extractIccidFromText(value) {
+  const raw = textValue(value)
+  const compact = raw.replace(/\D/g, '')
+  if (/^89\d{16,22}$/.test(compact)) return compact
+  const spaced = raw.match(/\b89(?:[\s-]?\d){16,22}\b/)
+  return spaced ? spaced[0].replace(/\D/g, '') : ''
+}
+
+function extractIccidFromRow(row) {
+  const direct = rowValueLoose(row, lineIccCandidates)
+  if (direct) return normalizeIccid(direct)
+  const entries = Object.entries(row)
+  const likelyField = entries
+    .filter(([key]) => /(^|\s)(icc|iccid|sim|chip)(\s|$)/.test(normalizeHeader(key)))
+    .map(([, value]) => extractIccidFromText(value))
+    .find(Boolean)
+  if (likelyField) return likelyField
+  return entries.map(([, value]) => extractIccidFromText(value)).find(Boolean) || ''
+}
+
 function lineKey(line) {
   const iccid = normalizeIdentifier(line.iccid)
   const phone = normalizePhone(line.phone)
   const imei = normalizeIdentifier(line.imei)
-  if (iccid) return `iccid:${iccid}`
-  if (phone) return `phone:${phone}`
-  if (imei) return `imei:${imei}`
-  return `line:${normalizeHeader(`${line.company || ''}-${line.carrier || ''}-${line.plan || ''}`)}`
+  const keys = []
+  if (iccid) keys.push(`iccid:${iccid}`)
+  if (phone) keys.push(`phone:${phone}`)
+  if (imei) keys.push(`imei:${imei}`)
+  keys.push(`line:${normalizeHeader(`${line.company || ''}-${line.carrier || ''}-${line.plan || ''}`)}`)
+  return keys[0]
+}
+
+function lineIdentifierKeys(line) {
+  const iccid = normalizeIdentifier(line.iccid)
+  const phone = normalizePhone(line.phone)
+  const imei = normalizeIdentifier(line.imei)
+  const keys = []
+  if (iccid) keys.push(`iccid:${iccid}`)
+  if (phone) keys.push(`phone:${phone}`)
+  if (imei) keys.push(`imei:${imei}`)
+  if (!keys.length) keys.push(`line:${normalizeHeader(`${line.company || ''}-${line.carrier || ''}-${line.plan || ''}`)}`)
+  return unique(keys)
+}
+
+function linesShareIdentifier(firstLine, secondLine) {
+  const firstKeys = new Set(lineIdentifierKeys(firstLine))
+  return lineIdentifierKeys(secondLine).some((key) => firstKeys.has(key))
 }
 
 function normalizeLineDate(value) {
@@ -1380,28 +1552,28 @@ function normalizeLine(line, index = 0) {
 function lineFromRow(row, index, label) {
   const rowText = Object.values(row).join(' ')
   const bernardoRenewal = parseBernardoRenewalText(rowText)
-  const type = rowValue(row, ['Tipo', 'Tipo servicio', 'Servicio', 'Modalidad', 'Producto'])
-  const lineType = rowValue(row, ['Tipo linea', 'Tipo de linea', 'Categoria linea', 'Categoria', 'Proveedor linea', 'Operador', 'Compania', 'Plan', 'Paquete'])
-  const imei = rowValue(row, ['IMEI', 'IMEI equipo', 'IMEI dispositivo', 'Equipo IMEI', 'Dispositivo'])
-  const billing = rowValue(row, ['Cobro', 'Forma de pago', 'Tipo de pago', 'Periodicidad', 'Renovacion'])
-  const payments = rowValue(row, ['No. Pagos', 'Pagos'])
-  const status = rowValue(row, ['Estado', 'Estatus', 'Status'])
-  const notes = rowValue(row, ['Notas', 'Comentario', 'Comentarios', 'Observaciones'])
-  const renewalDate = rowValue(row, ['Fecha renovacion', 'Renovacion', 'Vencimiento', 'Fecha vencimiento', 'Fecha pago', 'Proximo pago']) || bernardoRenewal?.renewalDate || ''
+  const type = rowValueLoose(row, ['Tipo', 'Tipo servicio', 'Servicio', 'Modalidad', 'Producto'])
+  const lineType = rowValueLoose(row, ['Tipo linea', 'Tipo de linea', 'Categoria linea', 'Categoria', 'Proveedor linea', 'Operador', 'Compania', 'Plan', 'Paquete'])
+  const imei = rowValue(row, lineImeiCandidates)
+  const billing = rowValueLoose(row, ['Cobro', 'Forma de pago', 'Tipo de pago', 'Periodicidad', 'Renovacion'])
+  const payments = rowValueLoose(row, ['No. Pagos', 'Pagos'])
+  const status = rowValueLoose(row, ['Estado', 'Estatus', 'Status'])
+  const notes = rowValueLoose(row, ['Notas', 'Comentario', 'Comentarios', 'Observaciones'])
+  const renewalDate = rowValueLoose(row, ['Fecha renovacion', 'Renovacion', 'Vencimiento', 'Fecha vencimiento', 'Fecha pago', 'Proximo pago']) || bernardoRenewal?.renewalDate || ''
 
   return normalizeLine(
     {
-      company: rowValue(row, ['Cliente', 'Empresa', 'Razon social', 'Cuenta', 'Nombre cliente', 'Customer']) || bernardoRenewal?.company || '',
-      phone: rowValue(row, ['Linea', 'Linea celular', 'Telefono', 'Telefono linea', 'MSISDN', 'Numero', 'Numero celular', 'DN', 'Celular']),
+      company: rowValueLoose(row, ['Cliente', 'Empresa', 'Razon social', 'Cuenta', 'Nombre cliente', 'Customer']) || bernardoRenewal?.company || '',
+      phone: rowValue(row, linePhoneCandidates),
       lineType: normalizeLineType(lineType || rowText),
-      iccid: rowValue(row, ['ICCID', 'SIM', 'Numero SIM', 'No SIM', 'Simcard', 'ICC']),
+      iccid: extractIccidFromRow(row),
       imei,
-      carrier: rowValue(row, ['Compania', 'Operador', 'Carrier', 'Proveedor', 'Red']),
-      plan: rowValue(row, ['Plan', 'Paquete', 'Producto', 'Servicio contratado']),
+      carrier: rowValueLoose(row, ['Compania', 'Operador', 'Carrier', 'Proveedor', 'Red']),
+      plan: rowValueLoose(row, ['Plan', 'Paquete', 'Producto', 'Servicio contratado']),
       status: status || 'activa',
       billingCycle: normalizeCycle(billing || 'anual', payments),
       renewalDate,
-      annualPrice: parseAmount(rowValue(row, ['Precio', 'Importe', 'Renta', 'Costo', 'Precio anual', 'Anualidad', 'Monto'])),
+      annualPrice: parseAmount(rowValueLoose(row, ['Precio', 'Importe', 'Renta', 'Costo', 'Precio anual', 'Anualidad', 'Monto'])),
       clientOnly: !imei || normalizeHeader(type).includes('linea'),
       notes: bernardoRenewal && !notes ? `Renovacion importada como: ${rowText}` : notes,
       source: label
@@ -1410,21 +1582,21 @@ function lineFromRow(row, index, label) {
   )
 }
 
-function matchLineDevice(line) {
+function matchLineDevice(line, devices = state.devices) {
   const imei = normalizeIdentifier(line.imei)
   if (imei) {
-    const byImei = state.devices.find((device) => normalizeIdentifier(device.imei || device.uid) === imei)
+    const byImei = devices.find((device) => deviceMatchesIdentifier(device, imei))
     if (byImei) return byImei
   }
   const phone = normalizePhone(line.phone)
   if (phone) {
-    return state.devices.find((device) => normalizePhone(device.phone) === phone) || null
+    return devices.find((device) => normalizePhone(device.phone) === phone) || null
   }
   return null
 }
 
-function lineMatchType(line) {
-  if (matchLineDevice(line)) return 'equipo'
+function lineMatchType(line, devices = state.devices) {
+  if (matchLineDevice(line, devices)) return 'equipo'
   if (line.clientOnly) return 'solo_linea'
   return 'sin_match'
 }
@@ -1435,15 +1607,21 @@ function lineMatchLabel(line) {
   return line.clientOnly ? 'Solo linea celular' : 'Sin match'
 }
 
-function mergeLines(previous, incoming) {
+function mergeLines(previous, incoming, options = {}) {
   if (!previous.length) return incoming.map((line) => ({ ...line, recordState: 'vigente' }))
-  const previousByKey = new Map(previous.map((line) => [lineKey(line), normalizeLine(line)]))
+  const markMissing = options.markMissing !== false
+  const previousByKey = new Map()
+  previous.map((line) => normalizeLine(line)).forEach((line) => {
+    lineIdentifierKeys(line).forEach((key) => {
+      if (!previousByKey.has(key)) previousByKey.set(key, line)
+    })
+  })
   const incomingKeys = new Set()
   const merged = incoming.map((line, index) => {
     const normalized = normalizeLine(line, index)
-    const key = lineKey(normalized)
-    incomingKeys.add(key)
-    const oldLine = previousByKey.get(key)
+    const keys = lineIdentifierKeys(normalized)
+    keys.forEach((key) => incomingKeys.add(key))
+    const oldLine = keys.map((key) => previousByKey.get(key)).find(Boolean)
     if (!oldLine) return { ...normalized, recordState: 'nuevo' }
     const changed =
       oldLine.company !== normalized.company ||
@@ -1467,21 +1645,23 @@ function mergeLines(previous, incoming) {
     }
   })
 
-  previous.forEach((line) => {
-    if (!incomingKeys.has(lineKey(line))) merged.push({ ...line, recordState: 'no_encontrado' })
-  })
+  if (markMissing) {
+    previous.forEach((line) => {
+      if (!lineIdentifierKeys(line).some((key) => incomingKeys.has(key))) merged.push({ ...line, recordState: 'no_encontrado' })
+    })
+  }
 
   return merged
 }
 
-function lineStats(lines = state.lines) {
+function lineStats(lines = state.lines, devices = state.devices) {
   return {
     total: lines.length,
     active: lines.filter(isActiveLine).length,
     inactive: lines.filter((line) => !isActiveLine(line)).length,
-    matched: lines.filter((line) => lineMatchType(line) === 'equipo').length,
-    clientOnly: lines.filter((line) => lineMatchType(line) === 'solo_linea').length,
-    unmatched: lines.filter((line) => lineMatchType(line) === 'sin_match').length
+    matched: lines.filter((line) => lineMatchType(line, devices) === 'equipo').length,
+    clientOnly: lines.filter((line) => lineMatchType(line, devices) === 'solo_linea').length,
+    unmatched: lines.filter((line) => lineMatchType(line, devices) === 'sin_match').length
   }
 }
 
@@ -1531,25 +1711,49 @@ function lineRowsForStatus(lines, active) {
   return lines.filter((line) => (active ? isActiveLine(line) : !isActiveLine(line)))
 }
 
+function lineShouldImport(line, options = {}) {
+  if (line.phone || line.iccid) return true
+  return Boolean(options.allowImeiOnly && line.imei)
+}
+
+function linesFromRows(rows, label, options = {}) {
+  return rows.map((row, index) => lineFromRow(row, index, label)).filter((line) => lineShouldImport(line, options))
+}
+
+function mergeLineRows(previous, rows, label, options = {}) {
+  const imported = linesFromRows(rows, label, options)
+  if (!imported.length) {
+    const stats = lineStats(previous, options.devices || state.devices)
+    return { lines: previous, imported, stats }
+  }
+  const merged = mergeLines(previous, imported, { markMissing: options.markMissing })
+  const stats = lineStats(merged, options.devices || state.devices)
+  return { lines: merged, imported, stats }
+}
+
+function lineImportState(label, rowsLength, imported, stats, extra = {}) {
+  return {
+    source: label,
+    rows: rowsLength,
+    imported: imported.length,
+    iccDetected: imported.filter((line) => line.iccid).length,
+    matched: stats.matched,
+    clientOnly: stats.clientOnly,
+    unmatched: stats.unmatched,
+    appliedAt: new Date().toISOString(),
+    ...extra
+  }
+}
+
 async function handleLineFile(file) {
   const buffer = await file.arrayBuffer()
   const parsed = await parseWorkbookFile(buffer, file.name)
-  const imported = parsed.rows.map((row, index) => lineFromRow(row, index, file.name)).filter((line) => line.phone || line.iccid || line.imei)
-  const merged = mergeLines(state.lines, imported)
-  const stats = lineStats(merged)
+  const { lines: merged, imported, stats } = mergeLineRows(state.lines, parsed.rows, file.name, { allowImeiOnly: true, markMissing: true })
   setState({
     lines: merged,
-    lineImport: {
-      source: file.name,
-      rows: parsed.rows.length,
-      imported: imported.length,
-      matched: stats.matched,
-      clientOnly: stats.clientOnly,
-      unmatched: stats.unmatched,
-      appliedAt: new Date().toISOString()
-    },
+    lineImport: lineImportState(file.name, parsed.rows.length, imported, stats),
     view: 'lineas',
-    notice: `Lineas importadas: ${imported.length}; ${stats.matched} ligadas a equipo, ${stats.clientOnly} solo linea, ${stats.unmatched} sin match.`
+    notice: `Lineas importadas: ${imported.length}; ${imported.filter((line) => line.iccid).length} con ICC, ${stats.matched} ligadas a equipo, ${stats.clientOnly} solo linea, ${stats.unmatched} sin match.`
   })
 }
 
@@ -1562,7 +1766,7 @@ function addManualLine() {
     return
   }
   const line = normalizeLine({ ...draft, source: 'manual', recordState: 'manual' }, Date.now())
-  const exists = state.lines.some((current) => lineKey(current) === lineKey(line))
+  const exists = state.lines.some((current) => linesShareIdentifier(current, line))
   if (exists) {
     setState({ notice: 'Ya existe una linea con ese telefono, ICCID o IMEI.', view: 'lineas' })
     return
@@ -1656,7 +1860,9 @@ function filteredDevices() {
     const cycleMatches = !state.equipmentCycleFilter || deviceBillingCycle(device) === state.equipmentCycleFilter
     const queryMatches =
       !query ||
-      normalizeHeader(`${device.company} ${device.groups.join(' ')} ${device.unitName} ${device.uid} ${device.imei} ${device.phone} ${device.deviceType}`).includes(query)
+      normalizeHeader(
+        `${device.company} ${device.groups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType}`
+      ).includes(query)
     return cycleMatches && queryMatches
   })
 }
@@ -1671,7 +1877,7 @@ function filteredCobrosDevices() {
     const queryMatches =
       !query ||
       normalizeHeader(
-        `${device.company} ${deviceGroups.join(' ')} ${device.unitName} ${device.uid} ${device.imei} ${device.phone} ${device.deviceType}`
+        `${device.company} ${deviceGroups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType}`
       ).includes(query)
     return companyMatches && groupMatches && cycleMatches && queryMatches
   })
@@ -1694,7 +1900,7 @@ function billingFilterMatches(device) {
   const queryMatches =
     !query ||
     normalizeHeader(
-      `${device.company} ${deviceGroups.join(' ')} ${device.unitName} ${device.uid} ${device.imei} ${device.phone} ${device.deviceType}`
+      `${device.company} ${deviceGroups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType}`
     ).includes(query)
   return companyMatches && groupMatches && queryMatches
 }
@@ -1969,6 +2175,8 @@ function buildBillingRows() {
         unitName: device.unitName,
         uid: device.uid,
         imei: device.imei,
+        imeiLong: deviceImeiLong(device),
+        imeiShort: deviceImeiShort(device),
         cycle,
         paymentMonths: months,
         renewalDate: device.renewalDate || '',
@@ -2021,6 +2229,8 @@ function exportCsv() {
     'Equipo',
     'UID',
     'IMEI',
+    'IMEI largo',
+    'IMEI corto',
     'Telefono',
     'Tipo',
     'Ultimo mensaje',
@@ -2043,6 +2253,8 @@ function exportCsv() {
         device.unitName,
         device.uid,
         device.imei,
+        deviceImeiLong(device),
+        deviceImeiShort(device),
         device.phone,
         device.deviceType,
         device.lastMessage,
@@ -2685,6 +2897,8 @@ async function exportBillingXlsx() {
       detail.unitName,
       detail.uid,
       detail.imei,
+      detail.imeiLong,
+      detail.imeiShort,
       detail.cycle,
       formatPaymentMonths(detail.paymentMonths),
       detail.renewalDate,
@@ -2695,7 +2909,7 @@ async function exportBillingXlsx() {
     ])
   )
   const details = [
-    ['Empresa', 'Equipo', 'UID', 'IMEI', 'Cobro', 'Meses pago', 'Fecha renovacion', 'Precio pactado/aplicado', 'Fecha venta', 'Nota precio', 'Periodo'],
+    ['Empresa', 'Equipo', 'UID', 'IMEI', 'IMEI largo', 'IMEI corto', 'Cobro', 'Meses pago', 'Fecha renovacion', 'Precio pactado/aplicado', 'Fecha venta', 'Nota precio', 'Periodo'],
     ...detailRows
   ]
   await exportWorkbookXlsx(`prefacturacion-${getBillingPeriod().key}.xlsx`, [
@@ -2842,7 +3056,7 @@ function deviceTable(devices) {
       <table>
         <thead>
           <tr>
-            <th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>Telefono</th><th>Tipo</th><th>Cobro</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Origen</th><th>Ultimo mensaje</th><th>Estado</th>
+            <th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Telefono</th><th>Tipo</th><th>Cobro</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Origen</th><th>Ultimo mensaje</th><th>Estado</th>
           </tr>
         </thead>
         <tbody>
@@ -2855,6 +3069,8 @@ function deviceTable(devices) {
                   <td><input value="${attr(device.unitName)}" data-device="${attr(device.id)}" data-field="unitName"></td>
                   <td>${esc(device.uid || '-')}</td>
                   <td>${esc(device.imei || '-')}</td>
+                  <td><input value="${attr(deviceImeiLong(device))}" data-device="${attr(device.id)}" data-field="imeiLong"></td>
+                  <td><input value="${attr(deviceImeiShort(device))}" data-device="${attr(device.id)}" data-field="imeiShort"></td>
                   <td>${esc(device.phone || '-')}</td>
                   <td>${esc(device.deviceType || '-')}</td>
                   <td>
@@ -2995,6 +3211,8 @@ function renderEquipos() {
         <label><span>Equipo</span><input value="${attr(d.unitName)}" data-new-device="unitName"></label>
         <label><span>UID</span><input value="${attr(d.uid)}" data-new-device="uid"></label>
         <label><span>IMEI</span><input value="${attr(d.imei)}" data-new-device="imei"></label>
+        <label><span>IMEI largo</span><input value="${attr(d.imeiLong)}" data-new-device="imeiLong"></label>
+        <label><span>IMEI corto</span><input value="${attr(d.imeiShort)}" data-new-device="imeiShort"></label>
         <label><span>Tipo</span><input value="${attr(d.deviceType)}" data-new-device="deviceType"></label>
         <label><span>Telefono</span><input value="${attr(d.phone)}" data-new-device="phone"></label>
         <label><span>Precio pactado</span><input type="number" min="0" step="0.01" value="${attr(d.agreedPrice)}" data-new-device="agreedPrice"></label>
@@ -3182,7 +3400,7 @@ function renderLineas(companies) {
       </div>
       ${
         state.lineImport
-          ? `<div class="notice">Ultima base de lineas: ${esc(state.lineImport.source)} (${state.lineImport.imported} lineas), ${state.lineImport.matched} con equipo, ${state.lineImport.clientOnly} solo linea, ${state.lineImport.unmatched} sin match.</div>`
+          ? `<div class="notice">Ultima base de lineas: ${esc(state.lineImport.source)} (${state.lineImport.imported} lineas, ${state.lineImport.iccDetected || 0} con ICC), ${state.lineImport.matched} con equipo, ${state.lineImport.clientOnly} solo linea, ${state.lineImport.unmatched} sin match.</div>`
           : '<div class="notice">Importa la base de lineas activas para cruzarlas contra IMEI. Para Bernardo tambien lee renovaciones escritas como: bernardo 15 mayo 2026.</div>'
       }
       ${renderLineTable('Lineas activas', activeLines)}
@@ -3208,7 +3426,7 @@ function renderFacturacion(stats, companies) {
       </div>
       ${
         state.paymentImport
-          ? `<div class="notice">Pagos pactados: ${(state.paymentImport.matchedById || 0) + (state.paymentImport.matchedByCompanyName || 0) + (state.paymentImport.matchedByName || 0)} equipos comparados (${state.paymentImport.matchedById || 0} por UID/IMEI, ${state.paymentImport.matchedByCompanyName || 0} por empresa+nombre, ${state.paymentImport.matchedByName || 0} por nombre), ${state.paymentImport.semestral} semestrales, ${state.paymentImport.annual} anuales, ${state.paymentImport.defaultMonthly} mensuales por defecto.</div>`
+          ? `<div class="notice">Pagos pactados: ${(state.paymentImport.matchedById || 0) + (state.paymentImport.matchedByCompanyName || 0) + (state.paymentImport.matchedByName || 0)} equipos comparados (${state.paymentImport.matchedById || 0} por UID/IMEI largo/corto, ${state.paymentImport.matchedByCompanyName || 0} por empresa+nombre, ${state.paymentImport.matchedByName || 0} por nombre), ${state.paymentImport.semestral} semestrales, ${state.paymentImport.annual} anuales, ${state.paymentImport.defaultMonthly} mensuales por defecto.</div>`
           : ''
       }
       <div class="billing-filters">
@@ -3582,7 +3800,7 @@ function renderCobros(companies) {
       <div class="table-wrap devices-table">
         <table>
           <thead>
-            <tr><th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>Origen</th><th>Cobro</th><th>Fecha renovacion</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Estado</th></tr>
+            <tr><th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Origen</th><th>Cobro</th><th>Fecha renovacion</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Estado</th></tr>
           </thead>
           <tbody>
             ${devices
@@ -3594,6 +3812,8 @@ function renderCobros(companies) {
                     <td>${esc(device.unitName)}</td>
                     <td>${esc(device.uid || '-')}</td>
                     <td>${esc(device.imei || '-')}</td>
+                    <td>${esc(deviceImeiLong(device) || '-')}</td>
+                    <td>${esc(deviceImeiShort(device) || '-')}</td>
                     <td><span class="pill ${isImportedWialonDevice(device) ? 'ok' : 'warn'}">${isImportedWialonDevice(device) ? 'Wialon' : 'Manual'}</span></td>
                     <td>
                       <select data-device-billing="${attr(device.id)}" data-billing-field="billingCycle">
@@ -3832,6 +4052,8 @@ function bindEvents() {
         if (field === 'groups') return { ...device, groups: splitGroups(input.value) }
         if (field === 'paymentMonths') return { ...device, paymentMonths: parsePaymentMonths(input.value) }
         if (field === 'billingCycle' && input.value === 'mensual') return { ...device, billingCycle: input.value, paymentMonths: [], agreedPrice: deviceAgreedPriceValue({ ...device, billingCycle: 'mensual' }) }
+        if (field === 'imeiLong') return normalizeDeviceIdentifiers({ ...device, imeiLong: input.value, imei: input.value || device.imei })
+        if (field === 'imeiShort') return normalizeDeviceIdentifiers({ ...device, imeiShort: input.value })
         return { ...device, [field]: input.value }
       })
       persistState()
@@ -4022,6 +4244,8 @@ function bindEvents() {
         if (field === 'groups') return { ...device, groups: splitGroups(input.value) }
         if (field === 'paymentMonths') return { ...device, paymentMonths: parsePaymentMonths(input.value) }
         if (field === 'billingCycle' && input.value === 'mensual') return { ...device, billingCycle: input.value, paymentMonths: [], agreedPrice: deviceAgreedPriceValue({ ...device, billingCycle: 'mensual' }) }
+        if (field === 'imeiLong') return normalizeDeviceIdentifiers({ ...device, imeiLong: input.value, imei: input.value || device.imei })
+        if (field === 'imeiShort') return normalizeDeviceIdentifiers({ ...device, imeiShort: input.value })
         return { ...device, [field]: input.value }
       })
       persistState()
@@ -4065,6 +4289,8 @@ async function init() {
           unitName: '',
           uid: '',
           imei: '',
+          imeiLong: '',
+          imeiShort: '',
           deviceType: '',
           phone: '',
           agreedPrice: '',
@@ -4086,6 +4312,18 @@ async function init() {
 
   if (!state.devices.length) {
     await loadSeedFile()
+  }
+
+  if (state.rawRows.length && state.lineImport?.autoVersion !== lineAutoImportVersion) {
+    const label = state.sourceLabel || 'Base guardada'
+    const lineMerge = mergeLineRows(state.lines, state.rawRows, label, { allowImeiOnly: false, markMissing: false })
+    if (lineMerge.imported.length) {
+      state.lines = lineMerge.lines
+      state.lineImport = lineImportState(label, state.rawRows.length, lineMerge.imported, lineMerge.stats, {
+        autoVersion: lineAutoImportVersion
+      })
+      persistState()
+    }
   }
 
   if (state.devices.length && state.paymentImport?.version !== paymentImportVersion) {
