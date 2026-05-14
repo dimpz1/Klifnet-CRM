@@ -5,7 +5,7 @@ const seedFile = '/public/data/DispositivosWialon_Abril2026.xlsx'
 const paymentSeedFile = '/public/data/Klifnet_Admon_Mensual_Pagos.xlsx'
 const quoteTemplateFile = '/public/templates/cotizacion_CalidadSP.xlsx'
 const paymentImportVersion = 4
-const lineAutoImportVersion = 3
+const lineAutoImportVersion = 4
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -1116,25 +1116,51 @@ function xmlDoc(text) {
   return new DOMParser().parseFromString(text, 'application/xml')
 }
 
-async function parseXlsx(buffer) {
-  const zip = await JSZip.loadAsync(buffer)
-  const sharedFile = zip.file('xl/sharedStrings.xml')
-  const shared = []
+function workbookTargetToPath(target) {
+  const clean = textValue(target).replace(/^\/+/, '')
+  if (!clean) return ''
+  return clean.startsWith('xl/') ? clean : `xl/${clean}`
+}
 
-  if (sharedFile) {
-    const doc = xmlDoc(await sharedFile.async('text'))
-    Array.from(doc.getElementsByTagName('si')).forEach((node) => {
-      shared.push(Array.from(node.getElementsByTagName('t')).map((text) => text.textContent || '').join(''))
+function worksheetPaths(zip) {
+  return Object.keys(zip.files)
+    .filter((file) => /^xl\/worksheets\/sheet\d+\.xml$/.test(file))
+    .sort((a, b) => Number(a.match(/\d+/)?.[0] || 0) - Number(b.match(/\d+/)?.[0] || 0))
+}
+
+async function workbookSheetInfos(zip) {
+  const fallback = worksheetPaths(zip).map((path, index) => ({ name: `Hoja ${index + 1}`, path }))
+  const workbookFile = zip.file('xl/workbook.xml')
+  if (!workbookFile) return fallback
+
+  const rels = new Map()
+  const relsFile = zip.file('xl/_rels/workbook.xml.rels')
+  if (relsFile) {
+    const relsDoc = xmlDoc(await relsFile.async('text'))
+    Array.from(relsDoc.getElementsByTagName('Relationship')).forEach((node) => {
+      const id = node.getAttribute('Id')
+      const target = workbookTargetToPath(node.getAttribute('Target'))
+      if (id && target) rels.set(id, target)
     })
   }
 
-  const sheetPath = Object.keys(zip.files)
-    .filter((file) => /^xl\/worksheets\/sheet\d+\.xml$/.test(file))
-    .sort((a, b) => Number(a.match(/\d+/)?.[0] || 0) - Number(b.match(/\d+/)?.[0] || 0))[0]
+  const workbookDoc = xmlDoc(await workbookFile.async('text'))
+  const sheets = Array.from(workbookDoc.getElementsByTagName('sheet'))
+    .map((node, index) => {
+      const name = node.getAttribute('name') || `Hoja ${index + 1}`
+      const relationshipId = node.getAttribute('r:id') || node.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id')
+      const sheetId = node.getAttribute('sheetId') || String(index + 1)
+      return {
+        name,
+        path: rels.get(relationshipId) || `xl/worksheets/sheet${sheetId}.xml`
+      }
+    })
+    .filter((sheet) => sheet.path && zip.file(sheet.path))
 
-  if (!sheetPath) throw new Error('El XLSX no contiene hojas legibles.')
+  return sheets.length ? sheets : fallback
+}
 
-  const doc = xmlDoc(await zip.file(sheetPath).async('text'))
+function worksheetMatrix(doc, shared) {
   const matrix = []
   Array.from(doc.getElementsByTagName('row')).forEach((rowNode) => {
     const row = []
@@ -1155,8 +1181,35 @@ async function parseXlsx(buffer) {
     })
     matrix.push(row.map((value) => textValue(value)))
   })
+  return matrix
+}
 
-  return rowsFromMatrix(matrix)
+async function parseXlsx(buffer) {
+  const zip = await JSZip.loadAsync(buffer)
+  const sharedFile = zip.file('xl/sharedStrings.xml')
+  const shared = []
+
+  if (sharedFile) {
+    const doc = xmlDoc(await sharedFile.async('text'))
+    Array.from(doc.getElementsByTagName('si')).forEach((node) => {
+      shared.push(Array.from(node.getElementsByTagName('t')).map((text) => text.textContent || '').join(''))
+    })
+  }
+
+  const sheets = await workbookSheetInfos(zip)
+  if (!sheets.length) throw new Error('El XLSX no contiene hojas legibles.')
+
+  const parsedSheets = []
+  for (const sheet of sheets) {
+    const file = zip.file(sheet.path)
+    if (!file) continue
+    const doc = xmlDoc(await file.async('text'))
+    parsedSheets.push(rowsFromMatrix(worksheetMatrix(doc, shared), sheet.name))
+  }
+
+  const rows = parsedSheets.flatMap((sheet) => sheet.rows)
+  const columns = unique(parsedSheets.flatMap((sheet) => sheet.columns))
+  return { rows, columns, mapping: detectMapping(columns) }
 }
 
 function parseCsv(text) {
@@ -1191,16 +1244,76 @@ function parseCsv(text) {
   return rowsFromMatrix(rows)
 }
 
-function rowsFromMatrix(matrix) {
-  const headers = (matrix[0] || []).map((header, index) => textValue(header) || `Columna ${index + 1}`)
-  const rows = matrix
-    .slice(1)
+function headerScore(row) {
+  const knownHeaders = new Set([
+    'nombre',
+    'cliente',
+    'empresa',
+    'cuenta',
+    'grupo',
+    'grupos',
+    'icc',
+    'iccid',
+    'msisdn',
+    'telefono',
+    'linea',
+    'imei',
+    'imei corto',
+    'proveedor',
+    'status',
+    'estado',
+    'vencimiento',
+    'sim id',
+    'endpoint id',
+    'endpoint name',
+    'assigned to',
+    'workspace'
+  ])
+  return row.reduce((score, cell) => {
+    const clean = normalizeHeader(cell)
+    if (!clean) return score
+    if (knownHeaders.has(clean)) return score + 2
+    return Array.from(knownHeaders).some((header) => clean.includes(header)) ? score + 1 : score
+  }, 0)
+}
+
+function detectHeaderIndex(matrix) {
+  let best = { index: -1, score: 0 }
+  matrix.slice(0, 25).forEach((row, index) => {
+    const score = headerScore(row)
+    if (score > best.score) best = { index, score }
+  })
+  return best.score >= 3 ? best.index : -1
+}
+
+function uniqueHeaders(headers) {
+  const seen = new Map()
+  return headers.map((header, index) => {
+    const base = textValue(header) || `Columna ${index + 1}`
+    const clean = normalizeHeader(base)
+    const count = seen.get(clean) || 0
+    seen.set(clean, count + 1)
+    return count ? `${base} ${count + 1}` : base
+  })
+}
+
+function rowsFromMatrix(matrix, sheetName = '') {
+  const cleanedMatrix = matrix.filter((row) => row.some((cell) => textValue(cell)))
+  if (!cleanedMatrix.length) return { rows: [], columns: [], mapping: {} }
+  const headerIndex = detectHeaderIndex(cleanedMatrix)
+  const maxColumns = cleanedMatrix.reduce((max, row) => Math.max(max, row.length), 0)
+  const headerRow = headerIndex >= 0 ? cleanedMatrix[headerIndex] : []
+  const headers = uniqueHeaders(Array.from({ length: maxColumns }, (_, index) => textValue(headerRow[index]) || `Columna ${index + 1}`))
+  const rows = cleanedMatrix
+    .slice(headerIndex >= 0 ? headerIndex + 1 : 0)
     .filter((row) => row.some((cell) => textValue(cell)))
     .map((row) => {
       const output = {}
       headers.forEach((header, index) => {
         output[header] = textValue(row[index])
+        output[`Columna ${index + 1}`] = textValue(row[index])
       })
+      output.__sheet = sheetName
       return output
     })
   const columns = unique(rows.flatMap((row) => Object.keys(row)))
@@ -1469,16 +1582,73 @@ function extractIccidFromText(value) {
   return spaced ? spaced[0].replace(/\D/g, '') : ''
 }
 
+function rowCandidateValues(row, candidates, loose = false) {
+  const entries = Object.entries(row)
+  return candidates.flatMap((candidate) => {
+    const cleanCandidate = normalizeHeader(candidate)
+    return entries
+      .filter(([key]) => {
+        const cleanKey = normalizeHeader(key)
+        return loose ? cleanKey.includes(cleanCandidate) || cleanCandidate.includes(cleanKey) : cleanKey === cleanCandidate
+      })
+      .map(([, value]) => textValue(value))
+      .filter(Boolean)
+  })
+}
+
 function extractIccidFromRow(row) {
-  const direct = rowValueLoose(row, lineIccCandidates)
-  if (direct) return normalizeIccid(direct)
+  const direct = rowCandidateValues(row, lineIccCandidates, true).map(extractIccidFromText).find(Boolean)
+  if (direct) return direct
   const entries = Object.entries(row)
   const likelyField = entries
-    .filter(([key]) => /(^|\s)(icc|iccid|sim|chip)(\s|$)/.test(normalizeHeader(key)))
+    .filter(([key]) => /(^|\s)(icc|iccid|sim|chip|msisdn)(\s|$)/.test(normalizeHeader(key)))
     .map(([, value]) => extractIccidFromText(value))
     .find(Boolean)
   if (likelyField) return likelyField
   return entries.map(([, value]) => extractIccidFromText(value)).find(Boolean) || ''
+}
+
+function normalizePhoneCandidate(value) {
+  const clean = normalizePhone(value)
+  if (!clean || clean.startsWith('89')) return ''
+  return clean.length >= 10 && clean.length <= 15 ? clean : ''
+}
+
+function extractPhoneFromRow(row) {
+  const direct = rowCandidateValues(row, linePhoneCandidates, true).map(normalizePhoneCandidate).find(Boolean)
+  if (direct) return direct
+  const likelyField = Object.entries(row)
+    .filter(([key]) => /(^|\s)(linea|line|telefono|phone|msisdn|numero|dn|celular|icc)(\s|$)/.test(normalizeHeader(key)))
+    .map(([, value]) => normalizePhoneCandidate(value))
+    .find(Boolean)
+  if (likelyField) return likelyField
+  return Object.values(row).map(normalizePhoneCandidate).find(Boolean) || ''
+}
+
+function normalizeImeiCandidate(value) {
+  const clean = normalizePhone(value)
+  if (!clean || clean.startsWith('89')) return ''
+  return clean.length >= 6 && clean.length <= 20 ? clean : ''
+}
+
+function extractImeiFromRow(row) {
+  const direct = rowCandidateValues(row, lineImeiCandidates, true)
+    .map((value) => normalizeImeiCandidate(value) || textValue(value))
+    .find(Boolean)
+  if (direct) return direct
+  if (normalizeHeader(row.__sheet).includes('stock')) {
+    const stockImei = normalizeImeiCandidate(row['Columna 7'])
+    if (stockImei) return stockImei
+  }
+  return ''
+}
+
+function lineIdentifierParts(line) {
+  return {
+    iccid: extractIccidFromText(line.iccid) || extractIccidFromText(line.phone),
+    phone: normalizePhoneCandidate(line.phone) || normalizePhoneCandidate(line.iccid),
+    imei: textValue(line.imei)
+  }
 }
 
 function lineKey(line) {
@@ -1486,9 +1656,10 @@ function lineKey(line) {
 }
 
 function lineIdentifierKeys(line) {
-  const iccid = normalizeIdentifier(line.iccid)
-  const phone = normalizePhone(line.phone)
-  const imei = normalizeIdentifier(line.imei)
+  const identifiers = lineIdentifierParts(line)
+  const iccid = identifiers.iccid
+  const phone = identifiers.phone
+  const imei = normalizeIdentifier(identifiers.imei)
   const keys = []
   if (iccid) keys.push(`iccid:${iccid}`)
   if (phone) keys.push(`phone:${phone}`)
@@ -1568,6 +1739,18 @@ function normalizeLineType(value) {
   return lineTypeOptions.some((option) => option.value === clean) ? clean : 'emprenet'
 }
 
+function detectLineTypeFromText(value) {
+  const clean = normalizeHeader(value)
+  if (!clean) return ''
+  if (clean.includes('emprenet')) return 'emprenet'
+  if (clean.includes('emnify')) return 'emnify'
+  if (clean.includes('m2m') || clean.includes('m 2 m')) return 'm2m'
+  if (clean.includes('telcel') && (clean.includes('prepago') || clean.includes('pre pago'))) return 'telcel-prepago'
+  if (clean.includes('telcel') && (clean.includes('postpago') || clean.includes('post pago') || clean.includes('pospago') || clean.includes('pos pago'))) return 'telcel-postpago'
+  if (clean.includes('telcel')) return 'telcel'
+  return lineTypeOptions.some((option) => option.value === clean) ? clean : ''
+}
+
 function classifyLineTypeByIccid(iccid, phone) {
   const cleanIccid = textValue(iccid).replace(/\D/g, '')
   if (cleanIccid.startsWith('8934') || cleanIccid.startsWith('8949')) return 'emnify'
@@ -1575,8 +1758,20 @@ function classifyLineTypeByIccid(iccid, phone) {
   return ''
 }
 
-function normalizeLineProvider(line, fallback = '') {
-  return classifyLineTypeByIccid(line.iccid, line.phone) || normalizeLineType(fallback || line.lineType || `${line.carrier || ''} ${line.plan || ''} ${line.notes || ''} ${line.source || ''}`)
+function detectLineProvider(line, fallback = '', options = {}) {
+  const forced = detectLineTypeFromText(options.force)
+  if (forced) return { value: forced, reason: 'archivo proveedor' }
+  const byIccid = classifyLineTypeByIccid(line.iccid, line.phone)
+  if (byIccid) return { value: byIccid, reason: 'prefijo ICCID' }
+  const explicit = detectLineTypeFromText(fallback || line.lineType)
+  if (explicit) return { value: explicit, reason: 'campo proveedor' }
+  const text = detectLineTypeFromText(`${line.carrier || ''} ${line.plan || ''} ${line.notes || ''} ${line.source || ''} ${line.company || ''} ${line.model || ''} ${line.providerHint || ''}`)
+  if (text) return { value: text, reason: 'empresa/modelo/fuente' }
+  return { value: 'emprenet', reason: 'default' }
+}
+
+function normalizeLineProvider(line, fallback = '', options = {}) {
+  return detectLineProvider(line, fallback, options).value
 }
 
 function lineTypeLabel(value) {
@@ -1596,9 +1791,11 @@ function lineRenewalLabel(line) {
 }
 
 function normalizeLine(line, index = 0) {
-  const phone = textValue(line.phone)
-  const iccid = normalizeIccid(line.iccid)
-  const lineType = normalizeLineProvider({ ...line, phone, iccid }, line.lineType)
+  const identifiers = lineIdentifierParts(line)
+  const phone = identifiers.phone
+  const iccid = identifiers.iccid
+  const providerDetection = detectLineProvider({ ...line, phone, iccid }, line.lineType, { force: line.providerOverride })
+  const lineType = providerDetection.value
   const clean = {
     company: textValue(line.company),
     phone,
@@ -1614,6 +1811,7 @@ function normalizeLine(line, index = 0) {
     clientOnly: Boolean(line.clientOnly),
     notes: textValue(line.notes),
     source: textValue(line.source) || 'manual',
+    providerDetectedBy: textValue(line.providerDetectedBy) || providerDetection.reason,
     recordState: textValue(line.recordState) || 'vigente'
   }
   clean.clientOnly = clean.clientOnly || !clean.imei
@@ -1625,8 +1823,11 @@ function lineFromRow(row, index, label, options = {}) {
   const rowText = Object.values(row).join(' ')
   const bernardoRenewal = parseBernardoRenewalText(rowText)
   const type = rowValueLoose(row, ['Tipo', 'Tipo servicio', 'Servicio', 'Modalidad', 'Producto'])
-  const lineType = rowValueLoose(row, ['Tipo linea', 'Tipo de linea', 'Categoria linea', 'Categoria', 'Proveedor linea', 'Operador', 'Compania', 'Plan', 'Paquete'])
-  const imei = rowValue(row, lineImeiCandidates)
+  const lineType = rowValueLoose(row, ['Tipo linea', 'Tipo de linea', 'Categoria linea', 'Categoria', 'Proveedor linea', 'Operador', 'Compania', 'Plan', 'Paquete', 'Proveedor'])
+  const model = rowValueLoose(row, ['Equipo', 'Equipos', 'Modelo', 'Modelo equipo', 'Tipo equipo'])
+  const imei = extractImeiFromRow(row)
+  const phone = extractPhoneFromRow(row)
+  const iccid = extractIccidFromRow(row)
   const billing = rowValueLoose(row, ['Cobro', 'Forma de pago', 'Tipo de pago', 'Periodicidad', 'Renovacion'])
   const payments = rowValueLoose(row, ['No. Pagos', 'Pagos'])
   const status = rowValueLoose(row, ['Estado', 'Estatus', 'Status', 'SIM Status', 'Lifecycle status', 'Connectivity status'])
@@ -1636,12 +1837,15 @@ function lineFromRow(row, index, label, options = {}) {
 
   return normalizeLine(
     {
-      company: rowValueLoose(row, ['Cliente', 'Empresa', 'Razon social', 'Cuenta', 'Nombre cliente', 'Customer', 'Organization']) || bernardoRenewal?.company || options.defaultCompany || '',
-      phone: rowValue(row, linePhoneCandidates),
-      lineType: options.forceLineType || normalizeLineType(lineType || rowText),
-      iccid: extractIccidFromRow(row),
+      company: rowValueLoose(row, ['Cliente', 'Empresa', 'Razon social', 'Cuenta', 'Nombre cliente', 'Customer', 'Organization', 'Grupo', 'Grupos', 'Assigned to', 'Workspace']) || bernardoRenewal?.company || options.defaultCompany || '',
+      phone,
+      lineType: lineType || carrier || '',
+      providerOverride: options.forceLineType || '',
+      iccid,
       imei,
       carrier,
+      model,
+      providerHint: rowText,
       plan: rowValueLoose(row, ['Plan', 'Paquete', 'Producto', 'Servicio contratado', 'Tariff profile', 'Rate plan', 'Service profile']),
       status: status || 'activa',
       billingCycle: normalizeCycle(billing || 'anual', payments),
@@ -1695,14 +1899,18 @@ function lineMatchKeys(line, devices = state.devices) {
 }
 
 function mergeLineRecord(oldLine, normalizedLine) {
+  const incomingProviderIsDefault = normalizedLine.providerDetectedBy === 'default'
+  const oldLineType = normalizeLineType(oldLine.lineType)
+  const nextLineType = incomingProviderIsDefault && oldLineType && oldLineType !== 'emprenet' ? oldLine.lineType : normalizedLine.lineType || oldLine.lineType
+  const nextCarrier = incomingProviderIsDefault && oldLine.carrier ? oldLine.carrier : normalizedLine.carrier || oldLine.carrier
   const next = {
     ...oldLine,
     company: normalizedLine.company || oldLine.company,
     phone: normalizedLine.phone || oldLine.phone,
-    lineType: normalizedLine.lineType || oldLine.lineType,
+    lineType: nextLineType,
     iccid: normalizedLine.iccid || oldLine.iccid,
     imei: normalizedLine.imei || oldLine.imei,
-    carrier: normalizedLine.carrier || oldLine.carrier,
+    carrier: nextCarrier,
     plan: normalizedLine.plan || oldLine.plan,
     status: normalizedLine.status || oldLine.status,
     billingCycle: normalizedLine.billingCycle || oldLine.billingCycle,
@@ -1711,6 +1919,7 @@ function mergeLineRecord(oldLine, normalizedLine) {
     clientOnly: Boolean(oldLine.clientOnly || normalizedLine.clientOnly),
     notes: normalizedLine.notes || oldLine.notes,
     source: normalizedLine.source || oldLine.source,
+    providerDetectedBy: incomingProviderIsDefault && oldLine.providerDetectedBy ? oldLine.providerDetectedBy : normalizedLine.providerDetectedBy || oldLine.providerDetectedBy,
     id: oldLine.id
   }
   const changed = [
@@ -1727,7 +1936,8 @@ function mergeLineRecord(oldLine, normalizedLine) {
     'annualPrice',
     'clientOnly',
     'notes',
-    'source'
+    'source',
+    'providerDetectedBy'
   ].some((field) => String(oldLine[field] ?? '') !== String(next[field] ?? ''))
   return {
     ...next,
@@ -3625,7 +3835,7 @@ function renderLineas(companies) {
           ? `<div class="notice">Ultima base de lineas: ${esc(state.lineImport.source)} (${state.lineImport.imported} lineas, ${state.lineImport.iccDetected || 0} con ICC), ${state.lineImport.matched} con equipo, ${state.lineImport.clientOnly} solo linea, ${state.lineImport.unmatched} sin match.</div>`
           : '<div class="notice">Importa la base de lineas activas para cruzarlas contra IMEI. Para Bernardo tambien lee renovaciones escritas como: bernardo 15 mayo 2026.</div>'
       }
-      <div class="notice">Clasificacion automatica: 8934 y 8949 = Emnify; 8952 sin telefono = Emprenet; 8952 con telefono = Telcel.</div>
+      <div class="notice">Clasificacion automatica: archivo Emnify = Emnify; 8934 y 8949 = Emnify; 8952 sin telefono = Emprenet; 8952 con telefono = Telcel. Si no reconoce prefijo, usa campos de proveedor, empresa, modelo o fuente del archivo.</div>
       ${renderLineProviderSections(lines)}
     </section>
   `
