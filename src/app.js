@@ -3,7 +3,7 @@ const seedFile = '/public/data/DispositivosWialon_Abril2026.xlsx'
 const paymentSeedFile = '/public/data/Klifnet_Admon_Mensual_Pagos.xlsx'
 const quoteTemplateFile = '/public/templates/cotizacion_CalidadSP.xlsx'
 const paymentImportVersion = 4
-const lineAutoImportVersion = 2
+const lineAutoImportVersion = 3
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -13,6 +13,7 @@ const syscomDiscountPercent = 20
 const defaultLineClients = ['Bernardo']
 const lineTypeOptions = [
   { value: 'emprenet', label: 'Emprenet' },
+  { value: 'telcel', label: 'Telcel' },
   { value: 'telcel-prepago', label: 'Telcel prepago' },
   { value: 'telcel-postpago', label: 'Telcel post pago' },
   { value: 'm2m', label: 'M2M' },
@@ -327,8 +328,10 @@ const state = {
   billingGroup: '',
   billingQuery: '',
   lineQuery: '',
+  lineIccQuery: '',
   lineStatusFilter: '',
   lineMatchFilter: '',
+  lineTypeFilter: '',
   sourceLabel: '',
   lastImportAt: '',
   selectedCompany: '',
@@ -898,6 +901,11 @@ function persistState() {
       billingRows: state.billingRows,
       paymentImport: state.paymentImport,
       lineImport: state.lineImport,
+      lineQuery: state.lineQuery,
+      lineIccQuery: state.lineIccQuery,
+      lineStatusFilter: state.lineStatusFilter,
+      lineMatchFilter: state.lineMatchFilter,
+      lineTypeFilter: state.lineTypeFilter,
       quote: state.quote,
       newDevice: state.newDevice,
       newLine: state.newLine,
@@ -1509,8 +1517,19 @@ function normalizeLineType(value) {
   if (clean.includes('m2m') || clean.includes('m 2 m')) return 'm2m'
   if (clean.includes('telcel') && (clean.includes('prepago') || clean.includes('pre pago'))) return 'telcel-prepago'
   if (clean.includes('telcel') && (clean.includes('postpago') || clean.includes('post pago') || clean.includes('pospago') || clean.includes('pos pago'))) return 'telcel-postpago'
-  if (clean.includes('telcel')) return 'telcel-postpago'
+  if (clean.includes('telcel')) return 'telcel'
   return lineTypeOptions.some((option) => option.value === clean) ? clean : 'emprenet'
+}
+
+function classifyLineTypeByIccid(iccid, phone) {
+  const cleanIccid = textValue(iccid).replace(/\D/g, '')
+  if (cleanIccid.startsWith('8934') || cleanIccid.startsWith('8949')) return 'emnify'
+  if (cleanIccid.startsWith('8952')) return normalizePhone(phone) ? 'telcel' : 'emprenet'
+  return ''
+}
+
+function normalizeLineProvider(line, fallback = '') {
+  return classifyLineTypeByIccid(line.iccid, line.phone) || normalizeLineType(fallback || line.lineType || `${line.carrier || ''} ${line.plan || ''} ${line.notes || ''} ${line.source || ''}`)
 }
 
 function lineTypeLabel(value) {
@@ -1530,13 +1549,16 @@ function lineRenewalLabel(line) {
 }
 
 function normalizeLine(line, index = 0) {
+  const phone = textValue(line.phone)
+  const iccid = normalizeIccid(line.iccid)
+  const lineType = normalizeLineProvider({ ...line, phone, iccid }, line.lineType)
   const clean = {
     company: textValue(line.company),
-    phone: textValue(line.phone),
-    lineType: normalizeLineType(line.lineType || `${line.carrier || ''} ${line.plan || ''} ${line.notes || ''} ${line.source || ''}`),
-    iccid: textValue(line.iccid),
+    phone,
+    lineType,
+    iccid,
     imei: textValue(line.imei),
-    carrier: textValue(line.carrier),
+    carrier: textValue(line.carrier) || lineTypeLabel(lineType),
     plan: textValue(line.plan),
     status: normalizeLineStatus(line.status),
     billingCycle: normalizeCycle(line.billingCycle || 'anual'),
@@ -1755,19 +1777,36 @@ function lineStats(lines = state.lines, devices = state.devices) {
 
 function filteredLines() {
   const query = normalizeHeader(state.lineQuery)
+  const iccQuery = normalizeIdentifier(state.lineIccQuery)
   return state.lines.filter((line) => {
     const matchType = lineMatchType(line)
     const statusMatches =
       !state.lineStatusFilter ||
       (state.lineStatusFilter === 'activa' ? isActiveLine(line) : state.lineStatusFilter === 'desactivada' ? !isActiveLine(line) : normalizeLineStatus(line.status) === state.lineStatusFilter)
     const matchMatches = !state.lineMatchFilter || matchType === state.lineMatchFilter
+    const typeMatches = !state.lineTypeFilter || normalizeLineType(line.lineType) === state.lineTypeFilter
     const queryMatches =
       !query ||
       normalizeHeader(
         `${line.company} ${line.phone} ${line.iccid} ${line.imei} ${lineTypeLabel(line.lineType)} ${line.carrier} ${line.plan} ${line.notes} ${lineMatchLabel(line)}`
       ).includes(query)
-    return statusMatches && matchMatches && queryMatches
+    const iccMatches = !iccQuery || normalizeIdentifier(line.iccid).includes(iccQuery)
+    return statusMatches && matchMatches && typeMatches && queryMatches && iccMatches
   })
+}
+
+function lineProviderGroups(lines) {
+  return lineTypeOptions
+    .map((option) => {
+      const providerLines = lines.filter((line) => normalizeLineType(line.lineType) === option.value)
+      return {
+        ...option,
+        lines: providerLines,
+        active: providerLines.filter(isActiveLine).length,
+        inactive: providerLines.filter((line) => !isActiveLine(line)).length
+      }
+    })
+    .filter((group) => group.lines.length)
 }
 
 function lineCompanyOptions(companies) {
@@ -3409,11 +3448,18 @@ function renderLineTable(title, lines, tone = '') {
   `
 }
 
+function renderLineProviderSections(lines) {
+  const groups = lineProviderGroups(lines)
+  if (!groups.length) return '<div class="empty-state">Sin lineas para los filtros seleccionados.</div>'
+  return groups
+    .map((group) => renderLineTable(`${group.label} - ${group.lines.length} lineas (${group.active} activas / ${group.inactive} desactivadas)`, group.lines))
+    .join('')
+}
+
 function renderLineas(companies) {
   const lines = filteredLines()
-  const activeLines = lineRowsForStatus(lines, true)
-  const inactiveLines = lineRowsForStatus(lines, false)
   const stats = lineStats(state.lines)
+  const providerGroups = lineProviderGroups(state.lines)
   const d = { ...state.newLine, status: normalizeLineStatus(state.newLine.status) }
   const options = lineCompanyOptions(companies)
   const profiles = lineClientProfiles(companies).filter((profile) => profile.lines.length || normalizeHeader(profile.company) === 'bernardo')
@@ -3426,6 +3472,19 @@ function renderLineas(companies) {
         ${metric('Con equipo', stats.matched)}
         ${metric('Solo lineas', stats.clientOnly, 'amber')}
         ${metric('Sin match', stats.unmatched, 'red')}
+      </section>
+      <section class="line-profile-grid">
+        ${providerGroups
+          .map(
+            (group) => `
+              <div class="line-profile-card">
+                <span>Proveedora</span>
+                <strong>${esc(group.label)}</strong>
+                <div><b>${group.lines.length}</b> lineas</div>
+                <small>${group.active} activas / ${group.inactive} desactivadas</small>
+              </div>`
+          )
+          .join('')}
       </section>
       <section class="line-profile-grid">
         ${profiles
@@ -3494,6 +3553,13 @@ function renderLineas(companies) {
           </select>
         </label>
         <label>
+          <span>Proveedora</span>
+          <select id="lineTypeFilter">
+            <option value="">Todas</option>
+            ${lineTypeOptions.map((option) => `<option value="${attr(option.value)}" ${state.lineTypeFilter === option.value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}
+          </select>
+        </label>
+        <label>
           <span>Match</span>
           <select id="lineMatchFilter">
             <option value="">Todos</option>
@@ -3503,6 +3569,7 @@ function renderLineas(companies) {
           </select>
         </label>
         <label class="search-box billing-search">${icon('search')}<input id="lineSearchInput" value="${attr(state.lineQuery)}" placeholder="Buscar ICC/ICCID, IMEI o linea"></label>
+        <label class="search-box billing-search">${icon('scan-search')}<input id="lineIccSearchInput" value="${attr(state.lineIccQuery)}" placeholder="Filtrar solo por ICCID"></label>
         <div class="filter-count"><span>Filtradas</span><strong>${lines.length}</strong></div>
       </div>
       ${
@@ -3510,8 +3577,8 @@ function renderLineas(companies) {
           ? `<div class="notice">Ultima base de lineas: ${esc(state.lineImport.source)} (${state.lineImport.imported} lineas, ${state.lineImport.iccDetected || 0} con ICC), ${state.lineImport.matched} con equipo, ${state.lineImport.clientOnly} solo linea, ${state.lineImport.unmatched} sin match.</div>`
           : '<div class="notice">Importa la base de lineas activas para cruzarlas contra IMEI. Para Bernardo tambien lee renovaciones escritas como: bernardo 15 mayo 2026.</div>'
       }
-      ${renderLineTable('Lineas activas', activeLines)}
-      ${renderLineTable('Lineas desactivadas', inactiveLines, 'inactive')}
+      <div class="notice">Clasificacion automatica: 8934 y 8949 = Emnify; 8952 sin telefono = Emprenet; 8952 con telefono = Telcel.</div>
+      ${renderLineProviderSections(lines)}
     </section>
   `
 }
@@ -4098,12 +4165,22 @@ function bindEvents() {
     render()
   })
 
+  document.getElementById('lineIccSearchInput')?.addEventListener('input', (event) => {
+    state.lineIccQuery = event.target.value
+    persistState()
+    render()
+  })
+
   document.getElementById('lineStatusFilter')?.addEventListener('change', (event) => {
     setState({ lineStatusFilter: event.target.value })
   })
 
   document.getElementById('lineMatchFilter')?.addEventListener('change', (event) => {
     setState({ lineMatchFilter: event.target.value })
+  })
+
+  document.getElementById('lineTypeFilter')?.addEventListener('change', (event) => {
+    setState({ lineTypeFilter: event.target.value })
   })
 
   document.querySelectorAll('[data-line]').forEach((input) => {
@@ -4397,6 +4474,11 @@ async function init() {
         billingRows: parsed.billingRows || parsed.invoices || [],
         paymentImport: parsed.paymentImport || null,
         lineImport: parsed.lineImport || null,
+        lineQuery: parsed.lineQuery || '',
+        lineIccQuery: parsed.lineIccQuery || '',
+        lineStatusFilter: parsed.lineStatusFilter || '',
+        lineMatchFilter: parsed.lineMatchFilter || '',
+        lineTypeFilter: parsed.lineTypeFilter || '',
         quote: normalizeQuoteDefaults(parsed.quote || {}),
         newDevice: {
           company: '',
