@@ -12,6 +12,8 @@ Abre `http://127.0.0.1:8787`.
 
 Para usarlo desde otros equipos de la misma red WiFi, ejecuta el script y abre la URL LAN que muestra PowerShell, por ejemplo `http://192.168.1.183:8787/`.
 
+El CRM guarda el estado compartido en la computadora que corre el servidor, en `data/server-state.json`, y conserva copias de los archivos subidos en `data/uploads/`. Asi cualquier computadora de la red que entre a la misma URL ve la base actualizada.
+
 ## Wialon
 
 1. Exporta tus unidades/dispositivos desde Wialon en XLSX o CSV.
@@ -44,7 +46,9 @@ En `Lineas`, el CRM permite importar bases de lineas celulares activas, buscar p
 - `M2M`
 - `Emnify`
 
-Las lineas pueden ligarse a equipos por IMEI o manejarse como venta independiente de linea celular con renovacion anual. El perfil `Bernardo` reconoce renovaciones escritas como `bernardo 15 mayo 2026`.
+La clasificacion automatica por ICCID usa estas reglas: `8934` y `8949` son Emnify; `8952` sin telefono es Emprenet; `8952` con telefono es Telcel.
+
+Las lineas pueden ligarse a equipos por IMEI o manejarse como venta independiente de linea celular con renovacion anual. Tambien reconoce renovaciones escritas como `bernardo 15 mayo 2026`.
 
 ## Prefacturacion
 
@@ -68,4 +72,4 @@ Usa `Generar cotizacion XLSX + PDF` para descargar la propuesta lista para envia
 
 `Facturacion` cuenta estrictamente equipos importados desde Wialon. Si un equipo pertenece a otra empresa o grupo, cambialo en `Cobros` o `Equipos` y la prefacturacion usara esa asignacion.
 
-Los cambios editables del CRM se guardan localmente en el navegador mientras capturas.
+Los cambios editables del CRM se guardan en el servidor compartido y tambien queda una copia local de respaldo en el navegador.

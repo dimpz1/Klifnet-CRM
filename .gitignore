@@ -27,3 +27,8 @@ Thumbs.db
 
 # Respaldos JSON generados manualmente
 crm-wialon-prefacturacion.json
+
+# Estado compartido local del servidor
+data/server-state.json
+data/server-state.json.tmp
+data/uploads/

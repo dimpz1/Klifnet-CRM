@@ -1,4 +1,6 @@
 const storageKey = 'crm-wialon-prefacturacion-v1'
+const serverStateUrl = '/api/state'
+const serverUploadUrl = '/api/uploads'
 const seedFile = '/public/data/DispositivosWialon_Abril2026.xlsx'
 const paymentSeedFile = '/public/data/Klifnet_Admon_Mensual_Pagos.xlsx'
 const quoteTemplateFile = '/public/templates/cotizacion_CalidadSP.xlsx'
@@ -337,6 +339,10 @@ const state = {
   selectedCompany: '',
   notice: ''
 }
+
+let serverSaveTimer = null
+let currentServerUpdatedAt = ''
+let applyingServerState = false
 
 function normalizeHeader(value) {
   return String(value || '')
@@ -887,32 +893,71 @@ function escapeCsv(value) {
   return text
 }
 
-function persistState() {
-  localStorage.setItem(
-    storageKey,
-    JSON.stringify({
-      rawRows: state.rawRows,
-      columns: state.columns,
-      mapping: state.mapping,
-      devices: state.devices,
-      lines: state.lines,
-      companyMeta: state.companyMeta,
-      billing: state.billing,
-      billingRows: state.billingRows,
-      paymentImport: state.paymentImport,
-      lineImport: state.lineImport,
-      lineQuery: state.lineQuery,
-      lineIccQuery: state.lineIccQuery,
-      lineStatusFilter: state.lineStatusFilter,
-      lineMatchFilter: state.lineMatchFilter,
-      lineTypeFilter: state.lineTypeFilter,
-      quote: state.quote,
-      newDevice: state.newDevice,
-      newLine: state.newLine,
-      sourceLabel: state.sourceLabel,
-      lastImportAt: state.lastImportAt
+function stateSnapshot() {
+  return {
+    rawRows: state.rawRows,
+    columns: state.columns,
+    mapping: state.mapping,
+    devices: state.devices,
+    lines: state.lines,
+    companyMeta: state.companyMeta,
+    billing: state.billing,
+    billingRows: state.billingRows,
+    paymentImport: state.paymentImport,
+    lineImport: state.lineImport,
+    lineQuery: state.lineQuery,
+    lineIccQuery: state.lineIccQuery,
+    lineStatusFilter: state.lineStatusFilter,
+    lineMatchFilter: state.lineMatchFilter,
+    lineTypeFilter: state.lineTypeFilter,
+    quote: state.quote,
+    newDevice: state.newDevice,
+    newLine: state.newLine,
+    sourceLabel: state.sourceLabel,
+    lastImportAt: state.lastImportAt
+  }
+}
+
+async function saveStateToServer(snapshot) {
+  try {
+    const response = await fetch(serverStateUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state: snapshot })
     })
-  )
+    if (!response.ok) throw new Error('No se pudo guardar en servidor.')
+    const result = await response.json()
+    currentServerUpdatedAt = result.updatedAt || currentServerUpdatedAt
+    return true
+  } catch (error) {
+    console.warn(error)
+    return false
+  }
+}
+
+function scheduleServerStateSave(snapshot) {
+  if (applyingServerState) return
+  clearTimeout(serverSaveTimer)
+  serverSaveTimer = setTimeout(() => {
+    serverSaveTimer = null
+    saveStateToServer(snapshot)
+  }, 700)
+}
+
+function persistState(options = {}) {
+  const snapshot = stateSnapshot()
+  localStorage.setItem(storageKey, JSON.stringify(snapshot))
+  if (!options.localOnly) scheduleServerStateSave(snapshot)
+}
+
+async function saveChangesNow() {
+  clearTimeout(serverSaveTimer)
+  serverSaveTimer = null
+  const snapshot = stateSnapshot()
+  localStorage.setItem(storageKey, JSON.stringify(snapshot))
+  const saved = await saveStateToServer(snapshot)
+  state.notice = saved ? 'Cambios guardados en el servidor compartido.' : 'Cambios guardados localmente; no se pudo conectar al servidor.'
+  render()
 }
 
 function setState(patch, shouldRender = true) {
@@ -1202,6 +1247,7 @@ async function loadSeedFile() {
 
 async function handleFile(file) {
   const buffer = await file.arrayBuffer()
+  await saveUploadedFile(file, 'wialon', buffer)
   const parsed = await parseWorkbookFile(buffer, file.name)
   const normalized = normalizeRows(parsed.rows, parsed.mapping, 'vigente')
   const merged = mergeDevices(state.devices, normalized)
@@ -1397,6 +1443,7 @@ async function loadPaymentSeed(options = {}) {
 
 async function handlePaymentFile(file) {
   const buffer = await file.arrayBuffer()
+  await saveUploadedFile(file, 'pagos', buffer)
   const parsed = await parseWorkbookFile(buffer, file.name)
   applyPaymentRows(parsed.rows, file.name)
 }
@@ -1875,6 +1922,7 @@ function lineImportState(label, rowsLength, imported, stats, extra = {}) {
 
 async function handleLineFile(file) {
   const buffer = await file.arrayBuffer()
+  await saveUploadedFile(file, 'lineas', buffer)
   const parsed = await parseWorkbookFile(buffer, file.name)
   const { lines: merged, imported, stats } = mergeLineRows(state.lines, parsed.rows, file.name, { allowImeiOnly: true, markMissing: true })
   setState({
@@ -1887,6 +1935,7 @@ async function handleLineFile(file) {
 
 async function handleEmnifyFile(file) {
   const buffer = await file.arrayBuffer()
+  await saveUploadedFile(file, 'emnify', buffer)
   const parsed = await parseWorkbookFile(buffer, file.name)
   const { lines: merged, imported, stats } = mergeLineRows(state.lines, parsed.rows, `Emnify - ${file.name}`, {
     allowImeiOnly: true,
@@ -2367,6 +2416,32 @@ function download(filename, body, type) {
   URL.revokeObjectURL(url)
 }
 
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize))
+  }
+  return btoa(binary)
+}
+
+async function saveUploadedFile(file, category, buffer) {
+  try {
+    await fetch(serverUploadUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename: file.name,
+        category,
+        dataBase64: arrayBufferToBase64(buffer)
+      })
+    })
+  } catch (error) {
+    console.warn(error)
+  }
+}
+
 function exportCsv() {
   const headers = [
     'Empresa',
@@ -2423,19 +2498,7 @@ function exportCsv() {
 function exportJson() {
   download(
     'crm-wialon-prefacturacion.json',
-    JSON.stringify(
-      {
-        devices: state.devices,
-        lines: state.lines,
-        companyMeta: state.companyMeta,
-        billing: state.billing,
-        billingRows: state.billingRows,
-        lineImport: state.lineImport,
-        quote: state.quote
-      },
-      null,
-      2
-    ),
+    JSON.stringify(stateSnapshot(), null, 2),
     'application/json;charset=utf-8'
   )
 }
@@ -3462,7 +3525,6 @@ function renderLineas(companies) {
   const providerGroups = lineProviderGroups(state.lines)
   const d = { ...state.newLine, status: normalizeLineStatus(state.newLine.status) }
   const options = lineCompanyOptions(companies)
-  const profiles = lineClientProfiles(companies).filter((profile) => profile.lines.length || normalizeHeader(profile.company) === 'bernardo')
   return `
     <section class="billing-layout">
       <section class="metric-grid billing-metrics">
@@ -3482,20 +3544,6 @@ function renderLineas(companies) {
                 <strong>${esc(group.label)}</strong>
                 <div><b>${group.lines.length}</b> lineas</div>
                 <small>${group.active} activas / ${group.inactive} desactivadas</small>
-              </div>`
-          )
-          .join('')}
-      </section>
-      <section class="line-profile-grid">
-        ${profiles
-          .map(
-            (profile) => `
-              <div class="line-profile-card ${normalizeHeader(profile.company) === 'bernardo' ? 'featured' : ''}">
-                <span>Perfil cliente</span>
-                <strong>${esc(profile.company)}</strong>
-                <div><b>${profile.active.length}</b> activas</div>
-                <div><b>${profile.inactive.length}</b> desactivadas</div>
-                <small>Proxima renovacion: ${profile.nextRenewal ? esc(lineRenewalLabel({ renewalDate: profile.nextRenewal })) : 'Sin fecha'}</small>
               </div>`
           )
           .join('')}
@@ -4058,6 +4106,7 @@ function render() {
           <img class="brand-logo" src="/public/assets/klifnet-logo.jpg" alt="KLIFNET">
         </div>
         <div class="top-actions">
+          <button class="button" id="saveChangesButton">${icon('save')}Guardar cambios</button>
           <button class="button primary" id="uploadButton">${icon('upload')}Actualizar Wialon</button>
           <button class="icon-button" title="Exportar CSV" id="exportCsv">${icon('download')}</button>
           <button class="icon-button" title="Exportar respaldo JSON" id="exportJson">${icon('file-spreadsheet')}</button>
@@ -4093,6 +4142,7 @@ function bindEvents() {
     button.addEventListener('click', () => setState({ view: button.dataset.view }))
   })
 
+  document.getElementById('saveChangesButton')?.addEventListener('click', saveChangesNow)
   document.getElementById('uploadButton')?.addEventListener('click', () => document.getElementById('fileInput')?.click())
   document.getElementById('fileInput')?.addEventListener('change', async (event) => {
     const file = event.target.files?.[0]
@@ -4453,68 +4503,125 @@ function bindEvents() {
   })
 }
 
-async function init() {
-  const saved = localStorage.getItem(storageKey)
-  if (saved) {
-    try {
-      const parsed = JSON.parse(saved)
-      Object.assign(state, {
-        rawRows: parsed.rawRows || [],
-        columns: parsed.columns || [],
-        mapping: parsed.mapping || {},
-        devices: (parsed.devices || []).map(normalizeDeviceIdentifiers),
-        lines: (parsed.lines || []).map((line, index) => normalizeLine(line, index)),
-        companyMeta: parsed.companyMeta || {},
-        billing: {
-          ...defaultBilling,
-          ...(parsed.billing || {}),
-          monthlyPricePerDevice: Number(parsed.billing?.monthlyPricePerDevice ?? parsed.billing?.pricePerDevice ?? defaultBilling.monthlyPricePerDevice) || defaultBilling.monthlyPricePerDevice,
-          annualPricePerDevice: parsed.billing?.annualPricePerDevice ?? 0
-        },
-        billingRows: parsed.billingRows || parsed.invoices || [],
-        paymentImport: parsed.paymentImport || null,
-        lineImport: parsed.lineImport || null,
-        lineQuery: parsed.lineQuery || '',
-        lineIccQuery: parsed.lineIccQuery || '',
-        lineStatusFilter: parsed.lineStatusFilter || '',
-        lineMatchFilter: parsed.lineMatchFilter || '',
-        lineTypeFilter: parsed.lineTypeFilter || '',
-        quote: normalizeQuoteDefaults(parsed.quote || {}),
-        newDevice: {
-          company: '',
-          groups: '',
-          unitName: '',
-          uid: '',
-          imei: '',
-          imeiLong: '',
-          imeiShort: '',
-          deviceType: '',
-          phone: '',
-          agreedPrice: '',
-          saleDate: '',
-          priceNote: '',
-          ...(parsed.newDevice || {})
-        },
-        newLine: {
-          ...defaultNewLine,
-          ...(parsed.newLine || {})
-        },
-        sourceLabel: parsed.sourceLabel || '',
-        lastImportAt: parsed.lastImportAt || ''
-      })
-      const previousLineCount = state.lines.length
-      state.lines = dedupeLines(state.lines, state.devices)
-      if (state.lines.length !== previousLineCount) {
-        state.notice = `Lineas duplicadas consolidadas: ${previousLineCount - state.lines.length} repetidas.`
-        persistState()
-      }
-    } catch {
-      localStorage.removeItem(storageKey)
-    }
+function applySavedState(parsed = {}) {
+  applyingServerState = true
+  try {
+    Object.assign(state, {
+      rawRows: parsed.rawRows || [],
+      columns: parsed.columns || [],
+      mapping: parsed.mapping || {},
+      devices: (parsed.devices || []).map(normalizeDeviceIdentifiers),
+      lines: (parsed.lines || []).map((line, index) => normalizeLine(line, index)),
+      companyMeta: parsed.companyMeta || {},
+      billing: {
+        ...defaultBilling,
+        ...(parsed.billing || {}),
+        monthlyPricePerDevice: Number(parsed.billing?.monthlyPricePerDevice ?? parsed.billing?.pricePerDevice ?? defaultBilling.monthlyPricePerDevice) || defaultBilling.monthlyPricePerDevice,
+        annualPricePerDevice: parsed.billing?.annualPricePerDevice ?? 0
+      },
+      billingRows: parsed.billingRows || parsed.invoices || [],
+      paymentImport: parsed.paymentImport || null,
+      lineImport: parsed.lineImport || null,
+      lineQuery: parsed.lineQuery || '',
+      lineIccQuery: parsed.lineIccQuery || '',
+      lineStatusFilter: parsed.lineStatusFilter || '',
+      lineMatchFilter: parsed.lineMatchFilter || '',
+      lineTypeFilter: parsed.lineTypeFilter || '',
+      quote: normalizeQuoteDefaults(parsed.quote || {}),
+      newDevice: {
+        company: '',
+        groups: '',
+        unitName: '',
+        uid: '',
+        imei: '',
+        imeiLong: '',
+        imeiShort: '',
+        deviceType: '',
+        phone: '',
+        agreedPrice: '',
+        saleDate: '',
+        priceNote: '',
+        ...(parsed.newDevice || {})
+      },
+      newLine: {
+        ...defaultNewLine,
+        ...(parsed.newLine || {})
+      },
+      sourceLabel: parsed.sourceLabel || '',
+      lastImportAt: parsed.lastImportAt || ''
+    })
+    const previousLineCount = state.lines.length
+    state.lines = dedupeLines(state.lines, state.devices)
+    return Math.max(0, previousLineCount - state.lines.length)
+  } finally {
+    applyingServerState = false
   }
+}
+
+async function loadStateFromServer() {
+  try {
+    const response = await fetch(serverStateUrl, { cache: 'no-store' })
+    if (!response.ok) return false
+    const result = await response.json()
+    if (!result.state) return false
+    const duplicateCount = applySavedState(result.state)
+    currentServerUpdatedAt = result.updatedAt || ''
+    if (duplicateCount) state.notice = `Lineas duplicadas consolidadas: ${duplicateCount} repetidas.`
+    persistState({ localOnly: true })
+    return true
+  } catch (error) {
+    console.warn(error)
+    return false
+  }
+}
+
+function loadStateFromLocal() {
+  const saved = localStorage.getItem(storageKey)
+  if (!saved) return false
+  try {
+    const duplicateCount = applySavedState(JSON.parse(saved))
+    if (duplicateCount) state.notice = `Lineas duplicadas consolidadas: ${duplicateCount} repetidas.`
+    return true
+  } catch {
+    localStorage.removeItem(storageKey)
+    return false
+  }
+}
+
+function isEditingFormField() {
+  const element = document.activeElement
+  return Boolean(element && ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName))
+}
+
+async function refreshStateFromServer() {
+  if (isEditingFormField()) return
+  if (serverSaveTimer) return
+  try {
+    const response = await fetch(serverStateUrl, { cache: 'no-store' })
+    if (!response.ok) return
+    const result = await response.json()
+    if (!result.state || !result.updatedAt || result.updatedAt === currentServerUpdatedAt) return
+    applySavedState(result.state)
+    currentServerUpdatedAt = result.updatedAt
+    persistState({ localOnly: true })
+    render()
+  } catch (error) {
+    console.warn(error)
+  }
+}
+
+function startServerStatePolling() {
+  setInterval(refreshStateFromServer, 15000)
+}
+
+async function init() {
+  const loadedFromServer = await loadStateFromServer()
+  const loadedFromLocal = loadedFromServer ? false : loadStateFromLocal()
 
   if (!state.devices.length) {
     await loadSeedFile()
+  } else if (loadedFromLocal && !loadedFromServer) {
+    persistState()
   }
 
   if (state.rawRows.length && state.lineImport?.autoVersion !== lineAutoImportVersion) {
@@ -4535,6 +4642,7 @@ async function init() {
   }
 
   render()
+  startServerStatePolling()
 }
 
 init()
