@@ -1,0 +1,29 @@
+# Dependencias
+node_modules/
+
+# Builds / salida local
+dist/
+outputs/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Temporales del sistema
+.DS_Store
+Thumbs.db
+*.tmp
+*.temp
+
+# Configuracion local / secretos
+.env
+.env.*
+
+# Exportaciones generadas por el CRM
+*.csv
+*.pdf
+
+# Respaldo JSON generado manualmente
+crm-wialon-prefacturacion.json
