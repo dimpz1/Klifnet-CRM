@@ -4,8 +4,10 @@ const serverUploadUrl = '/api/uploads'
 const seedFile = '/public/data/DispositivosWialon_Abril2026.xlsx'
 const paymentSeedFile = '/public/data/Klifnet_Admon_Mensual_Pagos.xlsx'
 const quoteTemplateFile = '/public/templates/cotizacion_CalidadSP.xlsx'
+const lineSeedJsonFile = '/public/data/lineas-incluidas.json'
 const paymentImportVersion = 4
-const lineAutoImportVersion = 5
+const lineAutoImportVersion = 8
+const lineSeedImportVersion = 3
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -21,6 +23,20 @@ const lineTypeOptions = [
   { value: 'm2m', label: 'M2M' },
   { value: 'emnify', label: 'Emnify' }
 ]
+
+const lineSeedFiles = [
+  {
+    url: '/public/data/LineasKlifnetPro_2023.xlsx',
+    label: 'LineasKlifnetPro_2023.xlsx',
+    options: { allowImeiOnly: true, markMissing: false }
+  },
+  {
+    url: '/public/data/20260514_182115.xlsx',
+    label: 'Emnify - 20260514_182115.xlsx',
+    options: { allowImeiOnly: true, markMissing: false, forceLineType: 'emnify', defaultCarrier: 'Emnify' }
+  }
+]
+const maxVisibleLineRowsPerProvider = 250
 
 const hardwarePresets = [
   {
@@ -305,6 +321,7 @@ const state = {
   billingRows: [],
   paymentImport: null,
   lineImport: null,
+  lineSeedImportVersion: 0,
   quote: { ...defaultQuote },
   newDevice: {
     company: '',
@@ -905,6 +922,7 @@ function stateSnapshot() {
     billingRows: state.billingRows,
     paymentImport: state.paymentImport,
     lineImport: state.lineImport,
+    lineSeedImportVersion: state.lineSeedImportVersion,
     lineQuery: state.lineQuery,
     lineIccQuery: state.lineIccQuery,
     lineStatusFilter: state.lineStatusFilter,
@@ -1733,7 +1751,7 @@ function normalizeLineType(value) {
   if (clean.includes('emprenet')) return 'emprenet'
   if (clean.includes('emnify')) return 'emnify'
   if (clean.includes('m2m') || clean.includes('m 2 m')) return 'm2m'
-  if (clean.includes('telcel') && (clean.includes('prepago') || clean.includes('pre pago'))) return 'telcel-prepago'
+  if (clean.includes('telcel') && (clean.includes('prepago') || clean.includes('pre pago') || clean.includes('telcelprep'))) return 'telcel-prepago'
   if (clean.includes('telcel') && (clean.includes('postpago') || clean.includes('post pago') || clean.includes('pospago') || clean.includes('pos pago'))) return 'telcel-postpago'
   if (clean.includes('telcel')) return 'telcel'
   return lineTypeOptions.some((option) => option.value === clean) ? clean : 'emprenet'
@@ -1745,7 +1763,7 @@ function detectLineTypeFromText(value) {
   if (clean.includes('emprenet')) return 'emprenet'
   if (clean.includes('emnify')) return 'emnify'
   if (clean.includes('m2m') || clean.includes('m 2 m')) return 'm2m'
-  if (clean.includes('telcel') && (clean.includes('prepago') || clean.includes('pre pago'))) return 'telcel-prepago'
+  if (clean.includes('telcel') && (clean.includes('prepago') || clean.includes('pre pago') || clean.includes('telcelprep'))) return 'telcel-prepago'
   if (clean.includes('telcel') && (clean.includes('postpago') || clean.includes('post pago') || clean.includes('pospago') || clean.includes('pos pago'))) return 'telcel-postpago'
   if (clean.includes('telcel')) return 'telcel'
   return lineTypeOptions.some((option) => option.value === clean) ? clean : ''
@@ -1765,10 +1783,11 @@ function detectLineProvider(line, fallback = '', options = {}) {
     const manual = detectLineTypeFromText(fallback || line.lineType)
     if (manual) return { value: manual, reason: 'manual' }
   }
+  const text = detectLineTypeFromText(`${line.providerHint || ''} ${line.source || ''} ${line.company || ''} ${line.model || ''} ${line.plan || ''} ${line.notes || ''}`)
+  if (text) return { value: text, reason: 'base proveedor' }
   const byIccid = classifyLineTypeByIccid(line.iccid, line.phone)
   if (byIccid) return { value: byIccid, reason: 'prefijo ICCID' }
-  const text = detectLineTypeFromText(`${line.carrier || ''} ${line.plan || ''} ${line.notes || ''} ${line.source || ''} ${line.company || ''} ${line.model || ''} ${line.providerHint || ''}`)
-  if (text) return { value: text, reason: 'empresa/modelo/fuente' }
+  if (normalizePhoneCandidate(line.phone)) return { value: 'telcel', reason: 'numero telefonico' }
   const explicit = detectLineTypeFromText(fallback || line.lineType)
   if (explicit) return { value: explicit, reason: 'campo proveedor' }
   return { value: 'emprenet', reason: 'default' }
@@ -1781,6 +1800,20 @@ function normalizeLineProvider(line, fallback = '', options = {}) {
 function lineTypeLabel(value) {
   const normalized = normalizeLineType(value)
   return lineTypeOptions.find((option) => option.value === normalized)?.label || 'Emprenet'
+}
+
+function providerDetectionLabel(value) {
+  const labels = {
+    'archivo proveedor': 'Archivo proveedor',
+    manual: 'Manual',
+    'prefijo ICCID': 'Prefijo ICCID',
+    'base proveedor': 'Base proveedor',
+    'empresa/modelo/fuente': 'Base proveedor',
+    'numero telefonico': 'Numero telefonico',
+    'campo proveedor': 'Campo proveedor',
+    default: 'Default'
+  }
+  return labels[textValue(value)] || textValue(value) || 'Default'
 }
 
 function isActiveLine(line) {
@@ -2128,6 +2161,62 @@ function mergeLineRows(previous, rows, label, options = {}) {
   return { lines: merged, imported, stats }
 }
 
+function buildLineBridge(lines) {
+  const bridge = new Map()
+  lines.forEach((line) => {
+    const normalized = normalizeLine(line)
+    if (!normalized.imei) return
+    lineIdentifierKeys(normalized).forEach((key) => {
+      if (!bridge.has(key)) bridge.set(key, normalized)
+    })
+  })
+  return bridge
+}
+
+function buildDeviceLineBridge(devices = state.devices) {
+  const bridge = new Map()
+  devices.forEach((device) => {
+    const normalized = normalizeDeviceIdentifiers(device)
+    const linked = {
+      company: normalized.company,
+      imei: deviceImeiLong(normalized),
+      source: 'Wialon'
+    }
+    const phone = normalizePhone(normalized.phone)
+    if (phone && !bridge.has(`phone:${phone}`)) bridge.set(`phone:${phone}`, linked)
+    deviceIdentifierValues(normalized).forEach((identifier) => {
+      const key = normalizeIdentifier(identifier)
+      if (key && !bridge.has(`imei:${key}`)) bridge.set(`imei:${key}`, linked)
+    })
+  })
+  return bridge
+}
+
+function mergedLineBridge(lines, devices = state.devices) {
+  return new Map([...buildLineBridge(lines), ...buildDeviceLineBridge(devices)])
+}
+
+function enrichLinesFromBridge(lines, bridge, devices = state.devices) {
+  return lines.map((line, index) => {
+    const normalized = normalizeLine(line, index)
+    const source = lineIdentifierKeys(normalized).map((key) => bridge.get(key)).find(Boolean)
+    const device = matchLineDevice(source ? { ...normalized, imei: normalized.imei || source.imei } : normalized, devices)
+    const linkedCompany = device?.company || source?.company || normalized.company
+    const linkedImei = deviceImeiLong(device || {}) || source?.imei || normalized.imei
+    if (!source && !device) return normalized
+    return normalizeLine(
+      {
+        ...normalized,
+        company: linkedCompany,
+        imei: linkedImei,
+        clientOnly: normalized.clientOnly && !linkedImei,
+        notes: normalized.notes || (linkedImei ? `IMEI ligado desde ${device ? 'Wialon' : source.source}` : normalized.notes)
+      },
+      index
+    )
+  })
+}
+
 function lineImportState(label, rowsLength, imported, stats, extra = {}) {
   return {
     source: label,
@@ -2140,6 +2229,74 @@ function lineImportState(label, rowsLength, imported, stats, extra = {}) {
     appliedAt: new Date().toISOString(),
     ...extra
   }
+}
+
+async function loadIncludedLineDatabases(options = {}) {
+  let lines = state.lines
+  let stats = lineStats(lines)
+  let rowCount = 0
+  const imported = []
+  const sources = []
+  let bridge = buildLineBridge(lines)
+
+  try {
+    const response = await fetch(lineSeedJsonFile, { cache: 'no-store' })
+    if (response.ok) {
+      const seedData = await response.json()
+      const seedLines = (seedData.lines || []).map((line, index) => normalizeLine(line, index))
+      lines = mergeLines(lines, seedLines, { markMissing: false, devices: state.devices })
+      const bridgedLines = enrichLinesFromBridge(lines, mergedLineBridge(lines, state.devices), state.devices)
+      lines = dedupeLines(bridgedLines, state.devices)
+      stats = lineStats(lines)
+      rowCount = seedData.rows || seedLines.length
+      imported.push(...seedLines)
+      sources.push(...(seedData.sources || ['lineas-incluidas.json']))
+      state.lines = lines
+      state.lineSeedImportVersion = lineSeedImportVersion
+      state.lineImport = lineImportState(`Bases incluidas: ${sources.join(' + ')}`, rowCount, imported, stats, {
+        autoVersion: lineAutoImportVersion,
+        seedVersion: lineSeedImportVersion,
+        seedSources: sources
+      })
+      state.notice = options.notice || `Bases de lineas incluidas: ${sources.join(' + ')}.`
+      persistState()
+      return true
+    }
+  } catch (error) {
+    console.warn(error)
+  }
+
+  for (const seed of lineSeedFiles) {
+    try {
+      const response = await fetch(seed.url, { cache: 'no-store' })
+      if (!response.ok) throw new Error(`No se pudo leer ${seed.label}.`)
+      const buffer = await response.arrayBuffer()
+      const parsed = await parseWorkbookFile(buffer, seed.url)
+      const result = mergeLineRows(lines, parsed.rows, seed.label, seed.options)
+      const bridgedLines = enrichLinesFromBridge(result.lines, bridge, state.devices)
+      lines = dedupeLines(bridgedLines, state.devices)
+      bridge = mergedLineBridge(lines, state.devices)
+      stats = lineStats(lines)
+      rowCount += parsed.rows.length
+      imported.push(...result.imported)
+      sources.push(seed.label)
+    } catch (error) {
+      console.warn(error)
+    }
+  }
+
+  if (!sources.length) return false
+
+  state.lines = lines
+  state.lineSeedImportVersion = lineSeedImportVersion
+  state.lineImport = lineImportState(`Bases incluidas: ${sources.join(' + ')}`, rowCount, imported, stats, {
+    autoVersion: lineAutoImportVersion,
+    seedVersion: lineSeedImportVersion,
+    seedSources: sources
+  })
+  state.notice = options.notice || `Bases de lineas incluidas: ${sources.join(' + ')}.`
+  persistState()
+  return true
 }
 
 async function handleLineFile(file) {
@@ -2211,6 +2368,7 @@ async function exportLinesXlsx() {
       'Renovacion',
       'Precio anual',
       'Match equipo',
+      'Detectado por',
       'Origen',
       'Notas'
     ],
@@ -2228,6 +2386,7 @@ async function exportLinesXlsx() {
       line.renewalDate,
       line.annualPrice,
       lineMatchLabel(line),
+      providerDetectionLabel(line.providerDetectedBy),
       line.source,
       line.notes
     ])
@@ -3666,7 +3825,7 @@ function renderEquipos() {
 }
 
 function renderLineRows(lines) {
-  if (!lines.length) return '<tr><td colspan="14">Sin lineas en esta seccion.</td></tr>'
+  if (!lines.length) return '<tr><td colspan="15">Sin lineas en esta seccion.</td></tr>'
   return lines
     .map((line) => {
       const matchType = lineMatchType(line)
@@ -3683,6 +3842,7 @@ function renderLineRows(lines) {
           <td><input value="${attr(line.iccid)}" data-line="${attr(line.id)}" data-line-field="iccid"></td>
           <td><input value="${attr(line.imei)}" data-line="${attr(line.id)}" data-line-field="imei"></td>
           <td><span class="pill ${pillClass}">${esc(lineMatchLabel(line))}</span></td>
+          <td><span class="pill">${esc(providerDetectionLabel(line.providerDetectedBy))}</span></td>
           <td>
             <select data-line="${attr(line.id)}" data-line-field="clientOnly">
               <option value="false" ${!line.clientOnly ? 'selected' : ''}>Equipo GPS</option>
@@ -3723,7 +3883,7 @@ function renderLineTable(title, lines, tone = '') {
         <table>
           <thead>
             <tr>
-              <th>Empresa</th><th>Linea</th><th>Tipo linea</th><th>ICCID / ICC</th><th>IMEI</th><th>Match</th><th>Tipo</th><th>Estatus</th><th>Cobro</th><th>Renovacion</th><th>Precio anual</th><th>Operador</th><th>Plan</th><th>Notas</th>
+              <th>Empresa</th><th>Linea</th><th>Tipo linea</th><th>ICCID / ICC</th><th>IMEI</th><th>Match</th><th>Detectado por</th><th>Tipo</th><th>Estatus</th><th>Cobro</th><th>Renovacion</th><th>Precio anual</th><th>Operador</th><th>Plan</th><th>Notas</th>
             </tr>
           </thead>
           <tbody>${renderLineRows(lines)}</tbody>
@@ -3737,7 +3897,11 @@ function renderLineProviderSections(lines) {
   const groups = lineProviderGroups(lines)
   if (!groups.length) return '<div class="empty-state">Sin lineas para los filtros seleccionados.</div>'
   return groups
-    .map((group) => renderLineTable(`${group.label} - ${group.lines.length} lineas (${group.active} activas / ${group.inactive} desactivadas)`, group.lines))
+    .map((group) => {
+      const visibleLines = group.lines.slice(0, maxVisibleLineRowsPerProvider)
+      const limitNote = group.lines.length > visibleLines.length ? ` - mostrando ${visibleLines.length}; usa busqueda o filtros para acotar` : ''
+      return renderLineTable(`${group.label} - ${group.lines.length} lineas (${group.active} activas / ${group.inactive} desactivadas)${limitNote}`, visibleLines)
+    })
     .join('')
 }
 
@@ -3847,7 +4011,7 @@ function renderLineas(companies) {
           ? `<div class="notice">Ultima base de lineas: ${esc(state.lineImport.source)} (${state.lineImport.imported} lineas, ${state.lineImport.iccDetected || 0} con ICC), ${state.lineImport.matched} con equipo, ${state.lineImport.clientOnly} solo linea, ${state.lineImport.unmatched} sin match.</div>`
           : '<div class="notice">Importa la base de lineas activas para cruzarlas contra IMEI. Para Bernardo tambien lee renovaciones escritas como: bernardo 15 mayo 2026.</div>'
       }
-      <div class="notice">Clasificacion automatica: archivo Emnify = Emnify; 8934 y 8949 = Emnify; 8952 sin telefono = Emprenet; 8952 con telefono = Telcel. Si no reconoce prefijo, usa campos de proveedor, empresa, modelo o fuente del archivo.</div>
+      <div class="notice">Clasificacion automatica: archivo/base con proveedor explicito manda; 8934 y 8949 = Emnify; 8952 sin telefono = Emprenet; 8952 con telefono = Telcel. Si no trae proveedor y trae numero telefonico, se clasifica como Telcel.</div>
       ${renderLineProviderSections(lines)}
     </section>
   `
@@ -4752,6 +4916,7 @@ function applySavedState(parsed = {}) {
       billingRows: parsed.billingRows || parsed.invoices || [],
       paymentImport: parsed.paymentImport || null,
       lineImport: parsed.lineImport || null,
+      lineSeedImportVersion: parsed.lineSeedImportVersion || 0,
       lineQuery: parsed.lineQuery || '',
       lineIccQuery: parsed.lineIccQuery || '',
       lineStatusFilter: parsed.lineStatusFilter || '',
@@ -4864,6 +5029,10 @@ async function init() {
       })
       persistState()
     }
+  }
+
+  if (state.lineSeedImportVersion !== lineSeedImportVersion) {
+    await loadIncludedLineDatabases({ notice: 'Bases incluidas de lineas aplicadas y cruzadas con Emnify.' })
   }
 
   if (state.devices.length && state.paymentImport?.version !== paymentImportVersion) {
