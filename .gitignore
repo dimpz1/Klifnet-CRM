@@ -25,5 +25,5 @@ Thumbs.db
 *.csv
 *.pdf
 
-# Respaldo JSON generado manualmente
+# Respaldos JSON generados manualmente
 crm-wialon-prefacturacion.json
