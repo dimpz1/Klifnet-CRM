@@ -6,8 +6,8 @@ const paymentSeedFile = '/public/data/Klifnet_Admon_Mensual_Pagos.xlsx'
 const quoteTemplateFile = '/public/templates/cotizacion_CalidadSP.xlsx'
 const lineSeedJsonFile = '/public/data/lineas-incluidas.json'
 const paymentImportVersion = 4
-const lineAutoImportVersion = 8
-const lineSeedImportVersion = 3
+const lineAutoImportVersion = 10
+const lineSeedImportVersion = 5
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -550,6 +550,44 @@ function normalizeCycle(value, paymentsCount = '') {
 function monthName(monthNumber) {
   const month = Number(monthNumber || 1)
   return monthNames[Math.max(0, Math.min(11, month - 1))]
+}
+
+const monthAliasMap = {
+  ene: 0,
+  enero: 0,
+  feb: 1,
+  febrero: 1,
+  mar: 2,
+  mzo: 2,
+  marzo: 2,
+  abr: 3,
+  abri: 3,
+  abril: 3,
+  may: 4,
+  mayo: 4,
+  jun: 5,
+  junio: 5,
+  jul: 6,
+  julio: 6,
+  ago: 7,
+  agosto: 7,
+  sep: 8,
+  sept: 8,
+  septiembre: 8,
+  oct: 9,
+  octubre: 9,
+  nov: 10,
+  noviembre: 10,
+  dic: 11,
+  diciembre: 11
+}
+
+function monthIndexFromText(value) {
+  const clean = normalizeHeader(value).replace(/\s+/g, '')
+  if (!clean) return -1
+  if (monthAliasMap[clean] !== undefined) return monthAliasMap[clean]
+  const alias = Object.keys(monthAliasMap).find((key) => clean.startsWith(key) || key.startsWith(clean))
+  return alias ? monthAliasMap[alias] : -1
 }
 
 function parseAmount(value) {
@@ -1709,18 +1747,119 @@ function normalizeLineDate(value) {
 }
 
 function lineDateFromWords(day, monthNameValue, year) {
-  const monthIndex = monthNames.findIndex((month) => normalizeHeader(month) === normalizeHeader(monthNameValue))
+  const monthIndex = monthIndexFromText(monthNameValue)
   const numericDay = Number(day)
-  const numericYear = Number(year)
+  let numericYear = Number(year)
+  if (String(year).length === 2) numericYear += numericYear >= 70 ? 1900 : 2000
   if (monthIndex < 0 || numericDay < 1 || numericDay > 31 || numericYear < 2000) return ''
   return `${numericYear}-${String(monthIndex + 1).padStart(2, '0')}-${String(numericDay).padStart(2, '0')}`
 }
 
-function parseBernardoRenewalText(value) {
+function lineDateFromNumericParts(day, month, year) {
+  const numericDay = Number(day)
+  const numericMonth = Number(month)
+  let numericYear = Number(year)
+  if (String(year).length === 2) numericYear += numericYear >= 70 ? 1900 : 2000
+  if (numericDay < 1 || numericDay > 31 || numericMonth < 1 || numericMonth > 12 || numericYear < 2000) return ''
+  return `${numericYear}-${String(numericMonth).padStart(2, '0')}-${String(numericDay).padStart(2, '0')}`
+}
+
+function isInternalLineCompany(value) {
   const clean = normalizeHeader(value)
-  const match = clean.match(/\bbernardo\b\s+(\d{1,2})\s+([a-z]+)\s+(\d{4})\b/)
-  if (!match) return null
-  const renewalDate = lineDateFromWords(match[1], match[2], match[3])
+  if (!clean) return false
+  return clean.includes('felipe') && (clean.includes('gomez') || clean.includes('tirado') || clean.includes('celular'))
+}
+
+function sanitizeLineCompany(value) {
+  const company = textValue(value)
+  return isInternalLineCompany(company) ? '' : company
+}
+
+function companyFromLineCode(prefix) {
+  const clean = normalizeHeader(prefix).replace(/\s+/g, '')
+  if (!clean) return ''
+  if (clean.startsWith('berna')) return 'Bernardo'
+  if (clean === 'klifnet' || clean.startsWith('klifnet')) return ''
+  return clean
+    .replace(/([a-z])([0-9])/g, '$1 $2')
+    .split(/\s+/g)
+    .map((part) => (part ? `${part[0].toUpperCase()}${part.slice(1)}` : ''))
+    .join(' ')
+}
+
+function formatLineCustomerCode(value) {
+  const spaced = textValue(value)
+    .replace(/[_-]+/g, ' ')
+    .replace(/([A-Z]{2,})([A-Z][a-z])/g, '$1 $2')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+  const clean = normalizeHeader(spaced)
+  if (!clean || clean === 'mgr' || clean === 'demo' || clean === 'klifnet') return ''
+  if (/^\d+$/.test(clean)) return ''
+  return clean
+    .split(/\s+/g)
+    .map((part) => {
+      if (!part) return ''
+      if (part.length <= 3) return part.toUpperCase()
+      return `${part[0].toUpperCase()}${part.slice(1)}`
+    })
+    .join(' ')
+}
+
+function companyFromLineTag(value) {
+  const raw = textValue(value)
+  if (!raw) return ''
+  const clean = normalizeHeader(raw)
+  if (clean.startsWith('berna')) return 'Bernardo'
+  if (clean.startsWith('tracks')) return 'Tracks'
+  const separated = raw.match(/^klifnet[_-]+(.+)$/i)
+  if (separated) return formatLineCustomerCode(separated[1].replace(/[_-]+/g, ' '))
+  const joined = raw.match(/^klifnet([A-Z][A-Za-z0-9]{2,})$/)
+  if (joined) return formatLineCustomerCode(joined[1])
+  return ''
+}
+
+function parseLineCustomerText(value) {
+  const renewal = parseLineRenewalText(value)
+
+  const raw = textValue(value)
+  const codeTokens = raw.match(/\b(?:klifnet|berna|bernardo|tracks)[_-][A-Za-z0-9][A-Za-z0-9_-]*\b|\bKlifnet[A-Z][A-Za-z0-9]{2,}\b/gi) || []
+  const company = codeTokens.map(companyFromLineTag).find(Boolean)
+  if (renewal?.company || renewal?.renewalDate || company) {
+    return {
+      company: renewal?.company || company || '',
+      renewalDate: renewal?.renewalDate || ''
+    }
+  }
+  return null
+}
+
+function parseLineRenewalText(value) {
+  const clean = normalizeHeader(value)
+  const wordDate = clean.match(/\b([a-z][a-z0-9]{1,24})\s+(\d{1,2})\s*([a-z]{3,12})\s*(\d{2,4})\b/)
+  if (wordDate) {
+    const renewalDate = lineDateFromWords(wordDate[2], wordDate[3], wordDate[4])
+    if (renewalDate) {
+      return {
+        company: companyFromLineCode(wordDate[1]),
+        renewalDate
+      }
+    }
+  }
+
+  const numericDate = clean.match(/\b([a-z][a-z0-9]{1,24})\s+(\d{2})(\d{2})(\d{2,4})\b/)
+  if (numericDate) {
+    const renewalDate = lineDateFromNumericParts(numericDate[2], numericDate[3], numericDate[4])
+    if (renewalDate) {
+      return {
+        company: companyFromLineCode(numericDate[1]),
+        renewalDate
+      }
+    }
+  }
+
+  const bernardoWords = clean.match(/\bbernardo\b\s+(\d{1,2})\s+([a-z]{3,12})\s+(\d{2,4})\b/)
+  if (!bernardoWords) return null
+  const renewalDate = lineDateFromWords(bernardoWords[1], bernardoWords[2], bernardoWords[3])
   if (!renewalDate) return null
   return {
     company: 'Bernardo',
@@ -1831,10 +1970,11 @@ function normalizeLine(line, index = 0) {
   const identifiers = lineIdentifierParts(line)
   const phone = identifiers.phone
   const iccid = identifiers.iccid
+  const renewalSignal = parseLineCustomerText(`${line.providerHint || ''} ${line.notes || ''} ${line.company || ''} ${line.source || ''} ${line.plan || ''} ${line.model || ''}`)
   const providerDetection = detectLineProvider({ ...line, phone, iccid }, line.lineType, { force: line.providerOverride })
   const lineType = providerDetection.value
   const clean = {
-    company: textValue(line.company),
+    company: renewalSignal?.company || sanitizeLineCompany(line.company),
     phone,
     lineType,
     iccid,
@@ -1843,7 +1983,7 @@ function normalizeLine(line, index = 0) {
     plan: textValue(line.plan),
     status: normalizeLineStatus(line.status),
     billingCycle: normalizeCycle(line.billingCycle || 'anual'),
-    renewalDate: normalizeLineDate(line.renewalDate),
+    renewalDate: renewalSignal?.renewalDate || normalizeLineDate(line.renewalDate),
     annualPrice: line.annualPrice === '' || line.annualPrice === undefined ? '' : String(line.annualPrice),
     clientOnly: Boolean(line.clientOnly),
     notes: textValue(line.notes),
@@ -1859,7 +1999,7 @@ function normalizeLine(line, index = 0) {
 
 function lineFromRow(row, index, label, options = {}) {
   const rowText = Object.values(row).join(' ')
-  const bernardoRenewal = parseBernardoRenewalText(rowText)
+  const renewalSignal = parseLineCustomerText(rowText)
   const type = rowValueLoose(row, ['Tipo', 'Tipo servicio', 'Servicio', 'Modalidad', 'Producto'])
   const lineType = rowValueLoose(row, ['Tipo linea', 'Tipo de linea', 'Categoria linea', 'Categoria', 'Proveedor linea', 'Operador', 'Compania', 'Plan', 'Paquete', 'Proveedor'])
   const model = rowValueLoose(row, ['Equipo', 'Equipos', 'Modelo', 'Modelo equipo', 'Tipo equipo'])
@@ -1870,12 +2010,13 @@ function lineFromRow(row, index, label, options = {}) {
   const payments = rowValueLoose(row, ['No. Pagos', 'Pagos'])
   const status = rowValueLoose(row, ['Estado', 'Estatus', 'Status', 'SIM Status', 'Lifecycle status', 'Connectivity status'])
   const notes = rowValueLoose(row, ['Notas', 'Comentario', 'Comentarios', 'Observaciones'])
-  const renewalDate = rowValueLoose(row, ['Fecha renovacion', 'Renovacion', 'Vencimiento', 'Fecha vencimiento', 'Fecha pago', 'Proximo pago']) || bernardoRenewal?.renewalDate || ''
+  const renewalDate = renewalSignal?.renewalDate || rowValueLoose(row, ['Fecha renovacion', 'Renovacion', 'Vencimiento', 'Fecha vencimiento', 'Fecha pago', 'Proximo pago']) || ''
   const carrier = rowValueLoose(row, ['Compania', 'Operador', 'Carrier', 'Proveedor', 'Red']) || options.defaultCarrier || ''
+  const rowCompany = rowValueLoose(row, ['Cliente', 'Empresa', 'Razon social', 'Cuenta', 'Nombre cliente', 'Customer', 'Organization', 'Grupo', 'Grupos', 'Assigned to', 'Workspace'])
 
   return normalizeLine(
     {
-      company: rowValueLoose(row, ['Cliente', 'Empresa', 'Razon social', 'Cuenta', 'Nombre cliente', 'Customer', 'Organization', 'Grupo', 'Grupos', 'Assigned to', 'Workspace']) || bernardoRenewal?.company || options.defaultCompany || '',
+      company: renewalSignal?.company || sanitizeLineCompany(rowCompany) || options.defaultCompany || '',
       phone,
       lineType: lineType || carrier || '',
       providerOverride: options.forceLineType || '',
@@ -1890,7 +2031,7 @@ function lineFromRow(row, index, label, options = {}) {
       renewalDate,
       annualPrice: parseAmount(rowValueLoose(row, ['Precio', 'Importe', 'Renta', 'Costo', 'Precio anual', 'Anualidad', 'Monto'])),
       clientOnly: !imei || normalizeHeader(type).includes('linea'),
-      notes: bernardoRenewal && !notes ? `Renovacion importada como: ${rowText}` : notes,
+      notes: renewalSignal && !notes ? `Renovacion importada como: ${rowText}` : notes,
       source: label
     },
     index
@@ -1940,6 +2081,8 @@ function mergeLineRecord(oldLine, normalizedLine) {
   const providerIsManual = Boolean(oldLine.providerManual)
   const incomingProviderIsDefault = normalizedLine.providerDetectedBy === 'default'
   const oldLineType = normalizeLineType(oldLine.lineType)
+  const oldCompany = sanitizeLineCompany(oldLine.company)
+  const incomingCompany = sanitizeLineCompany(normalizedLine.company)
   const nextLineType = providerIsManual
     ? oldLine.lineType
     : incomingProviderIsDefault && oldLineType && oldLineType !== 'emprenet'
@@ -1948,7 +2091,7 @@ function mergeLineRecord(oldLine, normalizedLine) {
   const nextCarrier = providerIsManual || (incomingProviderIsDefault && oldLine.carrier) ? oldLine.carrier : normalizedLine.carrier || oldLine.carrier
   const next = {
     ...oldLine,
-    company: normalizedLine.company || oldLine.company,
+    company: incomingCompany || oldCompany,
     phone: normalizedLine.phone || oldLine.phone,
     lineType: nextLineType,
     iccid: normalizedLine.iccid || oldLine.iccid,
@@ -2201,7 +2344,7 @@ function enrichLinesFromBridge(lines, bridge, devices = state.devices) {
     const normalized = normalizeLine(line, index)
     const source = lineIdentifierKeys(normalized).map((key) => bridge.get(key)).find(Boolean)
     const device = matchLineDevice(source ? { ...normalized, imei: normalized.imei || source.imei } : normalized, devices)
-    const linkedCompany = device?.company || source?.company || normalized.company
+    const linkedCompany = sanitizeLineCompany(device?.company) || sanitizeLineCompany(source?.company) || normalized.company
     const linkedImei = deviceImeiLong(device || {}) || source?.imei || normalized.imei
     if (!source && !device) return normalized
     return normalizeLine(
