@@ -5,7 +5,7 @@ const seedFile = '/public/data/DispositivosWialon_Abril2026.xlsx'
 const paymentSeedFile = '/public/data/Klifnet_Admon_Mensual_Pagos.xlsx'
 const quoteTemplateFile = '/public/templates/cotizacion_CalidadSP.xlsx'
 const paymentImportVersion = 4
-const lineAutoImportVersion = 4
+const lineAutoImportVersion = 5
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -1761,12 +1761,16 @@ function classifyLineTypeByIccid(iccid, phone) {
 function detectLineProvider(line, fallback = '', options = {}) {
   const forced = detectLineTypeFromText(options.force)
   if (forced) return { value: forced, reason: 'archivo proveedor' }
+  if (line.providerManual) {
+    const manual = detectLineTypeFromText(fallback || line.lineType)
+    if (manual) return { value: manual, reason: 'manual' }
+  }
   const byIccid = classifyLineTypeByIccid(line.iccid, line.phone)
   if (byIccid) return { value: byIccid, reason: 'prefijo ICCID' }
-  const explicit = detectLineTypeFromText(fallback || line.lineType)
-  if (explicit) return { value: explicit, reason: 'campo proveedor' }
   const text = detectLineTypeFromText(`${line.carrier || ''} ${line.plan || ''} ${line.notes || ''} ${line.source || ''} ${line.company || ''} ${line.model || ''} ${line.providerHint || ''}`)
   if (text) return { value: text, reason: 'empresa/modelo/fuente' }
+  const explicit = detectLineTypeFromText(fallback || line.lineType)
+  if (explicit) return { value: explicit, reason: 'campo proveedor' }
   return { value: 'emprenet', reason: 'default' }
 }
 
@@ -1811,7 +1815,8 @@ function normalizeLine(line, index = 0) {
     clientOnly: Boolean(line.clientOnly),
     notes: textValue(line.notes),
     source: textValue(line.source) || 'manual',
-    providerDetectedBy: textValue(line.providerDetectedBy) || providerDetection.reason,
+    providerManual: Boolean(line.providerManual),
+    providerDetectedBy: providerDetection.reason,
     recordState: textValue(line.recordState) || 'vigente'
   }
   clean.clientOnly = clean.clientOnly || !clean.imei
@@ -1899,10 +1904,15 @@ function lineMatchKeys(line, devices = state.devices) {
 }
 
 function mergeLineRecord(oldLine, normalizedLine) {
+  const providerIsManual = Boolean(oldLine.providerManual)
   const incomingProviderIsDefault = normalizedLine.providerDetectedBy === 'default'
   const oldLineType = normalizeLineType(oldLine.lineType)
-  const nextLineType = incomingProviderIsDefault && oldLineType && oldLineType !== 'emprenet' ? oldLine.lineType : normalizedLine.lineType || oldLine.lineType
-  const nextCarrier = incomingProviderIsDefault && oldLine.carrier ? oldLine.carrier : normalizedLine.carrier || oldLine.carrier
+  const nextLineType = providerIsManual
+    ? oldLine.lineType
+    : incomingProviderIsDefault && oldLineType && oldLineType !== 'emprenet'
+      ? oldLine.lineType
+      : normalizedLine.lineType || oldLine.lineType
+  const nextCarrier = providerIsManual || (incomingProviderIsDefault && oldLine.carrier) ? oldLine.carrier : normalizedLine.carrier || oldLine.carrier
   const next = {
     ...oldLine,
     company: normalizedLine.company || oldLine.company,
@@ -1919,7 +1929,8 @@ function mergeLineRecord(oldLine, normalizedLine) {
     clientOnly: Boolean(oldLine.clientOnly || normalizedLine.clientOnly),
     notes: normalizedLine.notes || oldLine.notes,
     source: normalizedLine.source || oldLine.source,
-    providerDetectedBy: incomingProviderIsDefault && oldLine.providerDetectedBy ? oldLine.providerDetectedBy : normalizedLine.providerDetectedBy || oldLine.providerDetectedBy,
+    providerManual: providerIsManual,
+    providerDetectedBy: providerIsManual ? 'manual' : incomingProviderIsDefault && oldLine.providerDetectedBy ? oldLine.providerDetectedBy : normalizedLine.providerDetectedBy || oldLine.providerDetectedBy,
     id: oldLine.id
   }
   const changed = [
@@ -1937,6 +1948,7 @@ function mergeLineRecord(oldLine, normalizedLine) {
     'clientOnly',
     'notes',
     'source',
+    'providerManual',
     'providerDetectedBy'
   ].some((field) => String(oldLine[field] ?? '') !== String(next[field] ?? ''))
   return {
@@ -4448,7 +4460,15 @@ function bindEvents() {
       const id = input.dataset.line
       const field = input.dataset.lineField
       const value = field === 'clientOnly' ? input.value === 'true' : field === 'annualPrice' ? input.value : input.value
-      state.lines = state.lines.map((line) => (line.id === id ? normalizeLine({ ...line, [field]: value }) : line))
+      state.lines = state.lines.map((line) =>
+        line.id === id
+          ? normalizeLine({
+              ...line,
+              [field]: value,
+              ...(field === 'lineType' ? { providerManual: true, providerDetectedBy: 'manual' } : {})
+            })
+          : line
+      )
       persistState()
       if (shouldRender) render()
     }
