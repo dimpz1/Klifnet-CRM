@@ -36,7 +36,7 @@ const lineSeedFiles = [
     options: { allowImeiOnly: true, markMissing: false, forceLineType: 'emnify', defaultCarrier: 'Emnify' }
   }
 ]
-const maxVisibleLineRowsPerProvider = 250
+const linePageSize = 40
 
 const hardwarePresets = [
   {
@@ -351,6 +351,7 @@ const state = {
   lineStatusFilter: '',
   lineMatchFilter: '',
   lineTypeFilter: '',
+  linePage: 1,
   sourceLabel: '',
   lastImportAt: '',
   selectedCompany: '',
@@ -966,6 +967,7 @@ function stateSnapshot() {
     lineStatusFilter: state.lineStatusFilter,
     lineMatchFilter: state.lineMatchFilter,
     lineTypeFilter: state.lineTypeFilter,
+    linePage: state.linePage,
     quote: state.quote,
     newDevice: state.newDevice,
     newLine: state.newLine,
@@ -2238,6 +2240,54 @@ function filteredLines() {
     const iccMatches = !iccQuery || normalizeIdentifier(line.iccid).includes(iccQuery)
     return statusMatches && matchMatches && typeMatches && queryMatches && iccMatches
   })
+}
+
+function linePaginationState(total) {
+  const pageCount = Math.max(1, Math.ceil(total / linePageSize))
+  const page = Math.min(Math.max(1, Number(state.linePage || 1)), pageCount)
+  const start = total ? (page - 1) * linePageSize : 0
+  const end = Math.min(start + linePageSize, total)
+  return {
+    page,
+    pageCount,
+    start,
+    end
+  }
+}
+
+function visiblePageNumbers(page, pageCount) {
+  const pages = new Set([1, pageCount, page - 1, page, page + 1])
+  if (page <= 3) [1, 2, 3, 4].forEach((number) => pages.add(number))
+  if (page >= pageCount - 2) [pageCount - 3, pageCount - 2, pageCount - 1, pageCount].forEach((number) => pages.add(number))
+  const valid = [...pages].filter((number) => number >= 1 && number <= pageCount).sort((a, b) => a - b)
+  return valid.reduce((items, number, index) => {
+    if (index && number - valid[index - 1] > 1) items.push('...')
+    items.push(number)
+    return items
+  }, [])
+}
+
+function renderPagination(total, pagination) {
+  if (total <= linePageSize) {
+    return `<div class="pager"><div class="pager-summary">Mostrando ${total} de ${total} lineas</div></div>`
+  }
+  const pages = visiblePageNumbers(pagination.page, pagination.pageCount)
+  return `
+    <div class="pager">
+      <div class="pager-summary">Mostrando ${pagination.start + 1}-${pagination.end} de ${total} lineas - ${linePageSize} por hoja</div>
+      <div class="pager-controls" aria-label="Paginacion de lineas">
+        <button class="icon-button" data-line-page="${pagination.page - 1}" ${pagination.page <= 1 ? 'disabled' : ''} title="Pagina anterior">${icon('chevron-left')}</button>
+        ${pages
+          .map((page) =>
+            page === '...'
+              ? '<span class="pager-gap">...</span>'
+              : `<button class="pager-page ${page === pagination.page ? 'active' : ''}" data-line-page="${page}" ${page === pagination.page ? 'disabled' : ''}>${page}</button>`
+          )
+          .join('')}
+        <button class="icon-button" data-line-page="${pagination.page + 1}" ${pagination.page >= pagination.pageCount ? 'disabled' : ''} title="Pagina siguiente">${icon('chevron-right')}</button>
+      </div>
+    </div>
+  `
 }
 
 function lineProviderGroups(lines) {
@@ -4040,16 +4090,14 @@ function renderLineProviderSections(lines) {
   const groups = lineProviderGroups(lines)
   if (!groups.length) return '<div class="empty-state">Sin lineas para los filtros seleccionados.</div>'
   return groups
-    .map((group) => {
-      const visibleLines = group.lines.slice(0, maxVisibleLineRowsPerProvider)
-      const limitNote = group.lines.length > visibleLines.length ? ` - mostrando ${visibleLines.length}; usa busqueda o filtros para acotar` : ''
-      return renderLineTable(`${group.label} - ${group.lines.length} lineas (${group.active} activas / ${group.inactive} desactivadas)${limitNote}`, visibleLines)
-    })
+    .map((group) => renderLineTable(`${group.label} - ${group.lines.length} lineas (${group.active} activas / ${group.inactive} desactivadas)`, group.lines))
     .join('')
 }
 
 function renderLineas(companies) {
   const lines = filteredLines()
+  const pagination = linePaginationState(lines.length)
+  const pageLines = lines.slice(pagination.start, pagination.end)
   const stats = lineStats(state.lines)
   const providerGroups = lineProviderGroups(state.lines)
   const d = { ...state.newLine, status: normalizeLineStatus(state.newLine.status) }
@@ -4155,7 +4203,9 @@ function renderLineas(companies) {
           : '<div class="notice">Importa la base de lineas activas para cruzarlas contra IMEI. Para Bernardo tambien lee renovaciones escritas como: bernardo 15 mayo 2026.</div>'
       }
       <div class="notice">Clasificacion automatica: archivo/base con proveedor explicito manda; 8934 y 8949 = Emnify; 8952 sin telefono = Emprenet; 8952 con telefono = Telcel. Si no trae proveedor y trae numero telefonico, se clasifica como Telcel.</div>
-      ${renderLineProviderSections(lines)}
+      ${renderPagination(lines.length, pagination)}
+      ${renderLineProviderSections(pageLines)}
+      ${renderPagination(lines.length, pagination)}
     </section>
   `
 }
@@ -4740,26 +4790,34 @@ function bindEvents() {
 
   document.getElementById('lineSearchInput')?.addEventListener('input', (event) => {
     state.lineQuery = event.target.value
+    state.linePage = 1
     persistState()
     render()
   })
 
   document.getElementById('lineIccSearchInput')?.addEventListener('input', (event) => {
     state.lineIccQuery = event.target.value
+    state.linePage = 1
     persistState()
     render()
   })
 
   document.getElementById('lineStatusFilter')?.addEventListener('change', (event) => {
-    setState({ lineStatusFilter: event.target.value })
+    setState({ lineStatusFilter: event.target.value, linePage: 1 })
   })
 
   document.getElementById('lineMatchFilter')?.addEventListener('change', (event) => {
-    setState({ lineMatchFilter: event.target.value })
+    setState({ lineMatchFilter: event.target.value, linePage: 1 })
   })
 
   document.getElementById('lineTypeFilter')?.addEventListener('change', (event) => {
-    setState({ lineTypeFilter: event.target.value })
+    setState({ lineTypeFilter: event.target.value, linePage: 1 })
+  })
+
+  document.querySelectorAll('[data-line-page]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setState({ linePage: Math.max(1, Number(button.dataset.linePage || 1)) })
+    })
   })
 
   document.querySelectorAll('[data-line]').forEach((input) => {
@@ -5065,6 +5123,7 @@ function applySavedState(parsed = {}) {
       lineStatusFilter: parsed.lineStatusFilter || '',
       lineMatchFilter: parsed.lineMatchFilter || '',
       lineTypeFilter: parsed.lineTypeFilter || '',
+      linePage: Math.max(1, Number(parsed.linePage || 1)),
       quote: normalizeQuoteDefaults(parsed.quote || {}),
       newDevice: {
         company: '',

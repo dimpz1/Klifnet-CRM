@@ -686,6 +686,64 @@ tbody tr:hover {
   border-radius: 0 0 8px 8px;
 }
 
+.pager {
+  min-height: 54px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pager-summary {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.pager-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pager-page,
+.pager-gap {
+  min-width: 40px;
+  min-height: 40px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 850;
+}
+
+.pager-page {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--black);
+}
+
+.pager-page.active {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: #ffffff;
+}
+
+.pager-page:disabled,
+.pager .icon-button:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.pager-gap {
+  color: var(--muted);
+}
+
 .billing-filters {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) minmax(260px, 1.2fr) auto;
@@ -793,6 +851,7 @@ small {
   .topbar,
   .top-actions,
   .brand-lockup,
+  .pager,
   .quote-section-head {
     align-items: stretch;
     flex-direction: column;
