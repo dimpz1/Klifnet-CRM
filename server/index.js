@@ -1,8 +1,10 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import tls from 'node:tls'
 import { fileURLToPath } from 'node:url'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -277,13 +279,225 @@ function consumeOneTimeToken(token, email) {
   return true
 }
 
+function cleanSmtpAddress(value) {
+  return String(value || '').trim().replace(/[<>"\r\n]/g, '')
+}
+
+function cleanHeader(value) {
+  return String(value || '').replace(/[\r\n]+/g, ' ').trim()
+}
+
+function encodeMailHeader(value) {
+  return `=?UTF-8?B?${Buffer.from(cleanHeader(value), 'utf8').toString('base64')}?=`
+}
+
+function formatMailAddress(name, email) {
+  const address = cleanSmtpAddress(email)
+  const label = cleanHeader(name)
+  return label ? `"${label.replace(/"/g, "'")}" <${address}>` : `<${address}>`
+}
+
+function dotStuff(message) {
+  return String(message)
+    .replace(/\r?\n/g, '\r\n')
+    .split('\r\n')
+    .map((line) => (line.startsWith('.') ? `.${line}` : line))
+    .join('\r\n')
+}
+
+function smtpConfig() {
+  const smtpHost = process.env.KLIFNET_SMTP_HOST
+  if (!smtpHost) return null
+  const secure = String(process.env.KLIFNET_SMTP_SECURE || '').toLowerCase() === 'true'
+  const smtpPort = Number(process.env.KLIFNET_SMTP_PORT || (secure ? 465 : 587))
+  const smtpUser = process.env.KLIFNET_SMTP_USER || ''
+  const smtpFrom = process.env.KLIFNET_SMTP_FROM || smtpUser
+  if (!smtpFrom) throw new Error('Falta KLIFNET_SMTP_FROM o KLIFNET_SMTP_USER.')
+  return {
+    host: smtpHost,
+    port: smtpPort,
+    secure,
+    user: smtpUser,
+    pass: process.env.KLIFNET_SMTP_PASS || '',
+    from: smtpFrom,
+    name: process.env.KLIFNET_SMTP_NAME || 'KLIFNET CRM'
+  }
+}
+
+function createSmtpClient(socket) {
+  let currentSocket = socket
+  let buffer = ''
+  let waiting = null
+
+  function takeResponse() {
+    const lines = buffer.split('\n')
+    if (!buffer.endsWith('\n')) lines.pop()
+    let consumed = 0
+    const responseLines = []
+    for (const line of lines) {
+      consumed += line.length + 1
+      const cleaned = line.replace(/\r$/, '')
+      responseLines.push(cleaned)
+      if (/^\d{3} /.test(cleaned)) {
+        buffer = buffer.slice(consumed)
+        return responseLines.join('\n')
+      }
+    }
+    return null
+  }
+
+  function resolveWaiting() {
+    if (!waiting) return
+    const response = takeResponse()
+    if (!response) return
+    const current = waiting
+    waiting = null
+    current.cleanup()
+    current.resolve(response)
+  }
+
+  function onData(chunk) {
+    buffer += chunk.toString('utf8').replace(/\r\n/g, '\n')
+    resolveWaiting()
+  }
+
+  function read() {
+    const response = takeResponse()
+    if (response) return Promise.resolve(response)
+    return new Promise((resolve, reject) => {
+      function cleanup() {
+        currentSocket.off('error', onError)
+        currentSocket.off('close', onClose)
+      }
+      function onError(error) {
+        cleanup()
+        waiting = null
+        reject(error)
+      }
+      function onClose() {
+        cleanup()
+        waiting = null
+        reject(new Error('Conexion SMTP cerrada.'))
+      }
+      waiting = { resolve, reject, cleanup }
+      currentSocket.once('error', onError)
+      currentSocket.once('close', onClose)
+    })
+  }
+
+  currentSocket.on('data', onData)
+
+  return {
+    get socket() {
+      return currentSocket
+    },
+    write(command) {
+      currentSocket.write(command)
+    },
+    replaceSocket(nextSocket) {
+      currentSocket.off('data', onData)
+      currentSocket = nextSocket
+      buffer = ''
+      currentSocket.on('data', onData)
+    },
+    read,
+    end() {
+      currentSocket.end()
+    }
+  }
+}
+
+function connectSmtp(config) {
+  return new Promise((resolve, reject) => {
+    const socket = config.secure
+      ? tls.connect({ host: config.host, port: config.port, servername: config.host })
+      : net.connect({ host: config.host, port: config.port })
+    socket.setTimeout(30000, () => socket.destroy(new Error('Timeout SMTP.')))
+    if (config.secure) {
+      socket.once('secureConnect', () => resolve(createSmtpClient(socket)))
+    } else {
+      socket.once('connect', () => resolve(createSmtpClient(socket)))
+    }
+    socket.once('error', reject)
+  })
+}
+
+async function smtpCommand(client, command, expectedCodes) {
+  if (command) client.write(`${command}\r\n`)
+  const response = await client.read()
+  const code = Number(response.slice(0, 3))
+  if (!expectedCodes.includes(code)) {
+    throw new Error(`SMTP respondio ${response}`)
+  }
+  return response
+}
+
+async function upgradeSmtpToTls(client, host) {
+  await smtpCommand(client, 'STARTTLS', [220])
+  const secureSocket = tls.connect({ socket: client.socket, servername: host })
+  await new Promise((resolve, reject) => {
+    secureSocket.once('secureConnect', resolve)
+    secureSocket.once('error', reject)
+  })
+  client.replaceSocket(secureSocket)
+}
+
+async function sendSmtpMail({ to, subject, text }) {
+  const config = smtpConfig()
+  if (!config) return false
+  const client = await connectSmtp(config)
+  try {
+    await smtpCommand(client, '', [220])
+    let ehlo = await smtpCommand(client, `EHLO ${os.hostname() || 'klifnet-crm'}`, [250])
+    if (!config.secure && /STARTTLS/i.test(ehlo)) {
+      await upgradeSmtpToTls(client, config.host)
+      ehlo = await smtpCommand(client, `EHLO ${os.hostname() || 'klifnet-crm'}`, [250])
+    }
+    if (config.user && config.pass) {
+      await smtpCommand(client, 'AUTH LOGIN', [334])
+      await smtpCommand(client, Buffer.from(config.user, 'utf8').toString('base64'), [334])
+      await smtpCommand(client, Buffer.from(config.pass, 'utf8').toString('base64'), [235])
+    }
+    const fromAddress = cleanSmtpAddress(config.from)
+    const toAddress = cleanSmtpAddress(to)
+    const domain = fromAddress.split('@')[1] || 'klifnet.local'
+    const headers = [
+      `From: ${formatMailAddress(config.name, fromAddress)}`,
+      `To: ${formatMailAddress('', toAddress)}`,
+      `Subject: ${encodeMailHeader(subject)}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Transfer-Encoding: 8bit',
+      `Date: ${new Date().toUTCString()}`,
+      `Message-ID: <${crypto.randomUUID()}@${domain}>`
+    ]
+    await smtpCommand(client, `MAIL FROM:<${fromAddress}>`, [250])
+    await smtpCommand(client, `RCPT TO:<${toAddress}>`, [250, 251])
+    await smtpCommand(client, 'DATA', [354])
+    await smtpCommand(client, `${dotStuff(`${headers.join('\r\n')}\r\n\r\n${text}`)}\r\n.`, [250])
+    await smtpCommand(client, 'QUIT', [221])
+    return true
+  } finally {
+    client.end()
+  }
+}
+
 async function deliverResetToken(email, token) {
+  const subject = 'Token recuperacion KLIFNET CRM'
   const message = `Token de recuperacion KLIFNET CRM para ${email}: ${token}\nVence en 20 minutos.\n`
+  if (process.env.KLIFNET_SMTP_HOST) {
+    try {
+      await sendSmtpMail({ to: email, subject, text: message })
+      return { sent: true, via: 'smtp' }
+    } catch (error) {
+      console.error(`No se pudo enviar token por SMTP: ${error.message}`)
+    }
+  }
   if (process.env.KLIFNET_RESET_WEBHOOK_URL) {
     const response = await fetch(process.env.KLIFNET_RESET_WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, subject: 'Token recuperacion KLIFNET CRM', text: message, token })
+      body: JSON.stringify({ email, subject, text: message, token })
     })
     if (response.ok) return { sent: true, via: 'webhook' }
   }

@@ -31,6 +31,23 @@ if (-not $node) {
   throw "No encontre Node.js para iniciar el CRM."
 }
 
+$envFile = Join-Path $PSScriptRoot ".env"
+if (Test-Path $envFile) {
+  Get-Content $envFile | ForEach-Object {
+    $line = $_.Trim()
+    if (-not $line -or $line.StartsWith("#") -or $line -notmatch "=") {
+      return
+    }
+    $parts = $line -split "=", 2
+    $key = $parts[0].Trim()
+    $value = $parts[1].Trim().Trim('"').Trim("'")
+    if ($key) {
+      [Environment]::SetEnvironmentVariable($key, $value, "Process")
+    }
+  }
+  Write-Host "Config: .env cargado."
+}
+
 $env:PORT = [string]$Port
 $env:HOST = $BindHost
 

@@ -8,6 +8,8 @@ KLIFNET CRM para administracion de equipos Wialon, clientes, cobros mensuales/an
 .\iniciar-crm.ps1
 ```
 
+Tambien puedes abrir `iniciar-crm.bat` con doble clic desde la carpeta principal.
+
 Abre `http://127.0.0.1:8787`.
 
 Para usarlo desde otros equipos de la misma red WiFi, ejecuta el script y abre la URL LAN que muestra PowerShell, por ejemplo `http://192.168.1.183:8787/`.
@@ -23,6 +25,17 @@ node scripts\generate-one-time-tokens.mjs 10000 --force
 ```
 
 Ese comando guarda hashes cifrados en `data/one-time-tokens.enc` y una lista local en claro `data/one-time-tokens-*.csv`. La lista en claro debe guardarse fuera de GitHub.
+
+## SMTP
+
+Para que `Olvide mi password` mande el token por correo:
+
+1. Copia `.env.example` como `.env`.
+2. Llena `KLIFNET_SMTP_HOST`, `KLIFNET_SMTP_PORT`, `KLIFNET_SMTP_USER`, `KLIFNET_SMTP_PASS` y `KLIFNET_SMTP_FROM`.
+3. Reinicia el CRM con `iniciar-crm.bat` o `.\iniciar-crm.ps1`.
+4. Prueba desde la pantalla de login con `Enviar token`.
+
+El archivo `.env` no se sube a GitHub. Si SMTP falla o no esta configurado, el token queda como respaldo local en `data/password-reset-tokens.txt`.
 
 ## Wialon
 

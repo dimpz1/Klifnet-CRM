@@ -20,6 +20,7 @@ Thumbs.db
 # Configuracion local / secretos
 .env
 .env.*
+!.env.example
 data/
 
 # Bases privadas: siempre se guardan cifradas fuera del repo
