@@ -16,7 +16,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 10
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 3
+const lineRelationBaseVersion = 4
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -2227,10 +2227,6 @@ function matchLineDevice(line, devices = state.devices) {
     const byImei = devices.find((device) => deviceMatchesIdentifier(device, imei))
     if (byImei) return byImei
   }
-  const phone = normalizePhone(line.phone)
-  if (phone) {
-    return devices.find((device) => normalizePhone(device.phone) === phone) || null
-  }
   return null
 }
 
@@ -2246,17 +2242,17 @@ function lineMatchLabel(line) {
   return line.clientOnly ? 'Solo linea celular' : 'Sin match'
 }
 
+function lineForDevice(device) {
+  return state.lines.find((line) => matchLineDevice(line, [device])) || null
+}
+
 function lineMatchKeys(line, devices = state.devices) {
   const keys = [...lineIdentifierKeys(line)]
   const device = matchLineDevice(line, devices)
   if (device) keys.push(...deviceIdentifierKeys(device).map((key) => `device-match:${key}`))
   const company = normalizeHeader(line.company)
-  const phone = normalizePhone(line.phone)
   const imei = normalizeIdentifier(line.imei)
-  const iccid = normalizeIdentifier(line.iccid)
-  if (company && phone) keys.push(`company-phone:${company}|${phone}`)
   if (company && imei) keys.push(`company-imei:${company}|${imei}`)
-  if (company && iccid) keys.push(`company-iccid:${company}|${iccid}`)
   return unique(keys)
 }
 
@@ -2540,9 +2536,8 @@ function buildLineBridge(lines) {
   lines.forEach((line) => {
     const normalized = normalizeLine(line)
     if (!normalized.imei) return
-    lineIdentifierKeys(normalized).forEach((key) => {
-      if (!bridge.has(key)) bridge.set(key, normalized)
-    })
+    const key = normalizeIdentifier(normalized.imei)
+    if (key && !bridge.has(`imei:${key}`)) bridge.set(`imei:${key}`, normalized)
   })
   return bridge
 }
@@ -2556,8 +2551,6 @@ function buildDeviceLineBridge(devices = state.devices) {
       imei: deviceImeiLong(normalized),
       source: 'Wialon'
     }
-    const phone = normalizePhone(normalized.phone)
-    if (phone && !bridge.has(`phone:${phone}`)) bridge.set(`phone:${phone}`, linked)
     deviceIdentifierValues(normalized).forEach((identifier) => {
       const key = normalizeIdentifier(identifier)
       if (key && !bridge.has(`imei:${key}`)) bridge.set(`imei:${key}`, linked)
@@ -2573,7 +2566,8 @@ function mergedLineBridge(lines, devices = state.devices) {
 function enrichLinesFromBridge(lines, bridge, devices = state.devices) {
   return lines.map((line, index) => {
     const normalized = normalizeLine(line, index)
-    const source = lineIdentifierKeys(normalized).map((key) => bridge.get(key)).find(Boolean)
+    const lineImei = normalizeIdentifier(normalized.imei)
+    const source = lineImei ? bridge.get(`imei:${lineImei}`) : null
     const device = matchLineDevice(source ? { ...normalized, imei: normalized.imei || source.imei } : normalized, devices)
     const linkedCompany = sanitizeLineCompany(device?.company) || sanitizeLineCompany(source?.company) || normalized.company
     const linkedImei = deviceImeiLong(device || {}) || source?.imei || normalized.imei
@@ -4126,13 +4120,14 @@ function deviceTable(devices) {
       <table>
         <thead>
           <tr>
-            <th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Telefono</th><th>Tipo</th><th>Cobro</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Origen</th><th>Ultimo mensaje</th><th>Estado</th>
+            <th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>ICCID linea</th><th>Telefono</th><th>Tipo</th><th>Cobro</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Origen</th><th>Ultimo mensaje</th><th>Estado</th>
           </tr>
         </thead>
         <tbody>
           ${devices
-            .map(
-              (device) => `
+            .map((device) => {
+              const line = lineForDevice(device)
+              return `
                 <tr>
                   <td><input value="${attr(device.company)}" data-device="${attr(device.id)}" data-field="company"></td>
                   <td><input value="${attr(device.groups.join(', '))}" data-device="${attr(device.id)}" data-field="groups"></td>
@@ -4141,6 +4136,7 @@ function deviceTable(devices) {
                   <td>${esc(device.imei || '-')}</td>
                   <td><input value="${attr(deviceImeiLong(device))}" data-device="${attr(device.id)}" data-field="imeiLong"></td>
                   <td><input value="${attr(deviceImeiShort(device))}" data-device="${attr(device.id)}" data-field="imeiShort"></td>
+                  <td>${line ? `${esc(line.iccid || '-')}<small>${esc(lineTypeLabel(line.lineType))}</small>` : '-'}</td>
                   <td>${esc(device.phone || '-')}</td>
                   <td>${esc(device.deviceType || '-')}</td>
                   <td>
@@ -4158,7 +4154,7 @@ function deviceTable(devices) {
                   <td>${esc(device.lastMessage || '-')}</td>
                   <td><span class="pill ${esc(device.recordState)}">${esc(device.recordState.replace('_', ' '))}</span></td>
                 </tr>`
-            )
+            })
             .join('')}
         </tbody>
       </table>
