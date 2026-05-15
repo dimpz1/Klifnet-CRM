@@ -404,6 +404,11 @@ function textValue(value) {
   return String(value).trim()
 }
 
+function importTextValue(value) {
+  const text = textValue(value)
+  return text.startsWith("'") ? text.slice(1).trim() : text
+}
+
 function unique(values) {
   return Array.from(new Set(values.map((value) => textValue(value)).filter(Boolean)))
 }
@@ -471,16 +476,16 @@ function devicesShareIdentifier(firstDevice, secondDevice) {
 }
 
 function normalizeDeviceIdentifiers(device) {
-  const uid = textValue(device.uid)
-  const rawImei = textValue(device.imei)
-  const rawImeiLong = textValue(device.imeiLong)
+  const uid = importTextValue(device.uid)
+  const rawImei = importTextValue(device.imei)
+  const rawImeiLong = importTextValue(device.imeiLong)
   const imeiLong =
     rawImeiLong && !isDerivedShortIdentifier(rawImeiLong, uid)
       ? rawImeiLong
       : rawImei && !isDerivedShortIdentifier(rawImei, uid)
         ? rawImei
         : uid || rawImeiLong || rawImei
-  const imeiShort = textValue(device.imeiShort) || deriveShortImei(imeiLong || rawImei || uid)
+  const imeiShort = importTextValue(device.imeiShort) || deriveShortImei(imeiLong || rawImei || uid)
   const mainImei = rawImei && !isDerivedShortIdentifier(rawImei, uid) ? rawImei : imeiLong || uid || imeiShort
   return {
     ...device,
@@ -509,11 +514,11 @@ function createManualDevice() {
     company,
     deviceType: textValue(draft.deviceType) || 'Manual',
     deactivatedAt: '',
-    uid: textValue(draft.uid),
-    imei: textValue(draft.imei),
-    imeiLong: textValue(draft.imeiLong || draft.imei),
-    imeiShort: textValue(draft.imeiShort) || deriveShortImei(draft.imeiLong || draft.imei),
-    phone: textValue(draft.phone),
+    uid: importTextValue(draft.uid),
+    imei: importTextValue(draft.imei),
+    imeiLong: importTextValue(draft.imeiLong || draft.imei),
+    imeiShort: importTextValue(draft.imeiShort) || deriveShortImei(draft.imeiLong || draft.imei),
+    phone: importTextValue(draft.phone),
     lastMessage: '',
     createdAt: new Date().toISOString().slice(0, 10),
     groups: splitGroups(draft.groups),
@@ -1528,8 +1533,8 @@ function rowsFromMatrix(matrix, sheetName = '') {
     .map((row) => {
       const output = {}
       headers.forEach((header, index) => {
-        output[header] = textValue(row[index])
-        output[`Columna ${index + 1}`] = textValue(row[index])
+        output[header] = importTextValue(row[index])
+        output[`Columna ${index + 1}`] = importTextValue(row[index])
       })
       output.__sheet = sheetName
       return output
@@ -1861,9 +1866,9 @@ function extractImeiFromRow(row) {
 
 function lineIdentifierParts(line) {
   return {
-    iccid: extractIccidFromText(line.iccid) || extractIccidFromText(line.phone),
-    phone: normalizePhoneCandidate(line.phone) || normalizePhoneCandidate(line.iccid),
-    imei: textValue(line.imei)
+    iccid: extractIccidFromText(importTextValue(line.iccid)) || extractIccidFromText(importTextValue(line.phone)),
+    phone: normalizePhoneCandidate(importTextValue(line.phone)) || normalizePhoneCandidate(importTextValue(line.iccid)),
+    imei: importTextValue(line.imei)
   }
 }
 
@@ -2134,20 +2139,20 @@ function normalizeLine(line, index = 0) {
   const providerDetection = detectLineProvider({ ...line, phone, iccid }, line.lineType, { force: line.providerOverride })
   const lineType = providerDetection.value
   const clean = {
-    company: renewalSignal?.company || sanitizeLineCompany(line.company),
+    company: renewalSignal?.company || sanitizeLineCompany(importTextValue(line.company)),
     phone,
     lineType,
     iccid,
-    imei: textValue(line.imei),
-    carrier: textValue(line.carrier) || lineTypeLabel(lineType),
-    plan: textValue(line.plan),
+    imei: importTextValue(line.imei),
+    carrier: importTextValue(line.carrier) || lineTypeLabel(lineType),
+    plan: importTextValue(line.plan),
     status: normalizeLineStatus(line.status),
     billingCycle: normalizeCycle(line.billingCycle || 'anual'),
     renewalDate: renewalSignal?.renewalDate || normalizeLineDate(line.renewalDate),
     annualPrice: line.annualPrice === '' || line.annualPrice === undefined ? '' : String(line.annualPrice),
     clientOnly: Boolean(line.clientOnly),
-    notes: textValue(line.notes),
-    source: textValue(line.source) || 'manual',
+    notes: importTextValue(line.notes),
+    source: importTextValue(line.source) || 'manual',
     providerManual: Boolean(line.providerManual),
     providerDetectedBy: providerDetection.reason,
     recordState: textValue(line.recordState) || 'vigente'
