@@ -4,10 +4,10 @@ const serverUploadUrl = '/api/uploads'
 const seedFile = '/public/data/DispositivosWialon_Abril2026.xlsx'
 const paymentSeedFile = '/public/data/Klifnet_Admon_Mensual_Pagos.xlsx'
 const quoteTemplateFile = '/public/templates/cotizacion_CalidadSP.xlsx'
-const lineSeedJsonFile = '/public/data/lineas-incluidas.json'
 const paymentImportVersion = 4
 const lineAutoImportVersion = 10
-const lineSeedImportVersion = 5
+const lineSeedImportVersion = 0
+const lineResetVersion = 1
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -24,18 +24,6 @@ const lineTypeOptions = [
   { value: 'emnify', label: 'Emnify' }
 ]
 
-const lineSeedFiles = [
-  {
-    url: '/public/data/LineasKlifnetPro_2023.xlsx',
-    label: 'LineasKlifnetPro_2023.xlsx',
-    options: { allowImeiOnly: true, markMissing: false }
-  },
-  {
-    url: '/public/data/20260514_182115.xlsx',
-    label: 'Emnify - 20260514_182115.xlsx',
-    options: { allowImeiOnly: true, markMissing: false, forceLineType: 'emnify', defaultCarrier: 'Emnify' }
-  }
-]
 const linePageSize = 40
 
 const hardwarePresets = [
@@ -322,6 +310,7 @@ const state = {
   paymentImport: null,
   lineImport: null,
   lineSeedImportVersion: 0,
+  lineResetVersion: 0,
   quote: { ...defaultQuote },
   newDevice: {
     company: '',
@@ -962,6 +951,7 @@ function stateSnapshot() {
     paymentImport: state.paymentImport,
     lineImport: state.lineImport,
     lineSeedImportVersion: state.lineSeedImportVersion,
+    lineResetVersion: state.lineResetVersion,
     lineQuery: state.lineQuery,
     lineIccQuery: state.lineIccQuery,
     lineStatusFilter: state.lineStatusFilter,
@@ -2425,71 +2415,27 @@ function lineImportState(label, rowsLength, imported, stats, extra = {}) {
 }
 
 async function loadIncludedLineDatabases(options = {}) {
-  let lines = state.lines
-  let stats = lineStats(lines)
-  let rowCount = 0
-  const imported = []
-  const sources = []
-  let bridge = buildLineBridge(lines)
-
-  try {
-    const response = await fetch(lineSeedJsonFile, { cache: 'no-store' })
-    if (response.ok) {
-      const seedData = await response.json()
-      const seedLines = (seedData.lines || []).map((line, index) => normalizeLine(line, index))
-      lines = mergeLines(lines, seedLines, { markMissing: false, devices: state.devices })
-      const bridgedLines = enrichLinesFromBridge(lines, mergedLineBridge(lines, state.devices), state.devices)
-      lines = dedupeLines(bridgedLines, state.devices)
-      stats = lineStats(lines)
-      rowCount = seedData.rows || seedLines.length
-      imported.push(...seedLines)
-      sources.push(...(seedData.sources || ['lineas-incluidas.json']))
-      state.lines = lines
-      state.lineSeedImportVersion = lineSeedImportVersion
-      state.lineImport = lineImportState(`Bases incluidas: ${sources.join(' + ')}`, rowCount, imported, stats, {
-        autoVersion: lineAutoImportVersion,
-        seedVersion: lineSeedImportVersion,
-        seedSources: sources
-      })
-      state.notice = options.notice || `Bases de lineas incluidas: ${sources.join(' + ')}.`
-      persistState()
-      return true
-    }
-  } catch (error) {
-    console.warn(error)
-  }
-
-  for (const seed of lineSeedFiles) {
-    try {
-      const response = await fetch(seed.url, { cache: 'no-store' })
-      if (!response.ok) throw new Error(`No se pudo leer ${seed.label}.`)
-      const buffer = await response.arrayBuffer()
-      const parsed = await parseWorkbookFile(buffer, seed.url)
-      const result = mergeLineRows(lines, parsed.rows, seed.label, seed.options)
-      const bridgedLines = enrichLinesFromBridge(result.lines, bridge, state.devices)
-      lines = dedupeLines(bridgedLines, state.devices)
-      bridge = mergedLineBridge(lines, state.devices)
-      stats = lineStats(lines)
-      rowCount += parsed.rows.length
-      imported.push(...result.imported)
-      sources.push(seed.label)
-    } catch (error) {
-      console.warn(error)
-    }
-  }
-
-  if (!sources.length) return false
-
-  state.lines = lines
   state.lineSeedImportVersion = lineSeedImportVersion
-  state.lineImport = lineImportState(`Bases incluidas: ${sources.join(' + ')}`, rowCount, imported, stats, {
+  state.notice = options.notice || 'No hay bases de lineas incluidas para cargar.'
+  persistState()
+  return false
+}
+
+function clearLineState(reason = 'Lineas limpiadas del servidor') {
+  state.lines = []
+  state.lineImport = lineImportState(reason, 0, [], lineStats([]), {
     autoVersion: lineAutoImportVersion,
     seedVersion: lineSeedImportVersion,
-    seedSources: sources
+    resetVersion: lineResetVersion
   })
-  state.notice = options.notice || `Bases de lineas incluidas: ${sources.join(' + ')}.`
-  persistState()
-  return true
+  state.lineSeedImportVersion = lineSeedImportVersion
+  state.lineResetVersion = lineResetVersion
+  state.lineQuery = ''
+  state.lineIccQuery = ''
+  state.lineStatusFilter = ''
+  state.lineMatchFilter = ''
+  state.lineTypeFilter = ''
+  state.linePage = 1
 }
 
 async function handleLineFile(file) {
@@ -5118,6 +5064,7 @@ function applySavedState(parsed = {}) {
       paymentImport: parsed.paymentImport || null,
       lineImport: parsed.lineImport || null,
       lineSeedImportVersion: parsed.lineSeedImportVersion || 0,
+      lineResetVersion: parsed.lineResetVersion || 0,
       lineQuery: parsed.lineQuery || '',
       lineIccQuery: parsed.lineIccQuery || '',
       lineStatusFilter: parsed.lineStatusFilter || '',
@@ -5221,6 +5168,11 @@ async function init() {
     persistState()
   }
 
+  if (state.lineResetVersion !== lineResetVersion) {
+    clearLineState()
+    persistState()
+  }
+
   if (state.rawRows.length && state.lineImport?.autoVersion !== lineAutoImportVersion) {
     const label = state.sourceLabel || 'Base guardada'
     const lineMerge = mergeLineRows(state.lines, state.rawRows, label, { requireIcc: true, markMissing: false })
@@ -5231,10 +5183,6 @@ async function init() {
       })
       persistState()
     }
-  }
-
-  if (state.lineSeedImportVersion !== lineSeedImportVersion) {
-    await loadIncludedLineDatabases({ notice: 'Bases incluidas de lineas aplicadas y cruzadas con Emnify.' })
   }
 
   if (state.devices.length && state.paymentImport?.version !== paymentImportVersion) {
