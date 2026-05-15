@@ -18,6 +18,8 @@ El CRM pide login por correo. El primer arranque crea un admin para `felipe.gome
 
 El CRM guarda estado, usuarios, bases privadas y archivos subidos cifrados en `data/`. Esa carpeta no se sube a GitHub. Para pasar la app a otra PC, clona el repo y copia tambien la carpeta `data/` desde la PC servidor si quieres conservar bases, usuarios y estado.
 
+Algunas bases semilla pueden subirse cifradas una vez dentro de `data/private-files/`. La llave `data/secret.key`, `.env`, passwords, tokens y respaldos locales no deben subirse; sin esa llave las bases cifradas no se pueden abrir en otra PC.
+
 Cada usuario puede cambiar su password desde `Cuenta` / `Usuarios`. La recuperacion genera un token dinamico; si no hay un servicio de correo configurado, el token queda solo en la PC servidor en `data/password-reset-tokens.txt`. Tambien puedes generar tokens de un solo uso con:
 
 ```powershell

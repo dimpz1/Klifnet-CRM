@@ -31,7 +31,7 @@ const privateFileMap = {
   wialon: 'DispositivosWialon_Abril2026.xlsx.enc',
   pagos: 'Klifnet_Admon_Mensual_Pagos.xlsx.enc',
   cotizacion: 'cotizacion_CalidadSP.xlsx.enc',
-  lineas: 'base_relacion_lineas.json.enc'
+  lineas: ['base_relacion_lineas.json', 'base_relacion_lineas.json.enc']
 }
 
 const mimeTypes = {
@@ -558,9 +558,13 @@ function writeState(payload) {
   encryptJson(stateFile, payload)
 }
 
-function privateFilePath(kind) {
+function privateFilePath(kind, options = {}) {
   const mapped = privateFileMap[kind]
-  return mapped ? path.join(privateFilesDir, mapped) : ''
+  if (!mapped) return ''
+  if (!Array.isArray(mapped)) return path.join(privateFilesDir, mapped)
+  if (options.forWrite) return path.join(privateFilesDir, mapped[0])
+  const existing = mapped.find((fileName) => fs.existsSync(path.join(privateFilesDir, fileName)))
+  return path.join(privateFilesDir, existing || mapped[0])
 }
 
 function writeEncryptedUpload(category, fileName, data) {
@@ -767,7 +771,7 @@ async function handleApi(req, res, url) {
     if (url.pathname === '/api/private-file' && req.method === 'POST') {
       const body = JSON.parse(await readBody(req))
       const kind = body.kind
-      const filePath = privateFilePath(kind)
+      const filePath = privateFilePath(kind, { forWrite: true })
       if (!filePath) {
         sendJson(res, 400, { ok: false, error: 'Tipo de base privada invalido.' })
         return

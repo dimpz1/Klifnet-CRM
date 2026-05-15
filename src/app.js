@@ -16,7 +16,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 10
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 1
+const lineRelationBaseVersion = 2
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -30,7 +30,8 @@ const lineTypeOptions = [
   { value: 'telcel-prepago', label: 'Telcel prepago' },
   { value: 'telcel-postpago', label: 'Telcel post pago' },
   { value: 'm2m', label: 'M2M' },
-  { value: 'emnify', label: 'Emnify' }
+  { value: 'emnify', label: 'Emnify' },
+  { value: 'wemobile', label: 'WeMobile' }
 ]
 
 const linePageSize = 40
@@ -406,7 +407,7 @@ function textValue(value) {
 
 function importTextValue(value) {
   const text = textValue(value)
-  return text.startsWith("'") ? text.slice(1).trim() : text
+  return text.replace(/^[`'´]+/, '').replace(/[`´]/g, '').trim()
 }
 
 function unique(values) {
@@ -1861,6 +1862,13 @@ function extractImeiFromRow(row) {
     const stockImei = normalizeImeiCandidate(row['Columna 7'])
     if (stockImei) return stockImei
   }
+  const headerlessImei = normalizeImeiCandidate(row['Columna 4']) || normalizeImeiCandidate(row['Columna 6'])
+  if (headerlessImei) return headerlessImei
+  const longCandidates = Object.values(row)
+    .map(importTextValue)
+    .map(normalizeImeiCandidate)
+    .filter((value) => value.length >= 14 && !value.startsWith('89'))
+  if (longCandidates.length) return longCandidates.at(-1)
   return ''
 }
 
@@ -2054,6 +2062,7 @@ function normalizeLineType(value) {
   const clean = normalizeHeader(value)
   if (clean.includes('emprenet')) return 'emprenet'
   if (clean.includes('emnify')) return 'emnify'
+  if (clean.includes('wemobile') || clean.includes('we mobile')) return 'wemobile'
   if (clean.includes('m2m') || clean.includes('m 2 m')) return 'm2m'
   if (clean.includes('telcel') && (clean.includes('prepago') || clean.includes('pre pago') || clean.includes('telcelprep'))) return 'telcel-prepago'
   if (clean.includes('telcel') && (clean.includes('postpago') || clean.includes('post pago') || clean.includes('pospago') || clean.includes('pos pago'))) return 'telcel-postpago'
@@ -2066,6 +2075,7 @@ function detectLineTypeFromText(value) {
   if (!clean) return ''
   if (clean.includes('emprenet')) return 'emprenet'
   if (clean.includes('emnify')) return 'emnify'
+  if (clean.includes('wemobile') || clean.includes('we mobile')) return 'wemobile'
   if (clean.includes('m2m') || clean.includes('m 2 m')) return 'm2m'
   if (clean.includes('telcel') && (clean.includes('prepago') || clean.includes('pre pago') || clean.includes('telcelprep'))) return 'telcel-prepago'
   if (clean.includes('telcel') && (clean.includes('postpago') || clean.includes('post pago') || clean.includes('pospago') || clean.includes('pos pago'))) return 'telcel-postpago'
