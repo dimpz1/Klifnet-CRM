@@ -16,7 +16,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 10
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 2
+const lineRelationBaseVersion = 3
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -1889,10 +1889,16 @@ function lineIdentifierKeys(line) {
   const iccid = identifiers.iccid
   const phone = identifiers.phone
   const imei = normalizeIdentifier(identifiers.imei)
+  const providerKey = detectLineTypeFromText(line.lineType || line.providerOverride || line.carrier || line.source || '') || normalizeHeader(line.carrier || 'sin-proveedor')
+  const relationId = normalizeIdentifier(line.relationId || line.relacion_id || line.relation_id)
+  const sourceLineId = normalizeIdentifier(line.sourceLineId || line.linea_id || line.line_id)
   const keys = []
-  if (iccid) keys.push(`iccid:${iccid}`)
-  if (phone) keys.push(`phone:${phone}`)
-  if (imei) keys.push(`imei:${imei}`)
+  if (relationId) keys.push(`relation:${providerKey}:${relationId}`)
+  if (sourceLineId) keys.push(`source-line:${providerKey}:${sourceLineId}`)
+  if (keys.length) return unique(keys)
+  if (iccid) keys.push(`iccid:${providerKey}:${iccid}`)
+  if (phone) keys.push(`phone:${providerKey}:${phone}`)
+  if (imei) keys.push(`imei:${providerKey}:${imei}`)
   if (!keys.length) keys.push(`line:${normalizeHeader(`${line.company || ''}-${line.carrier || ''}-${line.plan || ''}`)}`)
   return unique(keys)
 }
@@ -2156,6 +2162,8 @@ function normalizeLine(line, index = 0) {
     imei: importTextValue(line.imei),
     carrier: importTextValue(line.carrier) || lineTypeLabel(lineType),
     plan: importTextValue(line.plan),
+    relationId: importTextValue(line.relationId || line.relacion_id || line.relation_id),
+    sourceLineId: importTextValue(line.sourceLineId || line.linea_id || line.line_id),
     status: normalizeLineStatus(line.status),
     billingCycle: normalizeCycle(line.billingCycle || 'anual'),
     renewalDate: renewalSignal?.renewalDate || normalizeLineDate(line.renewalDate),
@@ -2602,6 +2610,9 @@ function lineFromRelationRecord(record, index) {
   const isBernardo = normalizeHeader(record.cliente_perfil || record.cliente_fuente || record.alias).includes('bernardo') || normalizeHeader(record.alias).startsWith('berna')
   return normalizeLine(
     {
+      id: `${normalizeHeader(provider) || 'linea'}-${record.linea_id || record.relacion_id || index}`,
+      relationId: record.relacion_id,
+      sourceLineId: record.linea_id,
       company: record.cliente_perfil || (isBernardo ? 'Bernardo' : record.cliente_fuente) || '',
       phone: record.telefono,
       lineType: provider,
@@ -2633,7 +2644,7 @@ async function loadLineRelationBase(options = {}) {
   try {
     const payload = await fetchPrivateJson('lineas')
     const imported = relationPayloadToLines(payload)
-    const merged = options.replace ? imported : mergeLines(state.lines, imported, { markMissing: false })
+    const merged = options.merge ? mergeLines(state.lines, imported, { markMissing: false }) : imported
     const stats = lineStats(merged)
     state.lines = merged
     state.lineImport = lineImportState('base_relacion_lineas.json cifrada', imported.length, imported, stats, {
@@ -5200,8 +5211,8 @@ function bindEvents() {
   document.getElementById('uploadLineFile')?.addEventListener('click', () => document.getElementById('lineFileInput')?.click())
   document.getElementById('uploadEmnifyFile')?.addEventListener('click', () => document.getElementById('emnifyFileInput')?.click())
   document.getElementById('loadRelationLines')?.addEventListener('click', async () => {
-    const loaded = await loadLineRelationBase({ replace: false })
-    setState({ view: 'lineas', notice: loaded ? 'Base cifrada de lineas cargada y cruzada.' : 'No se pudo cargar la base cifrada de lineas.' })
+    const loaded = await loadLineRelationBase()
+    setState({ view: 'lineas', notice: loaded ? 'Base cifrada de lineas cargada limpia, sin mezclar operadores anteriores.' : 'No se pudo cargar la base cifrada de lineas.' })
   })
   document.getElementById('exportLinesXlsx')?.addEventListener('click', exportLinesXlsx)
 
@@ -5639,7 +5650,7 @@ async function initDataAfterAuth() {
   }
 
   if (state.lineRelationBaseVersion !== lineRelationBaseVersion) {
-    await loadLineRelationBase({ replace: false })
+    await loadLineRelationBase()
   }
 
   if (state.rawRows.length && state.lineImport?.autoVersion !== lineAutoImportVersion) {
