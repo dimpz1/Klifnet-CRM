@@ -12,7 +12,9 @@ Abre `http://127.0.0.1:8787`.
 
 Para usarlo desde otros equipos de la misma red WiFi, ejecuta el script y abre la URL LAN que muestra PowerShell, por ejemplo `http://192.168.1.183:8787/`.
 
-El CRM guarda el estado compartido en la computadora que corre el servidor, en `data/server-state.json`, y conserva copias de los archivos subidos en `data/uploads/`. Asi cualquier computadora de la red que entre a la misma URL ve la base actualizada.
+El CRM pide login por correo. El primer arranque crea un admin para `felipe.gomez@klifnet.com` y guarda la clave temporal en `data/admin-inicial.txt`.
+
+El CRM guarda estado, usuarios, bases privadas y archivos subidos cifrados en `data/`. Esa carpeta no se sube a GitHub. Para pasar la app a otra PC, clona el repo y copia tambien la carpeta `data/` desde la PC servidor si quieres conservar bases, usuarios y estado.
 
 ## Wialon
 
@@ -57,8 +59,11 @@ Las lineas pueden ligarse a equipos por IMEI o manejarse como venta independient
 3. Los equipos encontrados toman `Tipo de Pago`, `Importe` y meses de pago. Soporta mensual, anual y semestral.
 4. Los equipos Wialon que no esten en el archivo de pagos quedan como mensuales.
 5. Elige el periodo: `Mes actual`, `Mes siguiente` o `Mes anterior`.
-6. Usa `Generar lista`.
-7. Usa `Exportar XLSX` para descargar un archivo con dos hojas: resumen por cliente y detalle por equipo.
+6. Por defecto trabaja con `Mes siguiente`, pensado para preparar prefacturas al cierre de mes.
+7. Usa `Generar prefactura`.
+8. Usa `Exportar XLSX` para descargar un archivo con resumen por cliente y detalle de partidas.
+
+Las lineas celulares con renovacion del periodo tambien entran a la prefacturacion. Bernardo queda preparado a `$550` por linea anual.
 
 ## Cotizaciones
 
@@ -70,6 +75,6 @@ Usa `Generar cotizacion XLSX + PDF` para descargar la propuesta lista para envia
 
 ## Notas
 
-`Facturacion` cuenta estrictamente equipos importados desde Wialon. Si un equipo pertenece a otra empresa o grupo, cambialo en `Cobros` o `Equipos` y la prefacturacion usara esa asignacion.
+`Facturacion` cuenta estrictamente equipos importados desde Wialon para equipos GPS. Las lineas celulares salen de la base cifrada de `Lineas`.
 
-Los cambios editables del CRM se guardan en el servidor compartido y tambien queda una copia local de respaldo en el navegador.
+Los cambios editables del CRM se guardan en el servidor cifrado. Las bases en claro no deben guardarse dentro del repo.

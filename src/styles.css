@@ -75,6 +75,56 @@ button {
   flex: 0 0 auto;
 }
 
+.user-chip {
+  max-width: 260px;
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-shell {
+  max-width: 720px;
+}
+
+.auth-card {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-left: 6px solid var(--brand);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.auth-card > div > span,
+.auth-card label span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.auth-card p {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.user-admin {
+  max-width: none;
+}
+
 .eyebrow {
   margin: 0 0 4px;
   color: var(--brand-dark);

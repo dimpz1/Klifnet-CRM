@@ -1,13 +1,19 @@
 const storageKey = 'crm-wialon-prefacturacion-v1'
 const serverStateUrl = '/api/state'
 const serverUploadUrl = '/api/uploads'
-const seedFile = '/public/data/DispositivosWialon_Abril2026.xlsx'
-const paymentSeedFile = '/public/data/Klifnet_Admon_Mensual_Pagos.xlsx'
-const quoteTemplateFile = '/public/templates/cotizacion_CalidadSP.xlsx'
+const authMeUrl = '/api/auth/me'
+const authLoginUrl = '/api/auth/login'
+const authLogoutUrl = '/api/auth/logout'
+const usersUrl = '/api/users'
+const privateFileUrl = '/api/private-file'
+const seedFile = 'DispositivosWialon_Abril2026.xlsx'
+const paymentSeedFile = 'Klifnet_Admon_Mensual_Pagos.xlsx'
+const quoteTemplateFile = 'cotizacion_CalidadSP.xlsx'
 const paymentImportVersion = 4
 const lineAutoImportVersion = 10
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
+const lineRelationBaseVersion = 1
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -228,7 +234,7 @@ const defaultBilling = {
   ivaRate: 0.16,
   currency: 'MXN',
   concept: 'Servicio mensual de rastreo GPS Wialon',
-  periodMode: 'current'
+  periodMode: 'next'
 }
 
 const defaultQuote = {
@@ -341,6 +347,9 @@ const state = {
   lineMatchFilter: '',
   lineTypeFilter: '',
   linePage: 1,
+  lineRelationBaseVersion: 0,
+  auth: { loading: true, user: null, users: [] },
+  login: { email: '', password: '', name: '', newEmail: '', newPassword: '', newRole: 'usuario' },
   sourceLabel: '',
   lastImportAt: '',
   selectedCompany: '',
@@ -350,6 +359,7 @@ const state = {
 let serverSaveTimer = null
 let currentServerUpdatedAt = ''
 let applyingServerState = false
+let serverPollTimer = null
 
 function normalizeHeader(value) {
   return String(value || '')
@@ -958,6 +968,7 @@ function stateSnapshot() {
     lineMatchFilter: state.lineMatchFilter,
     lineTypeFilter: state.lineTypeFilter,
     linePage: state.linePage,
+    lineRelationBaseVersion: state.lineRelationBaseVersion,
     quote: state.quote,
     newDevice: state.newDevice,
     newLine: state.newLine,
@@ -994,7 +1005,6 @@ function scheduleServerStateSave(snapshot) {
 
 function persistState(options = {}) {
   const snapshot = stateSnapshot()
-  localStorage.setItem(storageKey, JSON.stringify(snapshot))
   if (!options.localOnly) scheduleServerStateSave(snapshot)
 }
 
@@ -1002,9 +1012,8 @@ async function saveChangesNow() {
   clearTimeout(serverSaveTimer)
   serverSaveTimer = null
   const snapshot = stateSnapshot()
-  localStorage.setItem(storageKey, JSON.stringify(snapshot))
   const saved = await saveStateToServer(snapshot)
-  state.notice = saved ? 'Cambios guardados en el servidor compartido.' : 'Cambios guardados localmente; no se pudo conectar al servidor.'
+  state.notice = saved ? 'Cambios guardados en el servidor cifrado.' : 'No se pudo conectar al servidor para guardar.'
   render()
 }
 
@@ -1012,6 +1021,99 @@ function setState(patch, shouldRender = true) {
   Object.assign(state, patch)
   persistState()
   if (shouldRender) render()
+}
+
+async function fetchPrivateFile(kind) {
+  const response = await fetch(`${privateFileUrl}?kind=${encodeURIComponent(kind)}`, { cache: 'no-store' })
+  if (!response.ok) throw new Error(`No se pudo abrir la base privada: ${kind}.`)
+  return response.arrayBuffer()
+}
+
+async function fetchPrivateJson(kind) {
+  const buffer = await fetchPrivateFile(kind)
+  const text = new TextDecoder().decode(buffer)
+  return JSON.parse(text)
+}
+
+async function apiJson(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    }
+  })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok || result.ok === false) throw new Error(result.error || 'No se pudo completar la operacion.')
+  return result
+}
+
+async function refreshAuth() {
+  try {
+    const result = await apiJson(authMeUrl, { method: 'GET' })
+    state.auth = { loading: false, user: result.user || null, users: result.users || [] }
+    return Boolean(result.user)
+  } catch (error) {
+    state.auth = { loading: false, user: null, users: [] }
+    return false
+  }
+}
+
+async function loginUser() {
+  try {
+    const result = await apiJson(authLoginUrl, {
+      method: 'POST',
+      body: JSON.stringify({ email: state.login.email, password: state.login.password })
+    })
+    state.auth = { loading: false, user: result.user || null, users: result.users || [] }
+    state.login = { ...state.login, password: '' }
+    await initDataAfterAuth()
+  } catch (error) {
+    state.notice = error.message
+    render()
+  }
+}
+
+async function logoutUser() {
+  try {
+    await apiJson(authLogoutUrl, { method: 'POST', body: '{}' })
+  } catch {}
+  localStorage.removeItem(storageKey)
+  Object.assign(state, { auth: { loading: false, user: null, users: [] }, notice: 'Sesion cerrada.' })
+  render()
+}
+
+async function createUser() {
+  try {
+    const result = await apiJson(usersUrl, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: state.login.name,
+        email: state.login.newEmail,
+        password: state.login.newPassword,
+        role: state.login.newRole
+      })
+    })
+    state.auth = { ...state.auth, users: result.users || [] }
+    state.login = { ...state.login, name: '', newEmail: '', newPassword: '', newRole: 'usuario' }
+    state.notice = 'Usuario creado.'
+    render()
+  } catch (error) {
+    state.notice = error.message
+    render()
+  }
+}
+
+async function deleteUser(id) {
+  try {
+    const result = await apiJson(`${usersUrl}/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    state.auth = { ...state.auth, users: result.users || [] }
+    state.notice = 'Usuario eliminado.'
+    render()
+  } catch (error) {
+    state.notice = error.message
+    render()
+  }
 }
 
 function detectMapping(columns) {
@@ -1378,8 +1480,7 @@ async function parseWorkbookFile(fileOrBuffer, filename = '') {
 
 async function loadSeedFile() {
   try {
-    const response = await fetch(seedFile)
-    const buffer = await response.arrayBuffer()
+    const buffer = await fetchPrivateFile('wialon')
     const parsed = await parseWorkbookFile(buffer, seedFile)
     const normalized = normalizeRows(parsed.rows, parsed.mapping, 'vigente')
     const devices = state.devices.length ? mergeDevices(state.devices, normalized) : normalized
@@ -1596,8 +1697,7 @@ function applyPaymentRows(rows, label, options = {}) {
 }
 
 async function loadPaymentSeed(options = {}) {
-  const response = await fetch(paymentSeedFile)
-  const buffer = await response.arrayBuffer()
+  const buffer = await fetchPrivateFile('pagos')
   const parsed = await parseWorkbookFile(buffer, paymentSeedFile)
   applyPaymentRows(parsed.rows, 'Klifnet_Admon_Mensual_Pagos.xlsx', options)
 }
@@ -1861,7 +1961,7 @@ function parseLineRenewalText(value) {
 
 function normalizeLineStatus(value) {
   const clean = normalizeHeader(value)
-  if (!clean || clean === 'activa' || clean === 'activo' || clean === 'vigente' || clean === 'alta' || clean.includes('activated') || clean.includes('enabled')) return 'activa'
+  if (!clean || clean === 'activa' || clean === 'activo' || clean === 'active' || clean === 'vigente' || clean === 'alta' || clean.includes('activated') || clean.includes('enabled')) return 'activa'
   if (
     clean.includes('desactiv') ||
     clean.includes('deactiv') ||
@@ -2414,6 +2514,58 @@ function lineImportState(label, rowsLength, imported, stats, extra = {}) {
   }
 }
 
+function lineFromRelationRecord(record, index) {
+  const provider = record.proveedor || record.provider || ''
+  const isBernardo = normalizeHeader(record.cliente_perfil || record.cliente_fuente || record.alias).includes('bernardo') || normalizeHeader(record.alias).startsWith('berna')
+  return normalizeLine(
+    {
+      company: record.cliente_perfil || (isBernardo ? 'Bernardo' : record.cliente_fuente) || '',
+      phone: record.telefono,
+      lineType: provider,
+      providerOverride: provider,
+      iccid: record.iccid_luhn || record.iccid,
+      imei: record.imei,
+      carrier: record.operador || provider,
+      plan: record.plan,
+      status: record.estatus_servicio || record.estatus_original || 'activa',
+      billingCycle: isBernardo ? 'anual' : 'anual',
+      renewalDate: record.fecha_renovacion || '',
+      annualPrice: isBernardo ? '550' : '',
+      clientOnly: !record.imei,
+      notes: [record.alias, record.renovacion_fuente, record.notas].filter(Boolean).join(' | '),
+      source: record.fuente || 'base_relacion_lineas',
+      providerManual: true,
+      recordState: 'vigente'
+    },
+    index
+  )
+}
+
+function relationPayloadToLines(payload) {
+  const rows = Array.isArray(payload?.lineas) ? payload.lineas : []
+  return rows.map(lineFromRelationRecord)
+}
+
+async function loadLineRelationBase(options = {}) {
+  try {
+    const payload = await fetchPrivateJson('lineas')
+    const imported = relationPayloadToLines(payload)
+    const merged = options.replace ? imported : mergeLines(state.lines, imported, { markMissing: false })
+    const stats = lineStats(merged)
+    state.lines = merged
+    state.lineImport = lineImportState('base_relacion_lineas.json cifrada', imported.length, imported, stats, {
+      autoVersion: lineAutoImportVersion,
+      relationBaseVersion: lineRelationBaseVersion
+    })
+    state.lineRelationBaseVersion = lineRelationBaseVersion
+    persistState()
+    return true
+  } catch (error) {
+    console.warn(error)
+    return false
+  }
+}
+
 async function loadIncludedLineDatabases(options = {}) {
   state.lineSeedImportVersion = lineSeedImportVersion
   state.notice = options.notice || 'No hay bases de lineas incluidas para cargar.'
@@ -2436,6 +2588,7 @@ function clearLineState(reason = 'Lineas limpiadas del servidor') {
   state.lineMatchFilter = ''
   state.lineTypeFilter = ''
   state.linePage = 1
+  state.lineRelationBaseVersion = 0
 }
 
 async function handleLineFile(file) {
@@ -2636,9 +2789,11 @@ function billingFilterStats(rows) {
       semestral: totals.semestral + row.semestralCount,
       outsideAnnual: totals.outsideAnnual + row.annualOutsidePeriod,
       billable: totals.billable + row.equipmentCount,
+      lines: totals.lines + (row.lineCount || 0),
+      totalBillable: totals.totalBillable + (row.billableCount || row.equipmentCount || 0),
       total: totals.total + row.total
     }),
-    { monthly: 0, annual: 0, semestral: 0, outsideAnnual: 0, billable: 0, total: 0 }
+    { monthly: 0, annual: 0, semestral: 0, outsideAnnual: 0, billable: 0, lines: 0, totalBillable: 0, total: 0 }
   )
 }
 
@@ -2838,6 +2993,70 @@ function deviceUnitPrice(device) {
   return Number(state.billing.monthlyPricePerDevice || 0)
 }
 
+function lineBillingCycle(line) {
+  return normalizeCycle(line.billingCycle || 'anual')
+}
+
+function linePaymentMonths(line) {
+  if (lineBillingCycle(line) === 'mensual') return []
+  const renewalDate = normalizeLineDate(line.renewalDate)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(renewalDate)) {
+    const firstMonth = Number(renewalDate.slice(5, 7))
+    if (lineBillingCycle(line) === 'semestral') {
+      const secondMonth = ((firstMonth + 5) % 12) + 1
+      return [String(firstMonth), String(secondMonth)]
+    }
+    return [String(firstMonth)]
+  }
+  return []
+}
+
+function lineUnitPrice(line) {
+  const annualPrice = Number(line.annualPrice || 0)
+  if (annualPrice > 0 && lineBillingCycle(line) === 'semestral') return annualPrice / 2
+  if (annualPrice > 0) return annualPrice
+  return 0
+}
+
+function billingLineFilterMatches(line) {
+  const query = normalizeHeader(state.billingQuery)
+  const companyMatches = !state.billingCompany || normalizeHeader(line.company) === normalizeHeader(state.billingCompany)
+  const groupMatches = !state.billingGroup
+  const queryMatches =
+    !query ||
+    normalizeHeader(`${line.company} ${line.phone} ${line.iccid} ${line.imei} ${lineTypeLabel(line.lineType)} ${line.carrier} ${line.plan} ${line.notes}`).includes(query)
+  return companyMatches && groupMatches && queryMatches
+}
+
+function ensureBillingRow(rows, companyName, period) {
+  if (!companyName || companyName === 'Sin empresa') return null
+  const meta = getCompanyMeta(companyName)
+  if (!rows.has(companyName)) {
+    rows.set(companyName, {
+      id: `${slug(companyName)}-${period.key}`,
+      company: companyName,
+      legalName: meta.legalName || companyName,
+      rfc: meta.rfc,
+      email: meta.email,
+      periodLabel: period.label,
+      monthlyCount: 0,
+      annualCount: 0,
+      semestralCount: 0,
+      annualOutsidePeriod: 0,
+      equipmentCount: 0,
+      lineCount: 0,
+      billableCount: 0,
+      subtotal: 0,
+      tax: 0,
+      total: 0,
+      status: 'facturar',
+      message: '',
+      details: []
+    })
+  }
+  return rows.get(companyName)
+}
+
 function buildBillingRows() {
   const period = getBillingPeriod()
   const periodMonth = Number(period.key.slice(5, 7))
@@ -2847,31 +3066,8 @@ function buildBillingRows() {
     .filter((device) => isBillableDevice(device) && isImportedWialonDevice(device) && billingFilterMatches(device))
     .forEach((device) => {
     const companyName = device.company || 'Sin empresa'
-    if (companyName === 'Sin empresa') return
-    const meta = getCompanyMeta(companyName)
-    if (!rows.has(companyName)) {
-      rows.set(companyName, {
-        id: `${slug(companyName)}-${period.key}`,
-        company: companyName,
-        legalName: meta.legalName || companyName,
-        rfc: meta.rfc,
-        email: meta.email,
-        periodLabel: period.label,
-        monthlyCount: 0,
-        annualCount: 0,
-        semestralCount: 0,
-        annualOutsidePeriod: 0,
-        equipmentCount: 0,
-        subtotal: 0,
-        tax: 0,
-        total: 0,
-        status: 'facturar',
-        message: '',
-        details: []
-      })
-    }
-
-    const row = rows.get(companyName)
+    const row = ensureBillingRow(rows, companyName, period)
+    if (!row) return
     const cycle = deviceBillingCycle(device)
     const months = devicePaymentMonths(device)
     const shouldBill = cycle === 'mensual' || months.includes(String(periodMonth))
@@ -2884,13 +3080,18 @@ function buildBillingRows() {
 
     if (shouldBill) {
       row.equipmentCount += 1
+      row.billableCount += 1
       row.subtotal += unitPrice
       row.details.push({
+        sourceType: 'Equipo Wialon',
         unitName: device.unitName,
         uid: device.uid,
         imei: device.imei,
         imeiLong: deviceImeiLong(device),
         imeiShort: deviceImeiShort(device),
+        phone: device.phone || '',
+        iccid: '',
+        lineType: '',
         cycle,
         paymentMonths: months,
         renewalDate: device.renewalDate || '',
@@ -2901,14 +3102,55 @@ function buildBillingRows() {
     }
     })
 
+  state.lines
+    .map((line, index) => normalizeLine(line, index))
+    .filter((line) => isActiveLine(line) && billingLineFilterMatches(line))
+    .forEach((line) => {
+      const companyName = line.company || 'Sin empresa'
+      const row = ensureBillingRow(rows, companyName, period)
+      if (!row) return
+      const cycle = lineBillingCycle(line)
+      const months = linePaymentMonths(line)
+      const shouldBill = cycle === 'mensual' || months.includes(String(periodMonth))
+      const unitPrice = lineUnitPrice(line)
+
+      if (cycle === 'mensual' && shouldBill && unitPrice > 0) row.monthlyCount += 1
+      if (cycle === 'anual' && shouldBill) row.annualCount += 1
+      if (cycle === 'semestral' && shouldBill) row.semestralCount += 1
+      if ((cycle === 'anual' || cycle === 'semestral') && !shouldBill && months.length) row.annualOutsidePeriod += 1
+
+      if (shouldBill && unitPrice > 0) {
+        row.lineCount += 1
+        row.billableCount += 1
+        row.subtotal += unitPrice
+        row.details.push({
+          sourceType: 'Linea celular',
+          unitName: lineTypeLabel(line.lineType),
+          uid: '',
+          imei: line.imei || '',
+          imeiLong: line.imei || '',
+          imeiShort: deriveShortImei(line.imei || ''),
+          phone: line.phone || '',
+          iccid: line.iccid || '',
+          lineType: lineTypeLabel(line.lineType),
+          cycle,
+          paymentMonths: months,
+          renewalDate: line.renewalDate || '',
+          saleDate: '',
+          priceNote: line.notes || '',
+          unitPrice
+        })
+      }
+    })
+
   return Array.from(rows.values())
     .map((row) => {
       row.tax = row.subtotal * Number(state.billing.ivaRate || 0)
       row.total = row.subtotal + row.tax
-      row.status = row.equipmentCount > 0 ? 'facturar' : 'fuera_periodo'
+      row.status = row.billableCount > 0 ? 'facturar' : 'fuera_periodo'
       row.message =
-        row.equipmentCount > 0
-          ? `${row.monthlyCount} mensuales, ${row.annualCount} anuales y ${row.semestralCount} semestrales.`
+        row.billableCount > 0
+          ? `${row.monthlyCount} mensuales, ${row.annualCount} anuales, ${row.semestralCount} semestrales y ${row.lineCount} lineas.`
           : `${row.annualOutsidePeriod} anualidades/semestrales fuera de este periodo.`
       return row
     })
@@ -2923,7 +3165,7 @@ function generateBillingList() {
     return
   }
 
-  setState({ billingRows: rows, view: 'facturacion', notice: 'Lista de prefacturacion generada.' })
+  setState({ billingRows: rows, view: 'facturacion', notice: `Prefacturacion generada para ${getBillingPeriod().label}.` })
 }
 
 function download(filename, body, type) {
@@ -2948,7 +3190,7 @@ function arrayBufferToBase64(buffer) {
 
 async function saveUploadedFile(file, category, buffer) {
   try {
-    await fetch(serverUploadUrl, {
+    const response = await fetch(serverUploadUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2957,6 +3199,7 @@ async function saveUploadedFile(file, category, buffer) {
         dataBase64: arrayBufferToBase64(buffer)
       })
     })
+    if (!response.ok) throw new Error('No se pudo guardar archivo cifrado.')
   } catch (error) {
     console.warn(error)
   }
@@ -3516,10 +3759,7 @@ async function exportQuotePdf(quote) {
 }
 
 async function exportQuoteTemplateXlsx(quote) {
-  const response = await fetch(quoteTemplateFile)
-  if (!response.ok) throw new Error('No se pudo cargar la plantilla de cotizacion.')
-
-  const zip = await JSZip.loadAsync(await response.arrayBuffer())
+  const zip = await JSZip.loadAsync(await fetchPrivateFile('cotizacion'))
   let sheetXmlText = await zip.file('xl/worksheets/sheet1.xml').async('string')
   const today = new Date()
   const productRows = quoteTemplateProductRows(quote)
@@ -3595,6 +3835,8 @@ async function exportBillingXlsx() {
       'Semestrales periodo',
       'Anualidades fuera',
       'Equipos a facturar',
+      'Lineas a facturar',
+      'Total partidas',
       'Subtotal',
       'IVA',
       'Total',
@@ -3612,6 +3854,8 @@ async function exportBillingXlsx() {
       row.semestralCount,
       row.annualOutsidePeriod,
       row.equipmentCount,
+      row.lineCount || 0,
+      row.billableCount || row.equipmentCount,
       row.subtotal,
       row.tax,
       row.total,
@@ -3622,11 +3866,15 @@ async function exportBillingXlsx() {
   const detailRows = rows.flatMap((row) =>
     row.details.map((detail) => [
       row.company,
+      detail.sourceType || 'Equipo Wialon',
       detail.unitName,
       detail.uid,
+      detail.phone || '',
+      detail.iccid || '',
       detail.imei,
       detail.imeiLong,
       detail.imeiShort,
+      detail.lineType || '',
       detail.cycle,
       formatPaymentMonths(detail.paymentMonths),
       detail.renewalDate,
@@ -3637,12 +3885,12 @@ async function exportBillingXlsx() {
     ])
   )
   const details = [
-    ['Empresa', 'Equipo', 'UID', 'IMEI', 'IMEI largo', 'IMEI corto', 'Cobro', 'Meses pago', 'Fecha renovacion', 'Precio pactado/aplicado', 'Fecha venta', 'Nota precio', 'Periodo'],
+    ['Empresa', 'Tipo partida', 'Equipo / Linea', 'UID', 'Telefono', 'ICCID', 'IMEI', 'IMEI largo', 'IMEI corto', 'Proveedora linea', 'Cobro', 'Meses pago', 'Fecha renovacion', 'Precio pactado/aplicado', 'Fecha venta', 'Nota precio', 'Periodo'],
     ...detailRows
   ]
   await exportWorkbookXlsx(`prefacturacion-${getBillingPeriod().key}.xlsx`, [
     { name: 'Resumen', rows: summary },
-    { name: 'Detalle equipos', rows: details }
+    { name: 'Detalle partidas', rows: details }
   ])
 }
 
@@ -3830,7 +4078,7 @@ function billingTable() {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Empresa</th><th>Periodo</th><th>Mensuales</th><th>Anuales</th><th>Semestrales</th><th>A facturar</th><th>Subtotal</th><th>IVA</th><th>Total</th><th>Estado</th></tr>
+          <tr><th>Empresa</th><th>Periodo</th><th>Mensuales</th><th>Anuales</th><th>Semestrales</th><th>Equipos</th><th>Lineas</th><th>Total partidas</th><th>Subtotal</th><th>IVA</th><th>Total</th><th>Estado</th></tr>
         </thead>
         <tbody>
           ${state.billingRows
@@ -3843,6 +4091,8 @@ function billingTable() {
                   <td>${row.annualCount}</td>
                   <td>${row.semestralCount}</td>
                   <td>${row.equipmentCount}</td>
+                  <td>${row.lineCount || 0}</td>
+                  <td>${row.billableCount || row.equipmentCount}</td>
                   <td>${money(row.subtotal, state.billing.currency)}</td>
                   <td>${money(row.tax, state.billing.currency)}</td>
                   <td>${money(row.total, state.billing.currency)}</td>
@@ -4114,6 +4364,7 @@ function renderLineas(companies) {
       <div class="billing-settings line-actions">
         <button class="button primary" id="uploadLineFile">${icon('upload')}Importar lineas XLSX</button>
         <button class="button" id="uploadEmnifyFile">${icon('cloud-upload')}Importar Emnify</button>
+        <button class="button" id="loadRelationLines">${icon('database')}Cargar base cifrada</button>
         <button class="button" id="exportLinesXlsx">${icon('download')}Exportar lineas</button>
         <label>
           <span>Estatus</span>
@@ -4192,13 +4443,14 @@ function renderFacturacion(stats, companies) {
           </select>
         </label>
         <label class="search-box billing-search">${icon('search')}<input id="billingSearchInput" value="${attr(state.billingQuery)}" placeholder="Equipo, UID o IMEI"></label>
-        <div class="filter-count"><span>Equipos a facturar</span><strong>${periodStats.billable}</strong></div>
+        <div class="filter-count"><span>Partidas a facturar</span><strong>${periodStats.totalBillable}</strong></div>
       </div>
-      <div class="notice">Facturacion cuenta estrictamente equipos importados de Wialon. Para mover un equipo, cambia su empresa o grupo en Cobros o Equipos.</div>
+      <div class="notice">Facturacion de equipos cuenta estrictamente equipos importados de Wialon. Las lineas celulares se agregan desde la pestaña Lineas y entran por su fecha de renovacion del periodo seleccionado.</div>
       <section class="metric-grid billing-metrics">
         ${metric('Mensuales', periodStats.monthly)}
         ${metric('Anualidades periodo', periodStats.annual, 'amber')}
         ${metric('Semestrales periodo', periodStats.semestral, 'amber')}
+        ${metric('Lineas periodo', periodStats.lines, 'amber')}
         ${metric('Anualidades fuera', periodStats.outsideAnnual, 'red')}
         ${metric('Empresas en lista', previewRows.length)}
       </section>
@@ -4216,13 +4468,13 @@ function renderFacturacion(stats, companies) {
         <label>
           <span>Periodo</span>
           <select data-billing="periodMode">
-            <option value="current" ${state.billing.periodMode === 'current' ? 'selected' : ''}>Mes actual</option>
             <option value="next" ${state.billing.periodMode === 'next' ? 'selected' : ''}>Mes siguiente</option>
+            <option value="current" ${state.billing.periodMode === 'current' ? 'selected' : ''}>Mes actual</option>
             <option value="previous" ${state.billing.periodMode === 'previous' ? 'selected' : ''}>Mes anterior</option>
           </select>
         </label>
         <label class="wide"><span>Concepto</span><input value="${attr(state.billing.concept)}" data-billing="concept"></label>
-        <button class="button primary" id="generateBilling">${icon('file-spreadsheet')}Generar lista</button>
+        <button class="button primary" id="generateBilling">${icon('file-spreadsheet')}Generar prefactura</button>
         <button class="button" id="exportBillingXlsx">${icon('download')}Exportar XLSX</button>
       </div>
       <div class="billing-summary">
@@ -4585,8 +4837,81 @@ function renderCobros(companies) {
   `
 }
 
+function renderLogin() {
+  const isAdmin = state.auth.user?.role === 'admin'
+  return `
+    <div class="app-shell auth-shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <img class="brand-logo" src="/public/assets/klifnet-logo.jpg" alt="KLIFNET">
+        </div>
+      </header>
+      ${state.notice ? `<div class="notice">${esc(state.notice)}</div>` : ''}
+      <main>
+        <section class="auth-card">
+          <div>
+            <span>Acceso privado</span>
+            <h1>KLIFNET CRM</h1>
+          </div>
+          <label><span>Correo</span><input type="email" value="${attr(state.login.email)}" data-login="email" autocomplete="username"></label>
+          <label><span>Password</span><input type="password" value="${attr(state.login.password)}" data-login="password" autocomplete="current-password"></label>
+          <button class="button primary" id="loginButton">${icon('log-in')}Entrar</button>
+          <p>Admin inicial: felipe.gomez@klifnet.com</p>
+        </section>
+      </main>
+    </div>
+  `
+}
+
+function renderUsersAdmin() {
+  return `
+    <section class="auth-card user-admin">
+      <div><span>Usuarios</span><h2>Crear cuentas</h2></div>
+      <label><span>Nombre</span><input value="${attr(state.login.name)}" data-login="name"></label>
+      <label><span>Correo nuevo</span><input type="email" value="${attr(state.login.newEmail)}" data-login="newEmail"></label>
+      <label><span>Password temporal</span><input type="password" value="${attr(state.login.newPassword)}" data-login="newPassword"></label>
+      <label>
+        <span>Rol</span>
+        <select data-login="newRole">
+          <option value="usuario" ${state.login.newRole === 'usuario' ? 'selected' : ''}>Usuario</option>
+          <option value="admin" ${state.login.newRole === 'admin' ? 'selected' : ''}>Admin</option>
+        </select>
+      </label>
+      <button class="button primary" id="createUserButton">${icon('user-plus')}Crear usuario</button>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Correo</th><th>Nombre</th><th>Rol</th><th></th></tr></thead>
+          <tbody>
+            ${state.auth.users
+              .map(
+                (user) => `
+                  <tr>
+                    <td>${esc(user.email)}</td>
+                    <td>${esc(user.name)}</td>
+                    <td>${esc(user.role)}</td>
+                    <td><button class="icon-button" data-delete-user="${attr(user.id)}" ${user.id === state.auth.user?.id ? 'disabled' : ''}>${icon('trash-2')}</button></td>
+                  </tr>`
+              )
+              .join('')}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `
+}
+
 function render() {
   const root = document.getElementById('app')
+  if (state.auth.loading) {
+    root.innerHTML = '<div class="app-shell"><div class="notice">Cargando seguridad...</div></div>'
+    return
+  }
+  if (!state.auth.user) {
+    root.innerHTML = renderLogin()
+    bindAuthEvents()
+    if (window.lucide) window.lucide.createIcons()
+    return
+  }
   const companies = buildCompanies()
   if (!state.selectedCompany && companies.length) state.selectedCompany = companies[0].name
 
@@ -4610,6 +4935,8 @@ function render() {
       ? renderResumen(companies, stats)
       : state.view === 'empresas'
         ? renderEmpresas(companies)
+        : state.view === 'usuarios'
+          ? renderUsersAdmin()
           : state.view === 'equipos'
           ? renderEquipos()
           : state.view === 'lineas'
@@ -4631,7 +4958,10 @@ function render() {
           <img class="brand-logo" src="/public/assets/klifnet-logo.jpg" alt="KLIFNET">
         </div>
         <div class="top-actions">
+          <span class="user-chip">${esc(state.auth.user.email)}</span>
           <button class="button" id="saveChangesButton">${icon('save')}Guardar cambios</button>
+          ${state.auth.user.role === 'admin' ? `<button class="button" id="showUsersButton">${icon('users')}Usuarios</button>` : ''}
+          <button class="icon-button" title="Cerrar sesion" id="logoutButton">${icon('log-out')}</button>
           <button class="button primary" id="uploadButton">${icon('upload')}Actualizar Wialon</button>
           <button class="icon-button" title="Exportar CSV" id="exportCsv">${icon('download')}</button>
           <button class="icon-button" title="Exportar respaldo JSON" id="exportJson">${icon('file-spreadsheet')}</button>
@@ -4645,7 +4975,8 @@ function render() {
           ['lineas', 'sim-card', 'Lineas'],
           ['facturacion', 'circle-dollar-sign', 'Facturacion'],
           ['cotizaciones', 'file-text', 'Cotizaciones'],
-          ['cobros', 'calendar-days', 'Cobros']
+          ['cobros', 'calendar-days', 'Cobros'],
+          ...(state.auth.user.role === 'admin' ? [['usuarios', 'users', 'Usuarios']] : [])
         ]
           .map(
             ([view, iconName, label]) =>
@@ -4662,11 +4993,38 @@ function render() {
   if (window.lucide) window.lucide.createIcons()
 }
 
+function bindAuthEvents() {
+  document.querySelectorAll('[data-login]').forEach((input) => {
+    const save = () => {
+      state.login = { ...state.login, [input.dataset.login]: input.value }
+    }
+    input.addEventListener('input', save)
+    input.addEventListener('change', save)
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') loginUser()
+    })
+  })
+  document.getElementById('loginButton')?.addEventListener('click', loginUser)
+}
+
 function bindEvents() {
   document.querySelectorAll('[data-view]').forEach((button) => {
     button.addEventListener('click', () => setState({ view: button.dataset.view }))
   })
 
+  document.querySelectorAll('[data-login]').forEach((input) => {
+    const save = () => {
+      state.login = { ...state.login, [input.dataset.login]: input.value }
+    }
+    input.addEventListener('input', save)
+    input.addEventListener('change', save)
+  })
+  document.getElementById('createUserButton')?.addEventListener('click', createUser)
+  document.querySelectorAll('[data-delete-user]').forEach((button) => {
+    button.addEventListener('click', () => deleteUser(button.dataset.deleteUser))
+  })
+  document.getElementById('showUsersButton')?.addEventListener('click', () => setState({ view: 'usuarios' }))
+  document.getElementById('logoutButton')?.addEventListener('click', logoutUser)
   document.getElementById('saveChangesButton')?.addEventListener('click', saveChangesNow)
   document.getElementById('uploadButton')?.addEventListener('click', () => document.getElementById('fileInput')?.click())
   document.getElementById('fileInput')?.addEventListener('change', async (event) => {
@@ -4732,6 +5090,10 @@ function bindEvents() {
   document.getElementById('addManualLine')?.addEventListener('click', addManualLine)
   document.getElementById('uploadLineFile')?.addEventListener('click', () => document.getElementById('lineFileInput')?.click())
   document.getElementById('uploadEmnifyFile')?.addEventListener('click', () => document.getElementById('emnifyFileInput')?.click())
+  document.getElementById('loadRelationLines')?.addEventListener('click', async () => {
+    const loaded = await loadLineRelationBase({ replace: false })
+    setState({ view: 'lineas', notice: loaded ? 'Base cifrada de lineas cargada y cruzada.' : 'No se pudo cargar la base cifrada de lineas.' })
+  })
   document.getElementById('exportLinesXlsx')?.addEventListener('click', exportLinesXlsx)
 
   document.getElementById('lineSearchInput')?.addEventListener('input', (event) => {
@@ -5071,6 +5433,7 @@ function applySavedState(parsed = {}) {
       lineMatchFilter: parsed.lineMatchFilter || '',
       lineTypeFilter: parsed.lineTypeFilter || '',
       linePage: Math.max(1, Number(parsed.linePage || 1)),
+      lineRelationBaseVersion: parsed.lineRelationBaseVersion || 0,
       quote: normalizeQuoteDefaults(parsed.quote || {}),
       newDevice: {
         company: '',
@@ -5120,16 +5483,8 @@ async function loadStateFromServer() {
 }
 
 function loadStateFromLocal() {
-  const saved = localStorage.getItem(storageKey)
-  if (!saved) return false
-  try {
-    const duplicateCount = applySavedState(JSON.parse(saved))
-    if (duplicateCount) state.notice = `Lineas duplicadas consolidadas: ${duplicateCount} repetidas.`
-    return true
-  } catch {
-    localStorage.removeItem(storageKey)
-    return false
-  }
+  localStorage.removeItem(storageKey)
+  return false
 }
 
 function isEditingFormField() {
@@ -5155,10 +5510,11 @@ async function refreshStateFromServer() {
 }
 
 function startServerStatePolling() {
-  setInterval(refreshStateFromServer, 15000)
+  if (serverPollTimer) return
+  serverPollTimer = setInterval(refreshStateFromServer, 15000)
 }
 
-async function init() {
+async function initDataAfterAuth() {
   const loadedFromServer = await loadStateFromServer()
   const loadedFromLocal = loadedFromServer ? false : loadStateFromLocal()
 
@@ -5171,6 +5527,10 @@ async function init() {
   if (state.lineResetVersion !== lineResetVersion) {
     clearLineState()
     persistState()
+  }
+
+  if (state.lineRelationBaseVersion !== lineRelationBaseVersion) {
+    await loadLineRelationBase({ replace: false })
   }
 
   if (state.rawRows.length && state.lineImport?.autoVersion !== lineAutoImportVersion) {
@@ -5192,6 +5552,15 @@ async function init() {
 
   render()
   startServerStatePolling()
+}
+
+async function init() {
+  const loggedIn = await refreshAuth()
+  if (!loggedIn) {
+    render()
+    return
+  }
+  await initDataAfterAuth()
 }
 
 init()

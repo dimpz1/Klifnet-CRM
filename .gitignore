@@ -20,6 +20,15 @@ Thumbs.db
 # Configuracion local / secretos
 .env
 .env.*
+data/
+
+# Bases privadas: siempre se guardan cifradas fuera del repo
+public/data/*.xlsx
+public/data/*.xls
+public/data/*.csv
+public/data/*.json
+public/templates/*.xlsx
+public/templates/*.xls
 
 # Exportaciones generadas por el CRM
 *.csv
