@@ -377,6 +377,26 @@ let serverSaveTimer = null
 let currentServerUpdatedAt = ''
 let applyingServerState = false
 let serverPollTimer = null
+let searchRenderTimer = null
+
+function renderPreservingInput(selector, delay = 250) {
+  clearTimeout(searchRenderTimer)
+  const active = document.activeElement
+  const activeId = active?.id || ''
+  const start = typeof active?.selectionStart === 'number' ? active.selectionStart : null
+  const end = typeof active?.selectionEnd === 'number' ? active.selectionEnd : null
+  searchRenderTimer = setTimeout(() => {
+    render()
+    const next = activeId ? document.getElementById(activeId) : selector ? document.querySelector(selector) : null
+    if (next && document.contains(next)) {
+      next.focus()
+      if (typeof next.setSelectionRange === 'function' && start !== null && end !== null) {
+        const length = String(next.value || '').length
+        next.setSelectionRange(Math.min(start, length), Math.min(end, length))
+      }
+    }
+  }, delay)
+}
 
 function normalizeHeader(value) {
   return String(value || '')
@@ -5216,14 +5236,14 @@ function bindEvents() {
     state.lineQuery = event.target.value
     state.linePage = 1
     persistState()
-    render()
+    renderPreservingInput('#lineSearchInput')
   })
 
   document.getElementById('lineIccSearchInput')?.addEventListener('input', (event) => {
     state.lineIccQuery = event.target.value
     state.linePage = 1
     persistState()
-    render()
+    renderPreservingInput('#lineIccSearchInput')
   })
 
   document.getElementById('lineStatusFilter')?.addEventListener('change', (event) => {
@@ -5271,7 +5291,8 @@ function bindEvents() {
 
   document.getElementById('searchInput')?.addEventListener('input', (event) => {
     state.query = event.target.value
-    render()
+    persistState()
+    renderPreservingInput('#searchInput')
   })
 
   document.getElementById('equipmentCycleFilter')?.addEventListener('change', (event) => {
@@ -5301,7 +5322,7 @@ function bindEvents() {
   document.getElementById('billingSearchInput')?.addEventListener('input', (event) => {
     state.billingQuery = event.target.value
     persistState()
-    render()
+    renderPreservingInput('#billingSearchInput')
   })
 
   document.querySelectorAll('[data-device]').forEach((input) => {
