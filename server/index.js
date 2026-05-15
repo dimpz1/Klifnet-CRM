@@ -14,12 +14,16 @@ const dataDir = path.resolve(process.env.DATA_DIR || path.join(rootDir, 'data'))
 const uploadsDir = path.join(dataDir, 'uploads')
 const privateFilesDir = path.join(dataDir, 'private-files')
 const usersFile = path.join(dataDir, 'users.enc')
+const passwordResetFile = path.join(dataDir, 'password-resets.enc')
+const passwordResetOutboxFile = path.join(dataDir, 'password-reset-tokens.txt')
+const oneTimeTokensFile = path.join(dataDir, 'one-time-tokens.enc')
 const stateFile = path.join(dataDir, 'server-state.enc')
 const legacyStateFile = path.join(dataDir, 'server-state.json')
 const encryptionKeyFile = path.join(dataDir, 'secret.key')
 const adminBootstrapFile = path.join(dataDir, 'admin-inicial.txt')
 const maxBodyBytes = 50 * 1024 * 1024
 const sessionTtlMs = 1000 * 60 * 60 * 12
+const resetTokenTtlMs = 1000 * 60 * 20
 
 const privateFileMap = {
   wialon: 'DispositivosWialon_Abril2026.xlsx.enc',
@@ -204,6 +208,89 @@ function verifyPassword(password, user) {
   return crypto.timingSafeEqual(Buffer.from(current), Buffer.from(user.passwordHash))
 }
 
+function setUserPassword(user, password) {
+  const hashed = passwordHash(password)
+  user.salt = hashed.salt
+  user.passwordHash = hashed.hash
+  user.passwordChangedAt = new Date().toISOString()
+}
+
+function secureToken(prefix = 'KR') {
+  return `${prefix}-${crypto.randomBytes(18).toString('base64url').toUpperCase().match(/.{1,6}/g).join('-')}`
+}
+
+function keyedTokenHash(token) {
+  return crypto.createHmac('sha256', getEncryptionKey()).update(String(token || '').trim()).digest('hex')
+}
+
+function loadPasswordResets() {
+  return decryptJson(passwordResetFile, { tokens: [] })
+}
+
+function savePasswordResets(payload) {
+  encryptJson(passwordResetFile, payload)
+}
+
+function createPasswordReset(email) {
+  const token = secureToken('KR')
+  const payload = loadPasswordResets()
+  const now = new Date()
+  payload.tokens = (payload.tokens || []).filter((record) => !record.usedAt && new Date(record.expiresAt).getTime() > Date.now())
+  payload.tokens.push({
+    email,
+    hash: keyedTokenHash(token),
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + resetTokenTtlMs).toISOString(),
+    usedAt: ''
+  })
+  savePasswordResets(payload)
+  return token
+}
+
+function consumePasswordReset(email, token) {
+  const payload = loadPasswordResets()
+  const hash = keyedTokenHash(token)
+  const record = (payload.tokens || []).find((candidate) => candidate.email === email && candidate.hash === hash && !candidate.usedAt)
+  if (!record || new Date(record.expiresAt).getTime() < Date.now()) return false
+  record.usedAt = new Date().toISOString()
+  savePasswordResets(payload)
+  return true
+}
+
+function loadOneTimeTokens() {
+  return decryptJson(oneTimeTokensFile, { tokens: [] })
+}
+
+function saveOneTimeTokens(payload) {
+  encryptJson(oneTimeTokensFile, payload)
+}
+
+function consumeOneTimeToken(token, email) {
+  if (!fs.existsSync(oneTimeTokensFile)) return false
+  const payload = loadOneTimeTokens()
+  const hash = keyedTokenHash(token)
+  const record = (payload.tokens || []).find((candidate) => candidate.hash === hash && !candidate.usedAt)
+  if (!record) return false
+  record.usedAt = new Date().toISOString()
+  record.usedBy = email
+  saveOneTimeTokens(payload)
+  return true
+}
+
+async function deliverResetToken(email, token) {
+  const message = `Token de recuperacion KLIFNET CRM para ${email}: ${token}\nVence en 20 minutos.\n`
+  if (process.env.KLIFNET_RESET_WEBHOOK_URL) {
+    const response = await fetch(process.env.KLIFNET_RESET_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, subject: 'Token recuperacion KLIFNET CRM', text: message, token })
+    })
+    if (response.ok) return { sent: true, via: 'webhook' }
+  }
+  fs.appendFileSync(passwordResetOutboxFile, `${new Date().toISOString()} ${message}`, { encoding: 'utf8', mode: 0o600 })
+  return { sent: false, via: 'local', path: passwordResetOutboxFile }
+}
+
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase()
 }
@@ -311,6 +398,65 @@ async function handleAuth(req, res, url) {
     const token = cookieHeader(req).klifnet_session
     if (token) sessions.delete(token)
     sendJson(res, 200, { ok: true }, { 'Set-Cookie': 'klifnet_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0' })
+    return true
+  }
+
+  if (url.pathname === '/api/auth/change-password' && req.method === 'POST') {
+    const session = requireSession(req, res)
+    if (!session) return true
+    const body = JSON.parse(await readBody(req))
+    const user = usersPayload.users.find((candidate) => candidate.id === session.userId)
+    const newPassword = String(body.newPassword || '')
+    if (!user || !verifyPassword(body.currentPassword || '', user)) {
+      sendJson(res, 401, { ok: false, error: 'Password actual incorrecto.' })
+      return true
+    }
+    if (newPassword.length < 8) {
+      sendJson(res, 400, { ok: false, error: 'El password nuevo debe tener minimo 8 caracteres.' })
+      return true
+    }
+    setUserPassword(user, newPassword)
+    saveUsers(usersPayload)
+    sendJson(res, 200, { ok: true })
+    return true
+  }
+
+  if (url.pathname === '/api/auth/forgot-password' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req))
+    const email = normalizeEmail(body.email)
+    const user = usersPayload.users.find((candidate) => candidate.email === email)
+    let delivery = { sent: false }
+    if (user) {
+      const token = createPasswordReset(email)
+      delivery = await deliverResetToken(email, token)
+    }
+    sendJson(res, 200, {
+      ok: true,
+      message: 'Si el correo existe, se genero un token de recuperacion.',
+      delivered: Boolean(delivery.sent),
+      fallback: delivery.sent ? '' : 'Servidor local'
+    })
+    return true
+  }
+
+  if (url.pathname === '/api/auth/reset-password' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req))
+    const email = normalizeEmail(body.email)
+    const token = String(body.token || '').trim()
+    const newPassword = String(body.newPassword || '')
+    const user = usersPayload.users.find((candidate) => candidate.email === email)
+    if (!user || !token || newPassword.length < 8) {
+      sendJson(res, 400, { ok: false, error: 'Captura correo, token y password nuevo de minimo 8 caracteres.' })
+      return true
+    }
+    const validToken = consumePasswordReset(email, token) || consumeOneTimeToken(token, email)
+    if (!validToken) {
+      sendJson(res, 401, { ok: false, error: 'Token invalido, expirado o usado.' })
+      return true
+    }
+    setUserPassword(user, newPassword)
+    saveUsers(usersPayload)
+    sendJson(res, 200, { ok: true })
     return true
   }
 

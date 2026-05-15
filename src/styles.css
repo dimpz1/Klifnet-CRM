@@ -105,6 +105,15 @@ button {
   gap: 14px;
 }
 
+.auth-card summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--black);
+  font-weight: 850;
+}
+
 .auth-card > div > span,
 .auth-card label span {
   display: block;

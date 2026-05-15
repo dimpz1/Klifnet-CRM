@@ -4,6 +4,9 @@ const serverUploadUrl = '/api/uploads'
 const authMeUrl = '/api/auth/me'
 const authLoginUrl = '/api/auth/login'
 const authLogoutUrl = '/api/auth/logout'
+const authChangePasswordUrl = '/api/auth/change-password'
+const authForgotPasswordUrl = '/api/auth/forgot-password'
+const authResetPasswordUrl = '/api/auth/reset-password'
 const usersUrl = '/api/users'
 const privateFileUrl = '/api/private-file'
 const seedFile = 'DispositivosWialon_Abril2026.xlsx'
@@ -349,7 +352,20 @@ const state = {
   linePage: 1,
   lineRelationBaseVersion: 0,
   auth: { loading: true, user: null, users: [] },
-  login: { email: '', password: '', name: '', newEmail: '', newPassword: '', newRole: 'usuario' },
+  login: {
+    email: '',
+    password: '',
+    forgotEmail: '',
+    resetEmail: '',
+    resetToken: '',
+    resetPassword: '',
+    currentPassword: '',
+    accountNewPassword: '',
+    name: '',
+    newEmail: '',
+    newPassword: '',
+    newRole: 'usuario'
+  },
   sourceLabel: '',
   lastImportAt: '',
   selectedCompany: '',
@@ -1109,6 +1125,58 @@ async function deleteUser(id) {
     const result = await apiJson(`${usersUrl}/${encodeURIComponent(id)}`, { method: 'DELETE' })
     state.auth = { ...state.auth, users: result.users || [] }
     state.notice = 'Usuario eliminado.'
+    render()
+  } catch (error) {
+    state.notice = error.message
+    render()
+  }
+}
+
+async function changeOwnPassword() {
+  try {
+    await apiJson(authChangePasswordUrl, {
+      method: 'POST',
+      body: JSON.stringify({
+        currentPassword: state.login.currentPassword,
+        newPassword: state.login.accountNewPassword
+      })
+    })
+    state.login = { ...state.login, currentPassword: '', accountNewPassword: '' }
+    state.notice = 'Password actualizado.'
+    render()
+  } catch (error) {
+    state.notice = error.message
+    render()
+  }
+}
+
+async function requestPasswordReset() {
+  try {
+    const result = await apiJson(authForgotPasswordUrl, {
+      method: 'POST',
+      body: JSON.stringify({ email: state.login.forgotEmail || state.login.email })
+    })
+    state.login = { ...state.login, resetEmail: state.login.forgotEmail || state.login.email }
+    state.notice = result.delivered ? 'Token enviado al correo.' : 'Token generado. Revisa el archivo local del servidor si no hay correo configurado.'
+    render()
+  } catch (error) {
+    state.notice = error.message
+    render()
+  }
+}
+
+async function resetPasswordWithToken() {
+  try {
+    await apiJson(authResetPasswordUrl, {
+      method: 'POST',
+      body: JSON.stringify({
+        email: state.login.resetEmail,
+        token: state.login.resetToken,
+        newPassword: state.login.resetPassword
+      })
+    })
+    state.login = { ...state.login, email: state.login.resetEmail, password: '', resetToken: '', resetPassword: '' }
+    state.notice = 'Password restablecido. Ya puedes iniciar sesion.'
     render()
   } catch (error) {
     state.notice = error.message
@@ -4858,13 +4926,34 @@ function renderLogin() {
           <button class="button primary" id="loginButton">${icon('log-in')}Entrar</button>
           <p>Admin inicial: felipe.gomez@klifnet.com</p>
         </section>
+        <details class="auth-card">
+          <summary>${icon('key-round')}Recuperar password</summary>
+          <label><span>Correo</span><input type="email" value="${attr(state.login.forgotEmail)}" data-login="forgotEmail" placeholder="tu@correo.com"></label>
+          <button class="button" id="forgotPasswordButton">${icon('mail')}Enviar token</button>
+          <label><span>Correo</span><input type="email" value="${attr(state.login.resetEmail)}" data-login="resetEmail"></label>
+          <label><span>Token</span><input value="${attr(state.login.resetToken)}" data-login="resetToken" autocomplete="one-time-code"></label>
+          <label><span>Password nuevo</span><input type="password" value="${attr(state.login.resetPassword)}" data-login="resetPassword" autocomplete="new-password"></label>
+          <button class="button primary" id="resetPasswordButton">${icon('rotate-ccw-key')}Restablecer password</button>
+        </details>
       </main>
     </div>
   `
 }
 
+function renderAccountSecurity() {
+  return `
+    <section class="auth-card user-admin">
+      <div><span>Cuenta</span><h2>Cambiar password</h2></div>
+      <label><span>Password actual</span><input type="password" value="${attr(state.login.currentPassword)}" data-login="currentPassword" autocomplete="current-password"></label>
+      <label><span>Password nuevo</span><input type="password" value="${attr(state.login.accountNewPassword)}" data-login="accountNewPassword" autocomplete="new-password"></label>
+      <button class="button primary" id="changePasswordButton">${icon('key-round')}Guardar password</button>
+    </section>
+  `
+}
+
 function renderUsersAdmin() {
   return `
+    ${renderAccountSecurity()}
     <section class="auth-card user-admin">
       <div><span>Usuarios</span><h2>Crear cuentas</h2></div>
       <label><span>Nombre</span><input value="${attr(state.login.name)}" data-login="name"></label>
@@ -4936,7 +5025,9 @@ function render() {
       : state.view === 'empresas'
         ? renderEmpresas(companies)
         : state.view === 'usuarios'
-          ? renderUsersAdmin()
+          ? state.auth.user.role === 'admin'
+            ? renderUsersAdmin()
+            : renderAccountSecurity()
           : state.view === 'equipos'
           ? renderEquipos()
           : state.view === 'lineas'
@@ -4960,7 +5051,7 @@ function render() {
         <div class="top-actions">
           <span class="user-chip">${esc(state.auth.user.email)}</span>
           <button class="button" id="saveChangesButton">${icon('save')}Guardar cambios</button>
-          ${state.auth.user.role === 'admin' ? `<button class="button" id="showUsersButton">${icon('users')}Usuarios</button>` : ''}
+          <button class="button" id="showUsersButton">${icon('user-cog')}Cuenta</button>
           <button class="icon-button" title="Cerrar sesion" id="logoutButton">${icon('log-out')}</button>
           <button class="button primary" id="uploadButton">${icon('upload')}Actualizar Wialon</button>
           <button class="icon-button" title="Exportar CSV" id="exportCsv">${icon('download')}</button>
@@ -4976,7 +5067,7 @@ function render() {
           ['facturacion', 'circle-dollar-sign', 'Facturacion'],
           ['cotizaciones', 'file-text', 'Cotizaciones'],
           ['cobros', 'calendar-days', 'Cobros'],
-          ...(state.auth.user.role === 'admin' ? [['usuarios', 'users', 'Usuarios']] : [])
+          ['usuarios', 'user-cog', state.auth.user.role === 'admin' ? 'Usuarios' : 'Cuenta']
         ]
           .map(
             ([view, iconName, label]) =>
@@ -5005,6 +5096,8 @@ function bindAuthEvents() {
     })
   })
   document.getElementById('loginButton')?.addEventListener('click', loginUser)
+  document.getElementById('forgotPasswordButton')?.addEventListener('click', requestPasswordReset)
+  document.getElementById('resetPasswordButton')?.addEventListener('click', resetPasswordWithToken)
 }
 
 function bindEvents() {
@@ -5020,6 +5113,7 @@ function bindEvents() {
     input.addEventListener('change', save)
   })
   document.getElementById('createUserButton')?.addEventListener('click', createUser)
+  document.getElementById('changePasswordButton')?.addEventListener('click', changeOwnPassword)
   document.querySelectorAll('[data-delete-user]').forEach((button) => {
     button.addEventListener('click', () => deleteUser(button.dataset.deleteUser))
   })

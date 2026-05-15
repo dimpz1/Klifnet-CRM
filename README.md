@@ -16,6 +16,14 @@ El CRM pide login por correo. El primer arranque crea un admin para `felipe.gome
 
 El CRM guarda estado, usuarios, bases privadas y archivos subidos cifrados en `data/`. Esa carpeta no se sube a GitHub. Para pasar la app a otra PC, clona el repo y copia tambien la carpeta `data/` desde la PC servidor si quieres conservar bases, usuarios y estado.
 
+Cada usuario puede cambiar su password desde `Cuenta` / `Usuarios`. La recuperacion genera un token dinamico; si no hay un servicio de correo configurado, el token queda solo en la PC servidor en `data/password-reset-tokens.txt`. Tambien puedes generar tokens de un solo uso con:
+
+```powershell
+node scripts\generate-one-time-tokens.mjs 10000 --force
+```
+
+Ese comando guarda hashes cifrados en `data/one-time-tokens.enc` y una lista local en claro `data/one-time-tokens-*.csv`. La lista en claro debe guardarse fuera de GitHub.
+
 ## Wialon
 
 1. Exporta tus unidades/dispositivos desde Wialon en XLSX o CSV.
