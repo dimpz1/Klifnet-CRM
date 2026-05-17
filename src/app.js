@@ -16,7 +16,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 10
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 4
+const lineRelationBaseVersion = 5
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -34,6 +34,7 @@ const lineTypeOptions = [
   { value: 'wemobile', label: 'WeMobile' }
 ]
 
+const equipmentPageSize = 40
 const linePageSize = 40
 
 const hardwarePresets = [
@@ -338,7 +339,9 @@ const state = {
   },
   newLine: { ...defaultNewLine },
   query: '',
+  equipmentCompanyFilter: '',
   equipmentCycleFilter: '',
+  equipmentPage: 1,
   cobrosCompany: '',
   cobrosGroup: '',
   cobrosCycleFilter: '',
@@ -1015,7 +1018,10 @@ function stateSnapshot() {
     newDevice: state.newDevice,
     newLine: state.newLine,
     sourceLabel: state.sourceLabel,
-    lastImportAt: state.lastImportAt
+    lastImportAt: state.lastImportAt,
+    equipmentCompanyFilter: state.equipmentCompanyFilter,
+    equipmentCycleFilter: state.equipmentCycleFilter,
+    equipmentPage: state.equipmentPage
   }
 }
 
@@ -1075,6 +1081,21 @@ async function fetchPrivateJson(kind) {
   const buffer = await fetchPrivateFile(kind)
   const text = new TextDecoder().decode(buffer)
   return JSON.parse(text)
+}
+
+async function savePrivateJson(kind, payload) {
+  const text = JSON.stringify(payload, null, 2)
+  const bytes = new TextEncoder().encode(text)
+  const response = await fetch(privateFileUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      kind,
+      dataBase64: arrayBufferToBase64(bytes.buffer)
+    })
+  })
+  if (!response.ok) throw new Error('No se pudo guardar la base privada cifrada.')
+  return response.json()
 }
 
 async function apiJson(url, options = {}) {
@@ -2204,7 +2225,7 @@ function lineFromRow(row, index, label, options = {}) {
   const rowText = Object.values(row).join(' ')
   const renewalSignal = parseLineCustomerText(rowText)
   const type = rowValueLoose(row, ['Tipo', 'Tipo servicio', 'Servicio', 'Modalidad', 'Producto'])
-  const lineType = rowValueLoose(row, ['Tipo linea', 'Tipo de linea', 'Categoria linea', 'Categoria', 'Proveedor linea', 'Operador', 'Compania', 'Plan', 'Paquete', 'Proveedor'])
+  const lineType = rowValueLoose(row, ['Proveedor', 'Proveedor linea', 'Tipo linea', 'Tipo de linea', 'Categoria linea', 'Categoria', 'Operador', 'Compania', 'Plan', 'Paquete'])
   const model = rowValueLoose(row, ['Equipo', 'Equipos', 'Modelo', 'Modelo equipo', 'Tipo equipo'])
   const imei = extractImeiFromRow(row)
   const phone = extractPhoneFromRow(row)
@@ -2222,7 +2243,7 @@ function lineFromRow(row, index, label, options = {}) {
       company: renewalSignal?.company || sanitizeLineCompany(rowCompany) || options.defaultCompany || '',
       phone,
       lineType: lineType || carrier || '',
-      providerOverride: options.forceLineType || '',
+      providerOverride: options.forceLineType || rowValue(row, ['Proveedor']) || '',
       iccid,
       imei,
       carrier,
@@ -2487,6 +2508,42 @@ function renderPagination(total, pagination) {
   `
 }
 
+function equipmentPaginationState(total) {
+  const pageCount = Math.max(1, Math.ceil(total / equipmentPageSize))
+  const page = Math.min(Math.max(1, Number(state.equipmentPage || 1)), pageCount)
+  const start = total ? (page - 1) * equipmentPageSize : 0
+  const end = Math.min(start + equipmentPageSize, total)
+  return {
+    page,
+    pageCount,
+    start,
+    end
+  }
+}
+
+function renderEquipmentPagination(total, pagination) {
+  if (total <= equipmentPageSize) {
+    return `<div class="pager"><div class="pager-summary">Mostrando ${total} de ${total} equipos</div></div>`
+  }
+  const pages = visiblePageNumbers(pagination.page, pagination.pageCount)
+  return `
+    <div class="pager">
+      <div class="pager-summary">Mostrando ${pagination.start + 1}-${pagination.end} de ${total} equipos - ${equipmentPageSize} por hoja</div>
+      <div class="pager-controls" aria-label="Paginacion de equipos">
+        <button class="icon-button" data-equipment-page="${pagination.page - 1}" ${pagination.page <= 1 ? 'disabled' : ''} title="Pagina anterior">${icon('chevron-left')}</button>
+        ${pages
+          .map((page) =>
+            page === '...'
+              ? '<span class="pager-gap">...</span>'
+              : `<button class="pager-page ${page === pagination.page ? 'active' : ''}" data-equipment-page="${page}" ${page === pagination.page ? 'disabled' : ''}>${page}</button>`
+          )
+          .join('')}
+        <button class="icon-button" data-equipment-page="${pagination.page + 1}" ${pagination.page >= pagination.pageCount ? 'disabled' : ''} title="Pagina siguiente">${icon('chevron-right')}</button>
+      </div>
+    </div>
+  `
+}
+
 function lineProviderGroups(lines) {
   return lineTypeOptions
     .map((option) => {
@@ -2649,9 +2706,159 @@ function lineFromRelationRecord(record, index) {
   )
 }
 
+function relationRecordFromRow(row) {
+  return {
+    relacion_id: rowValue(row, ['Relacion ID', 'Relación ID', 'relation_id', 'relacion_id']),
+    linea_id: rowValue(row, ['Linea ID', 'Línea ID', 'linea_id', 'line_id']),
+    proveedor: rowValue(row, ['Proveedor', 'Provider']),
+    estatus_servicio: rowValue(row, ['Estatus servicio', 'Status servicio', 'Service status', 'Estatus']),
+    estatus_original: rowValue(row, ['Estatus original', 'Original status']),
+    telefono: rowValue(row, ['Telefono', 'Teléfono', 'Linea celular', 'MSISDN']),
+    iccid: rowValue(row, ['ICCID', 'ICC']),
+    iccid_luhn: rowValue(row, ['ICCID Luhn', 'ICCID LUHN']),
+    sim_ultimos4: rowValue(row, ['SIM ultimos 4', 'SIM últimos 4']),
+    imei: rowValue(row, ['IMEI']),
+    imsi: rowValue(row, ['IMSI']),
+    plan: rowValue(row, ['Plan']),
+    operador: rowValue(row, ['Operador', 'Carrier']),
+    alias: rowValue(row, ['Alias']),
+    cliente_fuente: rowValue(row, ['Cliente fuente', 'Cliente']),
+    subcuenta: rowValue(row, ['Subcuenta']),
+    fuente: rowValue(row, ['Fuente']),
+    fila_fuente: rowValue(row, ['Fila fuente']),
+    fecha_activacion: rowValue(row, ['Fecha activacion', 'Fecha activación']),
+    fecha_ultimo_cambio: rowValue(row, ['Fecha ultimo cambio', 'Fecha último cambio']),
+    notas: rowValue(row, ['Notas'])
+  }
+}
+
+function relationRecordsFromRows(rows) {
+  const records = rows
+    .map(relationRecordFromRow)
+    .filter((record) => record.proveedor && (record.linea_id || record.relacion_id || record.iccid || record.imei))
+  return records.length ? records : []
+}
+
 function relationPayloadToLines(payload) {
   const rows = Array.isArray(payload?.lineas) ? payload.lineas : []
   return rows.map(lineFromRelationRecord)
+}
+
+function lineRelationKeys(line) {
+  const normalized = normalizeLine(line)
+  const relationId = normalizeIdentifier(normalized.relationId)
+  const sourceLineId = normalizeIdentifier(normalized.sourceLineId)
+  const iccid = normalizeIdentifier(normalized.iccid)
+  const imei = normalizeIdentifier(normalized.imei)
+  const keys = []
+  if (relationId) keys.push(`relation:${relationId}`)
+  if (sourceLineId) keys.push(`source-line:${sourceLineId}`)
+  if (iccid) keys.push(`iccid:${iccid}`)
+  if (imei) keys.push(`imei:${imei}`)
+  return unique(keys)
+}
+
+function indexLinesByRelationKey(lines) {
+  const indexed = new Map()
+  lines.forEach((line) => {
+    lineRelationKeys(line).forEach((key) => {
+      if (!indexed.has(key)) indexed.set(key, line)
+    })
+  })
+  return indexed
+}
+
+function reconcileRelationLine(currentLine, relationLine) {
+  const current = normalizeLine(currentLine)
+  const base = normalizeLine(relationLine)
+  return normalizeLine({
+    ...base,
+    id: current.id || base.id,
+    company: current.company || base.company,
+    phone: current.phone || base.phone,
+    iccid: current.iccid || base.iccid,
+    imei: current.imei || base.imei,
+    status: current.status || base.status,
+    billingCycle: current.billingCycle || base.billingCycle,
+    renewalDate: current.renewalDate || base.renewalDate,
+    annualPrice: current.annualPrice || base.annualPrice,
+    clientOnly: current.clientOnly && !current.imei ? true : base.clientOnly,
+    notes: current.notes || base.notes,
+    plan: current.plan || base.plan,
+    lineType: base.lineType,
+    providerOverride: base.lineType,
+    carrier: base.carrier || current.carrier,
+    source: base.source || current.source,
+    providerManual: true,
+    providerDetectedBy: 'archivo proveedor',
+    recordState: current.recordState === 'manual' ? 'manual' : 'vigente'
+  })
+}
+
+function revalidateLinesWithRelationBase(relationLines = []) {
+  const currentLines = state.lines.map((line, index) => normalizeLine(line, index))
+  const baseLines = relationLines.map((line, index) => normalizeLine(line, index))
+  const currentByKey = indexLinesByRelationKey(currentLines)
+  const usedCurrentIds = new Set()
+  const nextLines = []
+
+  baseLines.forEach((baseLine) => {
+    const currentLine = lineRelationKeys(baseLine)
+      .map((key) => currentByKey.get(key))
+      .find(Boolean)
+    if (currentLine) {
+      usedCurrentIds.add(currentLine.id)
+      nextLines.push(reconcileRelationLine(currentLine, baseLine))
+      return
+    }
+    nextLines.push(baseLine)
+  })
+
+  currentLines.forEach((line) => {
+    const shouldKeep = !baseLines.length || line.recordState === 'manual' || line.source === 'manual'
+    if (shouldKeep && !usedCurrentIds.has(line.id)) nextLines.push(line)
+  })
+
+  return dedupeLines(nextLines, state.devices).map((line, index) => normalizeLine(line, index))
+}
+
+async function revalidateLineasPage(options = {}) {
+  let relationLines = []
+  let source = state.lineImport?.source || 'lineas actuales'
+  try {
+    const payload = await fetchPrivateJson('lineas')
+    relationLines = relationPayloadToLines(payload)
+    if (relationLines.length) source = 'base_relacion_lineas.json cifrada'
+  } catch (error) {
+    console.warn(error)
+  }
+
+  const nextLines = revalidateLinesWithRelationBase(relationLines)
+  const stats = lineStats(nextLines, state.devices)
+  state.lines = nextLines
+  state.lineImport = {
+    ...(state.lineImport || {}),
+    source,
+    rows: relationLines.length || nextLines.length,
+    imported: nextLines.length,
+    iccDetected: nextLines.filter((line) => line.iccid).length,
+    matched: stats.matched,
+    clientOnly: stats.clientOnly,
+    unmatched: stats.unmatched,
+    appliedAt: state.lineImport?.appliedAt || new Date().toISOString(),
+    revalidatedAt: new Date().toISOString(),
+    autoVersion: lineAutoImportVersion,
+    relationBaseVersion: relationLines.length ? lineRelationBaseVersion : state.lineRelationBaseVersion
+  }
+  if (relationLines.length) state.lineRelationBaseVersion = lineRelationBaseVersion
+  state.linePage = Math.min(state.linePage, linePaginationState(filteredLines().length).pageCount)
+  state.view = 'lineas'
+  if (options.notice) {
+    state.notice = `Lineas revalidadas: ${stats.matched} con equipo por IMEI, ${stats.clientOnly} solo linea, ${stats.unmatched} sin match.`
+  }
+  persistState()
+  render()
+  return stats
 }
 
 async function loadLineRelationBase(options = {}) {
@@ -2703,6 +2910,37 @@ async function handleLineFile(file) {
   const buffer = await file.arrayBuffer()
   await saveUploadedFile(file, 'lineas', buffer)
   const parsed = await parseWorkbookFile(buffer, file.name)
+  const relationRecords = relationRecordsFromRows(parsed.rows)
+  if (relationRecords.length) {
+    try {
+      await savePrivateJson('lineas', {
+        source: file.name,
+        updatedAt: new Date().toISOString(),
+        lineas: relationRecords
+      })
+    } catch (error) {
+      console.warn(error)
+    }
+    const imported = relationRecords.map(lineFromRelationRecord)
+    const stats = lineStats(imported)
+    setState({
+      lines: imported,
+      lineImport: lineImportState(file.name, parsed.rows.length, imported, stats, {
+        autoVersion: lineAutoImportVersion,
+        relationBaseVersion: lineRelationBaseVersion
+      }),
+      lineRelationBaseVersion,
+      lineQuery: '',
+      lineIccQuery: '',
+      lineStatusFilter: '',
+      lineMatchFilter: '',
+      lineTypeFilter: '',
+      linePage: 1,
+      view: 'lineas',
+      notice: `Base de relacion cargada limpia: ${imported.length} lineas; se respeto Proveedor y Operador de cada fila. Cruce con Wialon solo por IMEI.`
+    })
+    return
+  }
   const { lines: merged, imported, stats } = mergeLineRows(state.lines, parsed.rows, file.name, { allowImeiOnly: true, markMissing: true })
   setState({
     lines: merged,
@@ -2831,14 +3069,16 @@ function buildCompanies() {
 
 function filteredDevices() {
   const query = normalizeHeader(state.query)
+  const companyFilter = normalizeHeader(state.equipmentCompanyFilter)
   return state.devices.filter((device) => {
+    const companyMatches = !companyFilter || normalizeHeader(device.company).includes(companyFilter)
     const cycleMatches = !state.equipmentCycleFilter || deviceBillingCycle(device) === state.equipmentCycleFilter
     const queryMatches =
       !query ||
       normalizeHeader(
         `${device.company} ${device.groups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType}`
       ).includes(query)
-    return cycleMatches && queryMatches
+    return companyMatches && cycleMatches && queryMatches
   })
 }
 
@@ -4149,16 +4389,16 @@ function deviceTable(devices) {
               const line = lineForDevice(device)
               return `
                 <tr>
-                  <td><input value="${attr(device.company)}" data-device="${attr(device.id)}" data-field="company"></td>
+                  <td><input list="equipmentCompanyList" value="${attr(device.company)}" data-device="${attr(device.id)}" data-field="company"></td>
                   <td><input value="${attr(device.groups.join(', '))}" data-device="${attr(device.id)}" data-field="groups"></td>
                   <td><input value="${attr(device.unitName)}" data-device="${attr(device.id)}" data-field="unitName"></td>
-                  <td>${esc(device.uid || '-')}</td>
-                  <td>${esc(device.imei || '-')}</td>
+                  <td><input value="${attr(device.uid || '')}" data-device="${attr(device.id)}" data-field="uid"></td>
+                  <td><input value="${attr(device.imei || '')}" data-device="${attr(device.id)}" data-field="imei"></td>
                   <td><input value="${attr(deviceImeiLong(device))}" data-device="${attr(device.id)}" data-field="imeiLong"></td>
                   <td><input value="${attr(deviceImeiShort(device))}" data-device="${attr(device.id)}" data-field="imeiShort"></td>
                   <td>${line ? `${esc(line.iccid || '-')}<small>${esc(lineTypeLabel(line.lineType))}</small>` : '-'}</td>
-                  <td>${esc(device.phone || '-')}</td>
-                  <td>${esc(device.deviceType || '-')}</td>
+                  <td><input value="${attr(device.phone || '')}" data-device="${attr(device.id)}" data-field="phone"></td>
+                  <td><input value="${attr(device.deviceType || '')}" data-device="${attr(device.id)}" data-field="deviceType"></td>
                   <td>
                     <select data-device="${attr(device.id)}" data-field="billingCycle">
                       <option value="mensual" ${deviceBillingCycle(device) === 'mensual' ? 'selected' : ''}>Mensual</option>
@@ -4290,11 +4530,16 @@ function renderEmpresas(companies) {
 
 function renderEquipos() {
   const devices = filteredDevices()
+  const pagination = equipmentPaginationState(devices.length)
+  const pageDevices = devices.slice(pagination.start, pagination.end)
+  const companyOptions = unique([...buildCompanies().map((company) => company.name), ...state.devices.map((device) => device.company), ...Object.keys(state.companyMeta)]).sort((a, b) =>
+    a.localeCompare(b)
+  )
   const d = state.newDevice
   return `
     <section>
       <div class="billing-settings">
-        <label><span>Empresa</span><input value="${attr(d.company)}" data-new-device="company"></label>
+        <label><span>Empresa</span><input list="equipmentCompanyList" value="${attr(d.company)}" data-new-device="company" placeholder="Selecciona o escribe nueva empresa"></label>
         <label><span>Grupo</span><input value="${attr(d.groups)}" data-new-device="groups" placeholder="Grupo o grupos"></label>
         <label><span>Equipo</span><input value="${attr(d.unitName)}" data-new-device="unitName"></label>
         <label><span>UID</span><input value="${attr(d.uid)}" data-new-device="uid"></label>
@@ -4308,8 +4553,12 @@ function renderEquipos() {
         <label class="wide"><span>Nota precio</span><input value="${attr(d.priceNote)}" data-new-device="priceNote"></label>
         <button class="button primary" id="addManualDevice">${icon('plus')}Agregar equipo</button>
       </div>
+      <datalist id="equipmentCompanyList">
+        ${companyOptions.map((company) => `<option value="${attr(company)}"></option>`).join('')}
+      </datalist>
       <div class="table-toolbar">
         <label class="search-box">${icon('search')}<input id="searchInput" value="${attr(state.query)}" placeholder="Buscar"></label>
+        <label class="search-box">${icon('building-2')}<input id="equipmentCompanyFilter" list="equipmentCompanyList" value="${attr(state.equipmentCompanyFilter)}" placeholder="Empresa"></label>
         <select id="equipmentCycleFilter" class="compact-select" aria-label="Filtrar por cobro">
           <option value="">Todos los cobros</option>
           <option value="mensual" ${state.equipmentCycleFilter === 'mensual' ? 'selected' : ''}>Mensual</option>
@@ -4318,7 +4567,9 @@ function renderEquipos() {
         </select>
         <span>${devices.length} equipos</span>
       </div>
-      ${deviceTable(devices)}
+      ${renderEquipmentPagination(devices.length, pagination)}
+      ${deviceTable(pageDevices)}
+      ${renderEquipmentPagination(devices.length, pagination)}
     </section>
   `
 }
@@ -5144,7 +5395,13 @@ function bindAuthEvents() {
 
 function bindEvents() {
   document.querySelectorAll('[data-view]').forEach((button) => {
-    button.addEventListener('click', () => setState({ view: button.dataset.view }))
+    button.addEventListener('click', async () => {
+      if (button.dataset.view === 'lineas') {
+        await revalidateLineasPage({ notice: true })
+        return
+      }
+      setState({ view: button.dataset.view })
+    })
   })
 
   document.querySelectorAll('[data-login]').forEach((input) => {
@@ -5291,12 +5548,26 @@ function bindEvents() {
 
   document.getElementById('searchInput')?.addEventListener('input', (event) => {
     state.query = event.target.value
+    state.equipmentPage = 1
     persistState()
     renderPreservingInput('#searchInput')
   })
 
+  document.getElementById('equipmentCompanyFilter')?.addEventListener('input', (event) => {
+    state.equipmentCompanyFilter = event.target.value
+    state.equipmentPage = 1
+    persistState()
+    renderPreservingInput('#equipmentCompanyFilter')
+  })
+
   document.getElementById('equipmentCycleFilter')?.addEventListener('change', (event) => {
-    setState({ equipmentCycleFilter: event.target.value })
+    setState({ equipmentCycleFilter: event.target.value, equipmentPage: 1 })
+  })
+
+  document.querySelectorAll('[data-equipment-page]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setState({ equipmentPage: Math.max(1, Number(button.dataset.equipmentPage || 1)) })
+    })
   })
 
   document.getElementById('cobrosCompany')?.addEventListener('change', (event) => {
@@ -5334,10 +5605,19 @@ function bindEvents() {
         if (field === 'groups') return { ...device, groups: splitGroups(input.value) }
         if (field === 'paymentMonths') return { ...device, paymentMonths: parsePaymentMonths(input.value) }
         if (field === 'billingCycle' && input.value === 'mensual') return { ...device, billingCycle: input.value, paymentMonths: [], agreedPrice: deviceAgreedPriceValue({ ...device, billingCycle: 'mensual' }) }
+        if (field === 'uid') return normalizeDeviceIdentifiers({ ...device, uid: input.value })
+        if (field === 'imei') return normalizeDeviceIdentifiers({ ...device, imei: input.value, imeiLong: input.value || device.imeiLong })
         if (field === 'imeiLong') return normalizeDeviceIdentifiers({ ...device, imeiLong: input.value, imei: input.value || device.imei })
         if (field === 'imeiShort') return normalizeDeviceIdentifiers({ ...device, imeiShort: input.value })
         return { ...device, [field]: input.value }
       })
+      if (field === 'company' && shouldRender && textValue(input.value)) {
+        const company = textValue(input.value)
+        state.companyMeta = {
+          ...state.companyMeta,
+          [company]: { ...blankMeta(company), ...(state.companyMeta[company] || {}) }
+        }
+      }
       persistState()
       if (shouldRender) render()
     }
@@ -5592,7 +5872,10 @@ function applySavedState(parsed = {}) {
         ...(parsed.newLine || {})
       },
       sourceLabel: parsed.sourceLabel || '',
-      lastImportAt: parsed.lastImportAt || ''
+      lastImportAt: parsed.lastImportAt || '',
+      equipmentCompanyFilter: parsed.equipmentCompanyFilter || '',
+      equipmentCycleFilter: parsed.equipmentCycleFilter || '',
+      equipmentPage: Math.max(1, Number(parsed.equipmentPage || 1))
     })
     const previousLineCount = state.lines.length
     state.lines = dedupeLines(state.lines, state.devices)
