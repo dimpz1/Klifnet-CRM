@@ -1877,6 +1877,25 @@ function normalizePhoneCandidate(value) {
   return clean.length >= 10 && clean.length <= 15 ? clean : ''
 }
 
+function phoneMatchValues(value) {
+  const clean = normalizePhone(value)
+  if (!clean || clean.startsWith('89')) return []
+  const values = [clean]
+  if (clean.length === 12 && clean.startsWith('52')) values.push(clean.slice(2))
+  if (clean.length === 10) values.push(`52${clean}`)
+  return unique(values)
+}
+
+function phoneValuesMatch(firstValue, secondValue) {
+  const first = new Set(phoneMatchValues(firstValue))
+  if (!first.size) return false
+  return phoneMatchValues(secondValue).some((value) => first.has(value))
+}
+
+function deviceMatchesPhone(device, phone) {
+  return Boolean(device?.phone && phoneValuesMatch(device.phone, phone))
+}
+
 function extractPhoneFromRow(row) {
   const direct = rowCandidateValues(row, linePhoneCandidates, true).map(normalizePhoneCandidate).find(Boolean)
   if (direct) return direct
@@ -1919,6 +1938,16 @@ function lineIdentifierParts(line) {
     phone: normalizePhoneCandidate(importTextValue(line.phone)) || normalizePhoneCandidate(importTextValue(line.iccid)),
     imei: importTextValue(line.imei)
   }
+}
+
+function lineCanMatchWialonByPhone(line) {
+  const explicit =
+    detectLineTypeFromText(line.lineType || '') ||
+    detectLineTypeFromText(line.providerOverride || '') ||
+    detectLineTypeFromText(line.carrier || '') ||
+    detectLineTypeFromText(line.source || '') ||
+    detectLineTypeFromText(line.providerHint || '')
+  return (explicit || normalizeLineType(line.lineType)) === 'emnify'
 }
 
 function lineKey(line) {
@@ -2268,7 +2297,24 @@ function matchLineDevice(line, devices = state.devices) {
     const byImei = devices.find((device) => deviceMatchesIdentifier(device, imei))
     if (byImei) return byImei
   }
+  if (lineCanMatchWialonByPhone(line)) {
+    const phone = lineIdentifierParts(line).phone
+    if (phone) {
+      const byPhone = devices.find((device) => deviceMatchesPhone(device, phone))
+      if (byPhone) return byPhone
+    }
+  }
   return null
+}
+
+function lineMatchMethod(line, devices = state.devices) {
+  const imei = normalizeIdentifier(line.imei)
+  if (imei && devices.some((device) => deviceMatchesIdentifier(device, imei))) return 'imei'
+  if (lineCanMatchWialonByPhone(line)) {
+    const phone = lineIdentifierParts(line).phone
+    if (phone && devices.some((device) => deviceMatchesPhone(device, phone))) return 'telefono'
+  }
+  return ''
 }
 
 function lineMatchType(line, devices = state.devices) {
@@ -2279,7 +2325,11 @@ function lineMatchType(line, devices = state.devices) {
 
 function lineMatchLabel(line) {
   const device = matchLineDevice(line)
-  if (device) return `${device.unitName || 'Equipo'} / ${device.company || 'Sin empresa'}`
+  if (device) {
+    const method = lineMatchMethod(line)
+    const suffix = method === 'telefono' ? ' / telefono Wialon' : ''
+    return `${device.unitName || 'Equipo'} / ${device.company || 'Sin empresa'}${suffix}`
+  }
   return line.clientOnly ? 'Solo linea celular' : 'Sin match'
 }
 
@@ -2854,7 +2904,7 @@ async function revalidateLineasPage(options = {}) {
   state.linePage = Math.min(state.linePage, linePaginationState(filteredLines().length).pageCount)
   state.view = 'lineas'
   if (options.notice) {
-    state.notice = `Lineas revalidadas: ${stats.matched} con equipo por IMEI, ${stats.clientOnly} solo linea, ${stats.unmatched} sin match.`
+    state.notice = `Lineas revalidadas: ${stats.matched} con equipo por IMEI o telefono Emnify, ${stats.clientOnly} solo linea, ${stats.unmatched} sin match.`
   }
   persistState()
   render()
@@ -3368,11 +3418,18 @@ function lineUnitPrice(line) {
 
 function billingLineFilterMatches(line) {
   const query = normalizeHeader(state.billingQuery)
-  const companyMatches = !state.billingCompany || normalizeHeader(line.company) === normalizeHeader(state.billingCompany)
-  const groupMatches = !state.billingGroup
+  const device = matchLineDevice(line)
+  const companyName = device?.company || line.company
+  const groups = Array.isArray(device?.groups) ? device.groups : []
+  const companyMatches = !state.billingCompany || normalizeHeader(companyName) === normalizeHeader(state.billingCompany)
+  const groupMatches = !state.billingGroup || groups.some((group) => normalizeHeader(group) === normalizeHeader(state.billingGroup))
   const queryMatches =
     !query ||
-    normalizeHeader(`${line.company} ${line.phone} ${line.iccid} ${line.imei} ${lineTypeLabel(line.lineType)} ${line.carrier} ${line.plan} ${line.notes}`).includes(query)
+    normalizeHeader(
+      `${companyName} ${line.company} ${line.phone} ${line.iccid} ${line.imei} ${lineTypeLabel(line.lineType)} ${line.carrier} ${line.plan} ${line.notes} ${device?.unitName || ''} ${
+        device?.uid || ''
+      } ${deviceImeiLong(device || {})} ${deviceImeiShort(device || {})}`
+    ).includes(query)
   return companyMatches && groupMatches && queryMatches
 }
 
@@ -3454,7 +3511,9 @@ function buildBillingRows() {
     .map((line, index) => normalizeLine(line, index))
     .filter((line) => isActiveLine(line) && billingLineFilterMatches(line))
     .forEach((line) => {
-      const companyName = line.company || 'Sin empresa'
+      const matchedDevice = matchLineDevice(line)
+      const matchedDeviceImei = deviceImeiLong(matchedDevice || {})
+      const companyName = matchedDevice?.company || line.company || 'Sin empresa'
       const row = ensureBillingRow(rows, companyName, period)
       if (!row) return
       const cycle = lineBillingCycle(line)
@@ -3473,19 +3532,19 @@ function buildBillingRows() {
         row.subtotal += unitPrice
         row.details.push({
           sourceType: 'Linea celular',
-          unitName: lineTypeLabel(line.lineType),
-          uid: '',
-          imei: line.imei || '',
-          imeiLong: line.imei || '',
-          imeiShort: deriveShortImei(line.imei || ''),
-          phone: line.phone || '',
+          unitName: matchedDevice?.unitName ? `${lineTypeLabel(line.lineType)} / ${matchedDevice.unitName}` : lineTypeLabel(line.lineType),
+          uid: matchedDevice?.uid || '',
+          imei: line.imei || matchedDeviceImei || '',
+          imeiLong: line.imei || matchedDeviceImei || '',
+          imeiShort: deriveShortImei(line.imei || matchedDeviceImei || ''),
+          phone: line.phone || matchedDevice?.phone || '',
           iccid: line.iccid || '',
           lineType: lineTypeLabel(line.lineType),
           cycle,
           paymentMonths: months,
           renewalDate: line.renewalDate || '',
           saleDate: '',
-          priceNote: line.notes || '',
+          priceNote: [line.notes, matchedDevice && lineMatchMethod(line) === 'telefono' ? 'Ligada a Wialon por telefono Emnify' : ''].filter(Boolean).join(' | '),
           unitPrice
         })
       }
@@ -4758,9 +4817,9 @@ function renderLineas(companies) {
       ${
         state.lineImport
           ? `<div class="notice">Ultima base de lineas: ${esc(state.lineImport.source)} (${state.lineImport.imported} lineas, ${state.lineImport.iccDetected || 0} con ICC), ${state.lineImport.matched} con equipo, ${state.lineImport.clientOnly} solo linea, ${state.lineImport.unmatched} sin match.</div>`
-          : '<div class="notice">Importa la base de lineas activas para cruzarlas contra IMEI. Para Bernardo tambien lee renovaciones escritas como: bernardo 15 mayo 2026.</div>'
+          : '<div class="notice">Importa la base de lineas activas para cruzarlas contra IMEI; Emnify tambien se liga por telefono Wialon. Para Bernardo tambien lee renovaciones escritas como: bernardo 15 mayo 2026.</div>'
       }
-      <div class="notice">Clasificacion automatica: archivo/base con proveedor explicito manda; 8934 y 8949 = Emnify; 8952 sin telefono = Emprenet; 8952 con telefono = Telcel. Si no trae proveedor y trae numero telefonico, se clasifica como Telcel.</div>
+      <div class="notice">Clasificacion automatica: archivo/base con proveedor explicito manda; 8934 y 8949 = Emnify; 8952 sin telefono = Emprenet; 8952 con telefono = Telcel. El cruce con Wialon usa IMEI y solo Emnify permite telefono.</div>
       ${renderPagination(lines.length, pagination)}
       ${renderLineProviderSections(pageLines)}
       ${renderPagination(lines.length, pagination)}
