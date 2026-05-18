@@ -16,7 +16,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 10
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 12
+const lineRelationBaseVersion = 13
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -1944,16 +1944,6 @@ function lineImeiValues(line) {
   return unique([line.imei, line.imeiLong, line.imeiShort, line.imei_largo, line.imei_corto])
 }
 
-function lineCanMatchWialonByPhone(line) {
-  const explicit =
-    detectLineTypeFromText(line.lineType || '') ||
-    detectLineTypeFromText(line.providerOverride || '') ||
-    detectLineTypeFromText(line.carrier || '') ||
-    detectLineTypeFromText(line.source || '') ||
-    detectLineTypeFromText(line.providerHint || '')
-  return (explicit || normalizeLineType(line.lineType)) === 'emnify'
-}
-
 function lineKey(line) {
   return lineIdentifierKeys(line)[0]
 }
@@ -2320,30 +2310,25 @@ function lineFromRow(row, index, label, options = {}) {
   )
 }
 
-function matchLineDevice(line, devices = state.devices) {
-  for (const value of lineImeiValues(line)) {
+function lineMatchesDeviceByImei(line, device) {
+  return lineImeiValues(line).some((value) => {
     const imei = normalizeIdentifier(value)
-    if (imei) {
-      const byImei = devices.find((device) => deviceMatchesIdentifier(device, imei))
-      if (byImei) return byImei
-    }
-  }
-  if (lineCanMatchWialonByPhone(line)) {
-    const phone = lineIdentifierParts(line).phone
-    if (phone) {
-      const byPhone = devices.find((device) => deviceMatchesPhone(device, phone))
-      if (byPhone) return byPhone
-    }
-  }
-  return null
+    return imei && deviceMatchesIdentifier(device, imei)
+  })
+}
+
+function lineMatchesDeviceByPhone(line, device) {
+  const phone = lineIdentifierParts(line).phone
+  return Boolean(phone && deviceMatchesPhone(device, phone))
+}
+
+function matchLineDevice(line, devices = state.devices) {
+  return devices.find((device) => lineMatchesDeviceByImei(line, device)) || devices.find((device) => lineMatchesDeviceByPhone(line, device)) || null
 }
 
 function lineMatchMethod(line, devices = state.devices) {
-  if (lineImeiValues(line).some((imei) => normalizeIdentifier(imei) && devices.some((device) => deviceMatchesIdentifier(device, imei)))) return 'imei'
-  if (lineCanMatchWialonByPhone(line)) {
-    const phone = lineIdentifierParts(line).phone
-    if (phone && devices.some((device) => deviceMatchesPhone(device, phone))) return 'telefono'
-  }
+  if (devices.some((device) => lineMatchesDeviceByImei(line, device))) return 'imei'
+  if (devices.some((device) => lineMatchesDeviceByPhone(line, device))) return 'telefono'
   return ''
 }
 
@@ -2364,7 +2349,7 @@ function lineMatchLabel(line) {
 }
 
 function lineForDevice(device) {
-  return state.lines.find((line) => matchLineDevice(line, [device])) || null
+  return state.lines.find((line) => lineMatchesDeviceByImei(line, device)) || state.lines.find((line) => lineMatchesDeviceByPhone(line, device)) || null
 }
 
 function lineMatchKeys(line, devices = state.devices) {
@@ -2390,6 +2375,8 @@ function mergeLineRecord(oldLine, normalizedLine) {
     lineType: nextLineType,
     iccid: normalizedLine.iccid || oldLine.iccid,
     imei: normalizedLine.imei || oldLine.imei,
+    imeiLong: normalizedLine.imeiLong || oldLine.imeiLong,
+    imeiShort: normalizedLine.imeiShort || oldLine.imeiShort,
     carrier: nextCarrier,
     plan: normalizedLine.plan || oldLine.plan,
     status: normalizedLine.status || oldLine.status,
@@ -2409,6 +2396,8 @@ function mergeLineRecord(oldLine, normalizedLine) {
     'lineType',
     'iccid',
     'imei',
+    'imeiLong',
+    'imeiShort',
     'carrier',
     'plan',
     'status',
@@ -2915,7 +2904,8 @@ function revalidateLinesWithRelationBase(relationLines = []) {
     if (shouldKeep && !usedCurrentIds.has(line.id)) nextLines.push(line)
   })
 
-  return nextLines.map((line, index) => normalizeLine(line, index))
+  const normalized = nextLines.map((line, index) => normalizeLine(line, index))
+  return enrichLinesFromBridge(normalized, mergedLineBridge(normalized, state.devices), state.devices)
 }
 
 async function revalidateLineasPage(options = {}) {
@@ -2950,7 +2940,7 @@ async function revalidateLineasPage(options = {}) {
   state.linePage = Math.min(state.linePage, linePaginationState(filteredLines().length).pageCount)
   state.view = 'lineas'
   if (options.notice) {
-    state.notice = `Lineas revalidadas: ${stats.matched} con equipo por IMEI o telefono Emnify, ${stats.clientOnly} solo linea, ${stats.unmatched} sin match.`
+    state.notice = `Lineas revalidadas: ${stats.matched} con equipo por IMEI o telefono Wialon, ${stats.clientOnly} solo linea, ${stats.unmatched} sin match.`
   }
   persistState()
   render()
@@ -2961,7 +2951,8 @@ async function loadLineRelationBase(options = {}) {
   try {
     const payload = await fetchPrivateJson('lineas')
     const imported = relationPayloadToLines(payload)
-    const merged = options.merge ? mergeLines(state.lines, imported, { markMissing: false }) : imported
+    const enriched = enrichLinesFromBridge(imported, mergedLineBridge(imported, state.devices), state.devices)
+    const merged = options.merge ? mergeLines(state.lines, enriched, { markMissing: false }) : enriched
     const stats = lineStats(merged)
     state.lines = merged
     state.lineImport = lineImportState('base_relacion_lineas.json cifrada', imported.length, imported, stats, {
@@ -3017,7 +3008,7 @@ async function handleLineFile(file) {
     } catch (error) {
       console.warn(error)
     }
-    const imported = relationRecords.map(lineFromRelationRecord)
+    const imported = enrichLinesFromBridge(relationRecords.map(lineFromRelationRecord), mergedLineBridge(relationRecords.map(lineFromRelationRecord), state.devices), state.devices)
     const stats = lineStats(imported)
     setState({
       lines: imported,
@@ -3033,7 +3024,7 @@ async function handleLineFile(file) {
       lineTypeFilter: '',
       linePage: 1,
       view: 'lineas',
-      notice: `Base de relacion cargada limpia: ${imported.length} lineas; se respeto Proveedor y Operador de cada fila. Cruce con Wialon solo por IMEI.`
+      notice: `Base de relacion cargada limpia: ${imported.length} lineas; se respeto Proveedor y Operador de cada fila. Cruce con Wialon por IMEI o Telefono.`
     })
     return
   }
@@ -3229,12 +3220,15 @@ function filteredDevices() {
   const query = normalizeHeader(state.query)
   const companyFilter = normalizeHeader(state.equipmentCompanyFilter)
   return state.devices.filter((device) => {
+    const line = lineForDevice(device)
     const companyMatches = !companyFilter || normalizeHeader(device.company).includes(companyFilter)
     const cycleMatches = !state.equipmentCycleFilter || deviceBillingCycle(device) === state.equipmentCycleFilter
     const queryMatches =
       !query ||
       normalizeHeader(
-        `${device.company} ${device.groups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType}`
+        `${device.company} ${device.groups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType} ${
+          line?.iccid || ''
+        } ${line ? lineTypeLabel(line.lineType) : ''} ${line?.carrier || ''}`
       ).includes(query)
     return companyMatches && cycleMatches && queryMatches
   })
@@ -3652,7 +3646,7 @@ function buildBillingRows() {
           paymentMonths: months,
           renewalDate: line.renewalDate || '',
           saleDate: '',
-          priceNote: [line.notes, matchedDevice && lineMatchMethod(line) === 'telefono' ? 'Ligada a Wialon por telefono Emnify' : ''].filter(Boolean).join(' | '),
+          priceNote: [line.notes, matchedDevice && lineMatchMethod(line) === 'telefono' ? 'Ligada a Wialon por telefono' : ''].filter(Boolean).join(' | '),
           unitPrice
         })
       }
@@ -4547,13 +4541,16 @@ function deviceTable(devices) {
       <table>
         <thead>
           <tr>
-            <th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>ICCID linea</th><th>Telefono</th><th>Tipo</th><th>Cobro</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Origen</th><th>Ultimo mensaje</th><th>Estado</th>
+            <th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>ICCID</th><th>Operadora</th><th>Telefono</th><th>Tipo</th><th>Cobro</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Origen</th><th>Ultimo mensaje</th><th>Estado</th>
           </tr>
         </thead>
         <tbody>
           ${devices
             .map((device) => {
               const line = lineForDevice(device)
+              const lineOperator = line ? lineTypeLabel(line.lineType) : ''
+              const lineCarrier = line?.carrier && normalizeHeader(line.carrier) !== normalizeHeader(lineOperator) ? `<small>${esc(line.carrier)}</small>` : ''
+              const matchMethod = line ? lineMatchMethod(line, [device]) : ''
               return `
                 <tr>
                   <td><input list="equipmentCompanyList" value="${attr(device.company)}" data-device="${attr(device.id)}" data-field="company"></td>
@@ -4563,7 +4560,8 @@ function deviceTable(devices) {
                   <td><input value="${attr(device.imei || '')}" data-device="${attr(device.id)}" data-field="imei"></td>
                   <td><input value="${attr(deviceImeiLong(device))}" data-device="${attr(device.id)}" data-field="imeiLong"></td>
                   <td><input value="${attr(deviceImeiShort(device))}" data-device="${attr(device.id)}" data-field="imeiShort"></td>
-                  <td>${line ? `${esc(line.iccid || '-')}<small>${esc(lineTypeLabel(line.lineType))}</small>` : '-'}</td>
+                  <td>${line ? `${esc(line.iccid || '-')}<small>${matchMethod === 'telefono' ? 'Match por telefono' : 'Match por IMEI'}</small>` : '-'}</td>
+                  <td>${line ? `${esc(lineOperator)}${lineCarrier}` : '-'}</td>
                   <td><input value="${attr(device.phone || '')}" data-device="${attr(device.id)}" data-field="phone"></td>
                   <td><input value="${attr(device.deviceType || '')}" data-device="${attr(device.id)}" data-field="deviceType"></td>
                   <td>
@@ -4932,9 +4930,9 @@ function renderLineas(companies) {
       ${
         state.lineImport
           ? `<div class="notice">Ultima base de lineas: ${esc(state.lineImport.source)} (${state.lineImport.imported} lineas, ${state.lineImport.iccDetected || 0} con ICC), ${state.lineImport.matched} con equipo, ${state.lineImport.clientOnly} solo linea, ${state.lineImport.unmatched} sin match.</div>`
-          : '<div class="notice">Importa la base de lineas activas para cruzarlas contra IMEI; Emnify tambien se liga por telefono Wialon. Para Bernardo tambien lee renovaciones escritas como: bernardo 15 mayo 2026.</div>'
+          : '<div class="notice">Importa la base de lineas activas para cruzarlas contra IMEI o contra el telefono Wialon. Para Bernardo tambien lee renovaciones escritas como: bernardo 15 mayo 2026.</div>'
       }
-      <div class="notice">Clasificacion automatica: archivo/base con proveedor explicito manda; 8934 y 8949 = Emnify; 8952 sin telefono = Emprenet; 8952 con telefono = Telcel. El cruce con Wialon usa IMEI y solo Emnify permite telefono.</div>
+      <div class="notice">Clasificacion automatica: archivo/base con proveedor explicito manda; 8934 y 8949 = Emnify; 8952 sin telefono = Emprenet; 8952 con telefono = Telcel. El cruce con Wialon usa IMEI y telefono.</div>
       ${renderPagination(lines.length, pagination)}
       ${renderLineProviderSections(pageLines)}
       ${renderPagination(lines.length, pagination)}
@@ -5775,7 +5773,7 @@ function bindEvents() {
     const saveDeviceEdit = (shouldRender) => {
       const id = input.dataset.device
       const field = input.dataset.field
-      const shouldRecalculateLines = field === 'uid' || field === 'imei' || field === 'imeiLong' || field === 'imeiShort'
+      const shouldRecalculateLines = field === 'uid' || field === 'imei' || field === 'imeiLong' || field === 'imeiShort' || field === 'phone'
       state.devices = state.devices.map((device) => {
         if (device.id !== id) return device
         if (field === 'groups') return { ...device, groups: splitGroups(input.value) }
