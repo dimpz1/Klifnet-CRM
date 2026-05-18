@@ -5734,6 +5734,9 @@ function bindEvents() {
         }
       }
       persistState()
+      if (shouldRender) {
+        state.notice = 'Edicion de equipo guardada.'
+      }
       if (shouldRender) render()
     }
     input.addEventListener('input', () => saveDeviceEdit(false))
