@@ -16,7 +16,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 10
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 13
+const lineRelationBaseVersion = 14
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -2325,11 +2325,18 @@ function lineMatchesDeviceByPhone(line, device) {
   return Boolean(phone && deviceMatchesPhone(device, phone))
 }
 
+function isStreamaxDevice(device) {
+  return normalizeHeader(`${device?.deviceType || ''} ${device?.unitName || ''}`).includes('streamax')
+}
+
 function matchLineDevice(line, devices = state.devices) {
+  const byStreamaxPhone = devices.find((device) => isStreamaxDevice(device) && lineMatchesDeviceByPhone(line, device))
+  if (byStreamaxPhone) return byStreamaxPhone
   return devices.find((device) => lineMatchesDeviceByImei(line, device)) || devices.find((device) => lineMatchesDeviceByPhone(line, device)) || null
 }
 
 function lineMatchMethod(line, devices = state.devices) {
+  if (devices.some((device) => isStreamaxDevice(device) && lineMatchesDeviceByPhone(line, device))) return 'telefono'
   if (devices.some((device) => lineMatchesDeviceByImei(line, device))) return 'imei'
   if (devices.some((device) => lineMatchesDeviceByPhone(line, device))) return 'telefono'
   return ''
@@ -2352,6 +2359,7 @@ function lineMatchLabel(line) {
 }
 
 function lineForDevice(device) {
+  if (isStreamaxDevice(device)) return state.lines.find((line) => lineMatchesDeviceByPhone(line, device)) || state.lines.find((line) => lineMatchesDeviceByImei(line, device)) || null
   return state.lines.find((line) => lineMatchesDeviceByImei(line, device)) || state.lines.find((line) => lineMatchesDeviceByPhone(line, device)) || null
 }
 
