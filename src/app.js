@@ -3041,26 +3041,66 @@ function addManualLine() {
 }
 
 async function exportLinesXlsx() {
-  const rows = [
-    [
-      'Cliente',
-      'Linea',
-      'Tipo de linea',
-      'ICCID',
-      'IMEI',
-      'Operador',
-      'Plan',
-      'Estatus',
-      'Tipo',
-      'Cobro',
-      'Renovacion',
-      'Precio anual',
-      'Match equipo',
-      'Detectado por',
-      'Origen',
-      'Notas'
-    ],
-    ...state.lines.map((line) => [
+  const header = [
+    'Cliente',
+    'Linea',
+    'Tipo de linea',
+    'ICCID',
+    'IMEI',
+    'Operador',
+    'Plan',
+    'Estatus',
+    'Tipo',
+    'Cobro',
+    'Renovacion',
+    'Precio anual',
+    'Match equipo',
+    'Detectado por',
+    'Origen',
+    'Notas'
+  ]
+  const toRow = (line) => [
+    line.company,
+    line.phone,
+    lineTypeLabel(line.lineType),
+    line.iccid,
+    line.imei,
+    line.carrier,
+    line.plan,
+    line.status,
+    lineMatchType(line) === 'equipo' ? 'Equipo GPS' : line.clientOnly ? 'Solo linea celular' : 'Sin match',
+    line.billingCycle,
+    line.renewalDate,
+    line.annualPrice,
+    lineMatchLabel(line),
+    providerDetectionLabel(line.providerDetectedBy),
+    line.source,
+    line.notes
+  ]
+  const rows = [header, ...state.lines.map((line) => toRow(line))]
+  await exportWorkbookXlsx(`lineas-celulares-${new Date().toISOString().slice(0, 10)}.xlsx`, [{ name: 'Lineas', rows }])
+}
+
+async function exportLineMatchReportXlsx() {
+  const header = [
+    'Cliente',
+    'Linea',
+    'Tipo de linea',
+    'ICCID',
+    'IMEI',
+    'Operador',
+    'Plan',
+    'Estatus',
+    'Tipo',
+    'Cobro',
+    'Renovacion',
+    'Precio anual',
+    'Match equipo',
+    'Detectado por',
+    'Origen',
+    'Notas'
+  ]
+  const toRow = (line) => [
       line.company,
       line.phone,
       lineTypeLabel(line.lineType),
@@ -3077,9 +3117,23 @@ async function exportLinesXlsx() {
       providerDetectionLabel(line.providerDetectedBy),
       line.source,
       line.notes
-    ])
+    ]
+  const withDevice = state.lines.filter((line) => lineMatchType(line) === 'equipo')
+  const clientOnly = state.lines.filter((line) => lineMatchType(line) === 'solo_linea')
+  const unmatched = state.lines.filter((line) => lineMatchType(line) === 'sin_match')
+  const summaryRows = [
+    ['Categoria', 'Cantidad'],
+    ['Con equipo', withDevice.length],
+    ['Solo linea', clientOnly.length],
+    ['Sin match', unmatched.length],
+    ['Total', state.lines.length]
   ]
-  await exportWorkbookXlsx(`lineas-celulares-${new Date().toISOString().slice(0, 10)}.xlsx`, [{ name: 'Lineas', rows }])
+  await exportWorkbookXlsx(`reporte-match-lineas-${new Date().toISOString().slice(0, 10)}.xlsx`, [
+    { name: 'Resumen', rows: summaryRows },
+    { name: 'Con equipo', rows: [header, ...withDevice.map((line) => toRow(line))] },
+    { name: 'Solo linea', rows: [header, ...clientOnly.map((line) => toRow(line))] },
+    { name: 'Sin match', rows: [header, ...unmatched.map((line) => toRow(line))] }
+  ])
 }
 
 function applyMapping(nextMapping) {
@@ -4786,6 +4840,7 @@ function renderLineas(companies) {
         <button class="button" id="uploadEmnifyFile">${icon('cloud-upload')}Importar Emnify</button>
         <button class="button" id="loadRelationLines">${icon('database')}Cargar base cifrada</button>
         <button class="button" id="exportLinesXlsx">${icon('download')}Exportar lineas</button>
+        <button class="button" id="exportLineMatchReportXlsx">${icon('file-text')}Reporte match lineas</button>
         <label>
           <span>Estatus</span>
           <select id="lineStatusFilter">
@@ -5547,6 +5602,7 @@ function bindEvents() {
     setState({ view: 'lineas', notice: loaded ? 'Base cifrada de lineas cargada limpia, sin mezclar operadores anteriores.' : 'No se pudo cargar la base cifrada de lineas.' })
   })
   document.getElementById('exportLinesXlsx')?.addEventListener('click', exportLinesXlsx)
+  document.getElementById('exportLineMatchReportXlsx')?.addEventListener('click', exportLineMatchReportXlsx)
 
   document.getElementById('lineSearchInput')?.addEventListener('input', (event) => {
     state.lineQuery = event.target.value
