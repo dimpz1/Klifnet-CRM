@@ -16,7 +16,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 10
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 11
+const lineRelationBaseVersion = 12
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -1936,8 +1936,12 @@ function lineIdentifierParts(line) {
   return {
     iccid: extractIccidFromText(importTextValue(line.iccid)) || extractIccidFromText(importTextValue(line.phone)),
     phone: normalizePhoneCandidate(importTextValue(line.phone)) || normalizePhoneCandidate(importTextValue(line.iccid)),
-    imei: importTextValue(line.imei)
+    imei: importTextValue(line.imei || line.imeiLong || line.imeiShort)
   }
+}
+
+function lineImeiValues(line) {
+  return unique([line.imei, line.imeiLong, line.imeiShort, line.imei_largo, line.imei_corto])
 }
 
 function lineCanMatchWialonByPhone(line) {
@@ -1958,7 +1962,6 @@ function lineIdentifierKeys(line) {
   const identifiers = lineIdentifierParts(line)
   const iccid = identifiers.iccid
   const phone = identifiers.phone
-  const imei = normalizeIdentifier(identifiers.imei)
   const providerKey = detectLineTypeFromText(line.lineType || line.providerOverride || line.carrier || line.source || '') || normalizeHeader(line.carrier || 'sin-proveedor')
   const relationId = normalizeIdentifier(line.relationId || line.relacion_id || line.relation_id)
   const sourceLineId = normalizeIdentifier(line.sourceLineId || line.linea_id || line.line_id)
@@ -1968,7 +1971,11 @@ function lineIdentifierKeys(line) {
   if (keys.length) return unique(keys)
   if (iccid) keys.push(`iccid:${providerKey}:${iccid}`)
   if (phone) keys.push(`phone:${providerKey}:${phone}`)
-  if (imei) keys.push(`imei:${providerKey}:${imei}`)
+  if (keys.length) return unique(keys)
+  lineImeiValues(line).forEach((imei) => {
+    const key = normalizeIdentifier(imei)
+    if (key) keys.push(`imei:${providerKey}:${key}`)
+  })
   if (!keys.length) keys.push(`line:${normalizeHeader(`${line.company || ''}-${line.carrier || ''}-${line.plan || ''}`)}`)
   return unique(keys)
 }
@@ -2242,6 +2249,8 @@ function normalizeLine(line, index = 0) {
     lineType,
     iccid,
     imei: importTextValue(line.imei),
+    imeiLong: importTextValue(line.imeiLong || line.imei_largo),
+    imeiShort: importTextValue(line.imeiShort || line.imei_corto),
     carrier: importTextValue(line.carrier) || lineTypeLabel(lineType),
     plan: importTextValue(line.plan),
     relationId: importTextValue(line.relationId || line.relacion_id || line.relation_id),
@@ -2257,6 +2266,7 @@ function normalizeLine(line, index = 0) {
     providerDetectedBy: providerDetection.reason,
     recordState: textValue(line.recordState) || 'vigente'
   }
+  clean.imei = clean.imei || clean.imeiLong || clean.imeiShort
   clean.clientOnly = clean.clientOnly || !clean.imei
   if (
     normalizeHeader(clean.company).startsWith('bernardo') &&
@@ -2311,10 +2321,12 @@ function lineFromRow(row, index, label, options = {}) {
 }
 
 function matchLineDevice(line, devices = state.devices) {
-  const imei = normalizeIdentifier(line.imei)
-  if (imei) {
-    const byImei = devices.find((device) => deviceMatchesIdentifier(device, imei))
-    if (byImei) return byImei
+  for (const value of lineImeiValues(line)) {
+    const imei = normalizeIdentifier(value)
+    if (imei) {
+      const byImei = devices.find((device) => deviceMatchesIdentifier(device, imei))
+      if (byImei) return byImei
+    }
   }
   if (lineCanMatchWialonByPhone(line)) {
     const phone = lineIdentifierParts(line).phone
@@ -2327,8 +2339,7 @@ function matchLineDevice(line, devices = state.devices) {
 }
 
 function lineMatchMethod(line, devices = state.devices) {
-  const imei = normalizeIdentifier(line.imei)
-  if (imei && devices.some((device) => deviceMatchesIdentifier(device, imei))) return 'imei'
+  if (lineImeiValues(line).some((imei) => normalizeIdentifier(imei) && devices.some((device) => deviceMatchesIdentifier(device, imei)))) return 'imei'
   if (lineCanMatchWialonByPhone(line)) {
     const phone = lineIdentifierParts(line).phone
     if (phone && devices.some((device) => deviceMatchesPhone(device, phone))) return 'telefono'
@@ -2770,6 +2781,8 @@ function lineFromRelationRecord(record, index) {
       providerOverride: provider,
       iccid: record.iccid_luhn || record.iccid,
       imei: record.imei,
+      imeiLong: record.imei_largo || record.imeiLong,
+      imeiShort: record.imei_corto || record.imeiShort,
       carrier: record.operador || provider,
       plan: record.plan,
       status: record.estatus_servicio || record.estatus_original || 'activa',
@@ -2798,6 +2811,8 @@ function relationRecordFromRow(row) {
     iccid_luhn: rowValue(row, ['ICCID Luhn', 'ICCID LUHN']),
     sim_ultimos4: rowValue(row, ['SIM ultimos 4', 'SIM últimos 4']),
     imei: rowValue(row, ['IMEI']),
+    imei_largo: rowValue(row, ['IMEI largo', 'IMEI Largo', 'IMEI completo', 'Long IMEI']),
+    imei_corto: rowValue(row, ['IMEI corto', 'IMEI Corto', 'Short IMEI']),
     imsi: rowValue(row, ['IMSI']),
     plan: rowValue(row, ['Plan']),
     operador: rowValue(row, ['Operador', 'Carrier']),
@@ -2857,6 +2872,8 @@ function reconcileRelationLine(currentLine, relationLine) {
     phone: base.phone || current.phone,
     iccid: base.iccid || current.iccid,
     imei: base.imei || current.imei,
+    imeiLong: base.imeiLong || current.imeiLong,
+    imeiShort: base.imeiShort || current.imeiShort,
     status: base.status || current.status,
     billingCycle: current.billingCycle || base.billingCycle,
     renewalDate: current.renewalDate || base.renewalDate,
@@ -3076,6 +3093,8 @@ async function exportLinesXlsx() {
     'Tipo de linea',
     'ICCID',
     'IMEI',
+    'IMEI largo',
+    'IMEI corto',
     'Operador',
     'Plan',
     'Estatus',
@@ -3094,6 +3113,8 @@ async function exportLinesXlsx() {
     lineTypeLabel(line.lineType),
     line.iccid,
     line.imei,
+    line.imeiLong || '',
+    line.imeiShort || '',
     line.carrier,
     line.plan,
     line.status,
@@ -3117,6 +3138,8 @@ async function exportLineMatchReportXlsx() {
     'Tipo de linea',
     'ICCID',
     'IMEI',
+    'IMEI largo',
+    'IMEI corto',
     'Operador',
     'Plan',
     'Estatus',
@@ -3135,6 +3158,8 @@ async function exportLineMatchReportXlsx() {
       lineTypeLabel(line.lineType),
       line.iccid,
       line.imei,
+      line.imeiLong || '',
+      line.imeiShort || '',
       line.carrier,
       line.plan,
       line.status,
@@ -3617,9 +3642,9 @@ function buildBillingRows() {
           sourceType: 'Linea celular',
           unitName: matchedDevice?.unitName ? `${lineTypeLabel(line.lineType)} / ${matchedDevice.unitName}` : lineTypeLabel(line.lineType),
           uid: matchedDevice?.uid || '',
-          imei: line.imei || matchedDeviceImei || '',
-          imeiLong: line.imei || matchedDeviceImei || '',
-          imeiShort: deriveShortImei(line.imei || matchedDeviceImei || ''),
+          imei: line.imei || line.imeiLong || matchedDeviceImei || '',
+          imeiLong: line.imeiLong || line.imei || matchedDeviceImei || '',
+          imeiShort: line.imeiShort || deriveShortImei(line.imeiLong || line.imei || matchedDeviceImei || ''),
           phone: line.phone || matchedDevice?.phone || '',
           iccid: line.iccid || '',
           lineType: lineTypeLabel(line.lineType),
@@ -4717,7 +4742,7 @@ function renderEquipos() {
 }
 
 function renderLineRows(lines) {
-  if (!lines.length) return '<tr><td colspan="15">Sin lineas en esta seccion.</td></tr>'
+  if (!lines.length) return '<tr><td colspan="17">Sin lineas en esta seccion.</td></tr>'
   return lines
     .map((line) => {
       const matchType = lineMatchType(line)
@@ -4733,6 +4758,8 @@ function renderLineRows(lines) {
           </td>
           <td><input value="${attr(line.iccid)}" data-line="${attr(line.id)}" data-line-field="iccid"></td>
           <td><input value="${attr(line.imei)}" data-line="${attr(line.id)}" data-line-field="imei"></td>
+          <td><input value="${attr(line.imeiLong)}" data-line="${attr(line.id)}" data-line-field="imeiLong"></td>
+          <td><input value="${attr(line.imeiShort)}" data-line="${attr(line.id)}" data-line-field="imeiShort"></td>
           <td><span class="pill ${pillClass}">${esc(lineMatchLabel(line))}</span></td>
           <td><span class="pill">${esc(providerDetectionLabel(line.providerDetectedBy))}</span></td>
           <td>
@@ -4777,7 +4804,7 @@ function renderLineTable(title, lines, tone = '') {
         <table>
           <thead>
             <tr>
-              <th>Empresa</th><th>Linea</th><th>Tipo linea</th><th>ICCID / ICC</th><th>IMEI</th><th>Match</th><th>Detectado por</th><th>Tipo</th><th>Estatus</th><th>Cobro</th><th>Renovacion</th><th>Precio anual</th><th>Operador</th><th>Plan</th><th>Notas</th>
+              <th>Empresa</th><th>Linea</th><th>Tipo linea</th><th>ICCID / ICC</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Match</th><th>Detectado por</th><th>Tipo</th><th>Estatus</th><th>Cobro</th><th>Renovacion</th><th>Precio anual</th><th>Operador</th><th>Plan</th><th>Notas</th>
             </tr>
           </thead>
           <tbody>${renderLineRows(lines)}</tbody>
