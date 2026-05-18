@@ -16,7 +16,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 10
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 8
+const lineRelationBaseVersion = 10
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -382,7 +382,7 @@ let applyingServerState = false
 let serverPollTimer = null
 let searchRenderTimer = null
 
-function renderPreservingInput(selector, delay = 250) {
+function renderPreservingInput(selector, delay = 550) {
   clearTimeout(searchRenderTimer)
   const active = document.activeElement
   const activeId = active?.id || ''
@@ -2118,12 +2118,24 @@ function parseLineRenewalText(value) {
 
 function normalizeLineStatus(value) {
   const clean = normalizeHeader(value)
-  if (!clean || clean === 'activa' || clean === 'activo' || clean === 'active' || clean === 'vigente' || clean === 'alta' || clean.includes('activated') || clean.includes('enabled')) return 'activa'
+  if (
+    !clean ||
+    clean === 'activa' ||
+    clean === 'activo' ||
+    clean === 'active' ||
+    clean === 'vigente' ||
+    clean === 'alta' ||
+    clean.includes('activated') ||
+    clean.includes('enabled') ||
+    clean.includes('telcel plan')
+  )
+    return 'activa'
+  if (clean.includes('issued') || clean.includes('emitid')) return 'emitida'
+  if (clean.includes('suspend')) return 'suspendida'
   if (
     clean.includes('desactiv') ||
     clean.includes('deactiv') ||
     clean.includes('inactiv') ||
-    clean.includes('suspend') ||
     clean.includes('baja') ||
     clean.includes('cancel') ||
     clean.includes('disabled') ||
@@ -2600,8 +2612,8 @@ function lineProviderGroups(lines) {
     .map((option) => {
       const providerLines = lines.filter((line) => normalizeLineType(line.lineType) === option.value)
       const active = providerLines.filter(isActiveLine).length
-      const suspended = providerLines.filter((line) => normalizeHeader(line.status).includes('suspend')).length
-      const issued = providerLines.filter((line) => normalizeLineStatus(line.status) === 'issued').length
+      const suspended = providerLines.filter((line) => normalizeLineStatus(line.status) === 'suspendida').length
+      const issued = providerLines.filter((line) => normalizeLineStatus(line.status) === 'emitida').length
       const inactive = providerLines.length - active
       const otherInactive = Math.max(0, inactive - suspended - issued)
       return {
@@ -2622,7 +2634,7 @@ function lineProviderStatusSummary(group) {
   if (group.suspended) parts.push(`${group.suspended} suspendidas`)
   if (group.issued) parts.push(`${group.issued} emitidas`)
   if (group.otherInactive) parts.push(`${group.otherInactive} desactivadas`)
-  if (!group.suspended && !group.issued && !group.otherInactive) parts.push(`${group.inactive} desactivadas`)
+  if (!group.suspended && !group.issued && !group.otherInactive && group.inactive) parts.push(`${group.inactive} desactivadas`)
   return parts.join(' / ')
 }
 
@@ -2817,12 +2829,10 @@ function lineRelationKeys(line) {
   const relationId = normalizeIdentifier(normalized.relationId)
   const sourceLineId = normalizeIdentifier(normalized.sourceLineId)
   const iccid = normalizeIdentifier(normalized.iccid)
-  const imei = normalizeIdentifier(normalized.imei)
   const keys = []
   if (relationId) keys.push(`relation:${relationId}`)
   if (sourceLineId) keys.push(`source-line:${sourceLineId}`)
   if (iccid) keys.push(`iccid:${iccid}`)
-  if (imei) keys.push(`imei:${imei}`)
   return unique(keys)
 }
 
@@ -4733,7 +4743,9 @@ function renderLineRows(lines) {
           <td>
             <select data-line="${attr(line.id)}" data-line-field="status">
               <option value="activa" ${isActiveLine(line) ? 'selected' : ''}>Activa</option>
-              <option value="desactivada" ${!isActiveLine(line) ? 'selected' : ''}>Desactivada</option>
+              <option value="desactivada" ${normalizeLineStatus(line.status) === 'desactivada' ? 'selected' : ''}>Desactivada</option>
+              <option value="suspendida" ${normalizeLineStatus(line.status) === 'suspendida' ? 'selected' : ''}>Suspendida</option>
+              <option value="emitida" ${normalizeLineStatus(line.status) === 'emitida' ? 'selected' : ''}>Emitida</option>
             </select>
           </td>
           <td>
@@ -4865,6 +4877,8 @@ function renderLineas(companies) {
             <option value="">Todos</option>
             <option value="activa" ${state.lineStatusFilter === 'activa' ? 'selected' : ''}>Activas</option>
             <option value="desactivada" ${state.lineStatusFilter === 'desactivada' ? 'selected' : ''}>Desactivadas</option>
+            <option value="suspendida" ${state.lineStatusFilter === 'suspendida' ? 'selected' : ''}>Suspendidas</option>
+            <option value="emitida" ${state.lineStatusFilter === 'emitida' ? 'selected' : ''}>Emitidas</option>
           </select>
         </label>
         <label>
