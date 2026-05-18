@@ -5715,6 +5715,7 @@ function bindEvents() {
     const saveDeviceEdit = (shouldRender) => {
       const id = input.dataset.device
       const field = input.dataset.field
+      const shouldRecalculateLines = field === 'uid' || field === 'imei' || field === 'imeiLong' || field === 'imeiShort'
       state.devices = state.devices.map((device) => {
         if (device.id !== id) return device
         if (field === 'groups') return { ...device, groups: splitGroups(input.value) }
@@ -5726,6 +5727,10 @@ function bindEvents() {
         if (field === 'imeiShort') return normalizeDeviceIdentifiers({ ...device, imeiShort: input.value })
         return { ...device, [field]: input.value }
       })
+      if (shouldRecalculateLines) {
+        const bridge = mergedLineBridge(state.lines, state.devices)
+        state.lines = dedupeLines(enrichLinesFromBridge(state.lines, bridge, state.devices), state.devices).map((line, index) => normalizeLine(line, index))
+      }
       if (field === 'company' && shouldRender && textValue(input.value)) {
         const company = textValue(input.value)
         state.companyMeta = {
