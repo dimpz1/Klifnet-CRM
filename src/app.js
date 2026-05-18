@@ -16,7 +16,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 10
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 7
+const lineRelationBaseVersion = 8
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -2599,14 +2599,31 @@ function lineProviderGroups(lines) {
   return lineTypeOptions
     .map((option) => {
       const providerLines = lines.filter((line) => normalizeLineType(line.lineType) === option.value)
+      const active = providerLines.filter(isActiveLine).length
+      const suspended = providerLines.filter((line) => normalizeHeader(line.status).includes('suspend')).length
+      const issued = providerLines.filter((line) => normalizeLineStatus(line.status) === 'issued').length
+      const inactive = providerLines.length - active
+      const otherInactive = Math.max(0, inactive - suspended - issued)
       return {
         ...option,
         lines: providerLines,
-        active: providerLines.filter(isActiveLine).length,
-        inactive: providerLines.filter((line) => !isActiveLine(line)).length
+        active,
+        inactive,
+        suspended,
+        issued,
+        otherInactive
       }
     })
     .filter((group) => group.lines.length)
+}
+
+function lineProviderStatusSummary(group) {
+  const parts = [`${group.active} activas`]
+  if (group.suspended) parts.push(`${group.suspended} suspendidas`)
+  if (group.issued) parts.push(`${group.issued} emitidas`)
+  if (group.otherInactive) parts.push(`${group.otherInactive} desactivadas`)
+  if (!group.suspended && !group.issued && !group.otherInactive) parts.push(`${group.inactive} desactivadas`)
+  return parts.join(' / ')
 }
 
 function lineCompanyOptions(companies) {
@@ -4791,7 +4808,7 @@ function renderLineas(companies) {
                 <span>Proveedora</span>
                 <strong>${esc(group.label)}</strong>
                 <div><b>${group.lines.length}</b> lineas</div>
-                <small>${group.active} activas / ${group.inactive} desactivadas</small>
+                <small>${esc(lineProviderStatusSummary(group))}</small>
               </div>`
           )
           .join('')}
