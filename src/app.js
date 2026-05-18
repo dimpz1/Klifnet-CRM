@@ -2246,6 +2246,13 @@ function normalizeLine(line, index = 0) {
     recordState: textValue(line.recordState) || 'vigente'
   }
   clean.clientOnly = clean.clientOnly || !clean.imei
+  if (
+    normalizeHeader(clean.company).startsWith('bernardo') &&
+    lineBillingCycle(clean) === 'anual' &&
+    (clean.annualPrice === '' || Number(clean.annualPrice) <= 0)
+  ) {
+    clean.annualPrice = '550'
+  }
   clean.id = line.id || `${lineKey(clean)}-${index}`
   return clean
 }

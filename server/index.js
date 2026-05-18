@@ -20,6 +20,7 @@ const passwordResetFile = path.join(dataDir, 'password-resets.enc')
 const passwordResetOutboxFile = path.join(dataDir, 'password-reset-tokens.txt')
 const oneTimeTokensFile = path.join(dataDir, 'one-time-tokens.enc')
 const stateFile = path.join(dataDir, 'server-state.enc')
+const userStateDir = path.join(dataDir, 'user-states')
 const legacyStateFile = path.join(dataDir, 'server-state.json')
 const encryptionKeyFile = path.join(dataDir, 'secret.key')
 const adminBootstrapFile = path.join(dataDir, 'admin-inicial.txt')
@@ -60,6 +61,7 @@ const sessions = new Map()
 function ensureDataDirs() {
   fs.mkdirSync(uploadsDir, { recursive: true })
   fs.mkdirSync(privateFilesDir, { recursive: true })
+  fs.mkdirSync(userStateDir, { recursive: true })
 }
 
 function writeAtomic(filePath, buffer) {
@@ -573,6 +575,26 @@ function writeState(payload) {
   encryptJson(stateFile, payload)
 }
 
+function userStateFile(session) {
+  const userKey = session?.userId || normalizeEmail(session?.email) || 'anon'
+  const safeUserKey = safeFileName(userKey) || 'anon'
+  return path.join(userStateDir, `${safeUserKey}.enc`)
+}
+
+function readUserState(session) {
+  const filePath = userStateFile(session)
+  if (fs.existsSync(filePath)) {
+    return decryptJson(filePath, { updatedAt: '', state: null })
+  }
+  // Compatibilidad: usa el estado global solo como lectura inicial.
+  return readState()
+}
+
+function writeUserState(session, payload) {
+  const filePath = userStateFile(session)
+  encryptJson(filePath, payload)
+}
+
 function privateFilePath(kind, options = {}) {
   const mapped = privateFileMap[kind]
   if (!mapped) return ''
@@ -754,7 +776,7 @@ async function handleApi(req, res, url) {
     if (!session) return
 
     if (url.pathname === '/api/state' && req.method === 'GET') {
-      const saved = readState()
+      const saved = readUserState(session)
       sendJson(res, 200, { ok: true, state: saved.state || null, updatedAt: saved.updatedAt || '' })
       return
     }
@@ -762,7 +784,7 @@ async function handleApi(req, res, url) {
     if (url.pathname === '/api/state' && (req.method === 'POST' || req.method === 'PUT')) {
       const body = JSON.parse(await readBody(req))
       const updatedAt = new Date().toISOString()
-      writeState({
+      writeUserState(session, {
         updatedAt,
         savedFrom: req.socket.remoteAddress || '',
         savedBy: session.email,
