@@ -16,7 +16,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 10
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 10
+const lineRelationBaseVersion = 11
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -2826,12 +2826,13 @@ function relationPayloadToLines(payload) {
 
 function lineRelationKeys(line) {
   const normalized = normalizeLine(line)
+  const providerKey = normalizeLineType(normalized.lineType || normalized.providerOverride || normalized.carrier)
   const relationId = normalizeIdentifier(normalized.relationId)
   const sourceLineId = normalizeIdentifier(normalized.sourceLineId)
   const iccid = normalizeIdentifier(normalized.iccid)
   const keys = []
-  if (relationId) keys.push(`relation:${relationId}`)
-  if (sourceLineId) keys.push(`source-line:${sourceLineId}`)
+  if (relationId) keys.push(`relation:${providerKey}:${relationId}`)
+  if (sourceLineId) keys.push(`source-line:${providerKey}:${sourceLineId}`)
   if (iccid) keys.push(`iccid:${iccid}`)
   return unique(keys)
 }
