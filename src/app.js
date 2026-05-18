@@ -16,7 +16,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 10
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 6
+const lineRelationBaseVersion = 7
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -2345,13 +2345,7 @@ function lineForDevice(device) {
 }
 
 function lineMatchKeys(line, devices = state.devices) {
-  const keys = [...lineIdentifierKeys(line)]
-  const device = matchLineDevice(line, devices)
-  if (device) keys.push(...deviceIdentifierKeys(device).map((key) => `device-match:${key}`))
-  const company = normalizeHeader(line.company)
-  const imei = normalizeIdentifier(line.imei)
-  if (company && imei) keys.push(`company-imei:${company}|${imei}`)
-  return unique(keys)
+  return unique(lineIdentifierKeys(line))
 }
 
 function mergeLineRecord(oldLine, normalizedLine) {
@@ -2876,7 +2870,7 @@ function revalidateLinesWithRelationBase(relationLines = []) {
     if (shouldKeep && !usedCurrentIds.has(line.id)) nextLines.push(line)
   })
 
-  return dedupeLines(nextLines, state.devices).map((line, index) => normalizeLine(line, index))
+  return nextLines.map((line, index) => normalizeLine(line, index))
 }
 
 async function revalidateLineasPage(options = {}) {
@@ -4776,7 +4770,7 @@ function renderLineas(companies) {
   const pagination = linePaginationState(lines.length)
   const pageLines = lines.slice(pagination.start, pagination.end)
   const stats = lineStats(state.lines)
-  const providerGroups = lineProviderGroups(lines)
+  const providerGroups = lineProviderGroups(state.lines)
   const d = { ...state.newLine, status: normalizeLineStatus(state.newLine.status) }
   const options = lineCompanyOptions(companies)
   return `
@@ -5736,7 +5730,7 @@ function bindEvents() {
       })
       if (shouldRecalculateLines) {
         const bridge = mergedLineBridge(state.lines, state.devices)
-        state.lines = dedupeLines(enrichLinesFromBridge(state.lines, bridge, state.devices), state.devices).map((line, index) => normalizeLine(line, index))
+        state.lines = enrichLinesFromBridge(state.lines, bridge, state.devices).map((line, index) => normalizeLine(line, index))
       }
       if (field === 'company' && shouldRender && textValue(input.value)) {
         const company = textValue(input.value)
