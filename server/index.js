@@ -544,10 +544,25 @@ function bootstrapUsers() {
 }
 
 function importLegacyStateIfNeeded() {
-  if (fs.existsSync(stateFile) || !fs.existsSync(legacyStateFile)) return
+  const archiveLegacyState = (suffix) => {
+    const archivedFile = `${legacyStateFile}.${suffix}`
+    if (fs.existsSync(archivedFile)) fs.rmSync(archivedFile)
+    fs.renameSync(legacyStateFile, archivedFile)
+  }
+  if (!fs.existsSync(legacyStateFile)) return
+  if (fs.existsSync(stateFile)) {
+    archiveLegacyState('ignored')
+    return
+  }
+  const allowLegacyImport = String(process.env.KLIFNET_ALLOW_LEGACY_STATE_IMPORT || '').toLowerCase() === 'true'
+  if (!allowLegacyImport) {
+    archiveLegacyState('ignored')
+    console.warn('Se ignoro server-state.json legado para evitar contaminar el estado cifrado. Usa KLIFNET_ALLOW_LEGACY_STATE_IMPORT=true si necesitas migrarlo manualmente.')
+    return
+  }
   const legacy = JSON.parse(fs.readFileSync(legacyStateFile, 'utf8'))
   encryptJson(stateFile, legacy)
-  fs.renameSync(legacyStateFile, `${legacyStateFile}.migrated`)
+  archiveLegacyState('migrated')
 }
 
 function readState() {

@@ -2824,17 +2824,17 @@ function reconcileRelationLine(currentLine, relationLine) {
   return normalizeLine({
     ...base,
     id: current.id || base.id,
-    company: current.company || base.company,
-    phone: current.phone || base.phone,
-    iccid: current.iccid || base.iccid,
-    imei: current.imei || base.imei,
-    status: current.status || base.status,
+    company: base.company || current.company,
+    phone: base.phone || current.phone,
+    iccid: base.iccid || current.iccid,
+    imei: base.imei || current.imei,
+    status: base.status || current.status,
     billingCycle: current.billingCycle || base.billingCycle,
     renewalDate: current.renewalDate || base.renewalDate,
     annualPrice: current.annualPrice || base.annualPrice,
     clientOnly: current.clientOnly && !current.imei ? true : base.clientOnly,
     notes: current.notes || base.notes,
-    plan: current.plan || base.plan,
+    plan: base.plan || current.plan,
     lineType: base.lineType,
     providerOverride: base.lineType,
     carrier: base.carrier || current.carrier,
@@ -4715,7 +4715,7 @@ function renderLineas(companies) {
   const pagination = linePaginationState(lines.length)
   const pageLines = lines.slice(pagination.start, pagination.end)
   const stats = lineStats(state.lines)
-  const providerGroups = lineProviderGroups(state.lines)
+  const providerGroups = lineProviderGroups(pageLines)
   const d = { ...state.newLine, status: normalizeLineStatus(state.newLine.status) }
   const options = lineCompanyOptions(companies)
   return `
@@ -6009,7 +6009,11 @@ async function initDataAfterAuth() {
   }
 
   if (state.lineRelationBaseVersion !== lineRelationBaseVersion) {
-    await loadLineRelationBase()
+    await revalidateLineasPage()
+    if (state.lineRelationBaseVersion !== lineRelationBaseVersion) {
+      state.lineRelationBaseVersion = lineRelationBaseVersion
+      persistState()
+    }
   }
 
   if (state.rawRows.length && state.lineImport?.autoVersion !== lineAutoImportVersion) {
