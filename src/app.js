@@ -16,7 +16,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 10
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 5
+const lineRelationBaseVersion = 6
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -4776,7 +4776,7 @@ function renderLineas(companies) {
   const pagination = linePaginationState(lines.length)
   const pageLines = lines.slice(pagination.start, pagination.end)
   const stats = lineStats(state.lines)
-  const providerGroups = lineProviderGroups(pageLines)
+  const providerGroups = lineProviderGroups(lines)
   const d = { ...state.newLine, status: normalizeLineStatus(state.newLine.status) }
   const options = lineCompanyOptions(companies)
   return `
