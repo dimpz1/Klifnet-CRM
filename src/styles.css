@@ -33,6 +33,10 @@ body {
   color: var(--ink);
 }
 
+body.has-floating-table-scrollbar .app-shell {
+  padding-bottom: 76px;
+}
+
 button,
 input,
 select {
@@ -50,6 +54,9 @@ button {
 }
 
 .topbar {
+  position: sticky;
+  top: 8px;
+  z-index: 30;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -59,6 +66,7 @@ button {
   border-left: 6px solid var(--brand);
   border-radius: 8px;
   background: var(--surface);
+  box-shadow: 0 8px 22px rgba(16, 16, 16, 0.08);
 }
 
 .brand-lockup {
@@ -489,9 +497,34 @@ select:focus {
 .table-wrap {
   width: 100%;
   overflow: auto;
+  scrollbar-gutter: stable;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
+}
+
+.floating-table-scrollbar {
+  position: fixed;
+  right: 8px;
+  bottom: 0;
+  left: 8px;
+  z-index: 60;
+  height: 22px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--line-strong);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 -8px 24px rgba(16, 16, 16, 0.12);
+}
+
+.floating-table-scrollbar[hidden] {
+  display: none;
+}
+
+.floating-table-scrollbar-spacer {
+  height: 1px;
 }
 
 table {
@@ -520,6 +553,11 @@ th {
 
 tbody tr:hover {
   background: #fffafa;
+}
+
+tbody tr:focus-within {
+  background: #fff6f6;
+  box-shadow: inset 4px 0 0 var(--brand);
 }
 
 .section-row td {

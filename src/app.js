@@ -36,6 +36,9 @@ const lineTypeOptions = [
 
 const equipmentPageSize = 40
 const linePageSize = 40
+let floatingScrollbarWindowBound = false
+let floatingScrollbarActiveWrap = null
+let floatingScrollbarSyncing = false
 
 const hardwarePresets = [
   {
@@ -5371,6 +5374,7 @@ function renderCobros(companies) {
 }
 
 function renderLogin() {
+  document.body.classList.remove('has-floating-table-scrollbar')
   const isAdmin = state.auth.user?.role === 'admin'
   return `
     <div class="app-shell auth-shell">
@@ -5543,10 +5547,105 @@ function render() {
       ${state.notice ? `<div class="notice">${esc(state.notice)}</div>` : ''}
       <main>${body}</main>
     </div>
+    <div class="floating-table-scrollbar" id="floatingTableScrollbar" hidden aria-hidden="true">
+      <div class="floating-table-scrollbar-spacer" data-floating-scroll-spacer></div>
+    </div>
   `
 
   bindEvents()
   if (window.lucide) window.lucide.createIcons()
+  bindFloatingTableScrollbar()
+}
+
+function wideTableWraps() {
+  return Array.from(document.querySelectorAll('.table-wrap')).filter((wrap) => wrap.scrollWidth > wrap.clientWidth + 4)
+}
+
+function visibleWrapScore(wrap) {
+  const rect = wrap.getBoundingClientRect()
+  const viewportBottom = window.innerHeight - 28
+  const visibleTop = Math.max(0, rect.top)
+  const visibleBottom = Math.min(viewportBottom, rect.bottom)
+  return Math.max(0, visibleBottom - visibleTop)
+}
+
+function activeWideTableWrap() {
+  const visible = wideTableWraps()
+    .map((wrap) => ({ wrap, score: visibleWrapScore(wrap) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+  return visible[0]?.wrap || null
+}
+
+function updateFloatingTableScrollbar() {
+  const bar = document.getElementById('floatingTableScrollbar')
+  const spacer = bar?.querySelector('[data-floating-scroll-spacer]')
+  if (!bar || !spacer) return
+
+  const wrap = activeWideTableWrap()
+  if (!wrap) {
+    bar.hidden = true
+    floatingScrollbarActiveWrap = null
+    document.body.classList.remove('has-floating-table-scrollbar')
+    return
+  }
+
+  const shellRect = document.querySelector('.app-shell')?.getBoundingClientRect()
+  const wrapRect = wrap.getBoundingClientRect()
+  const left = Math.max(8, Math.round(shellRect?.left ?? wrapRect.left))
+  const rightEdge = Math.min(window.innerWidth - 8, Math.round(shellRect?.right ?? wrapRect.right))
+  bar.style.left = `${left}px`
+  bar.style.width = `${Math.max(120, rightEdge - left)}px`
+  spacer.style.width = `${wrap.scrollWidth}px`
+  floatingScrollbarActiveWrap = wrap
+  document.body.classList.add('has-floating-table-scrollbar')
+  bar.hidden = false
+
+  if (!floatingScrollbarSyncing && bar.scrollLeft !== wrap.scrollLeft) {
+    floatingScrollbarSyncing = true
+    bar.scrollLeft = wrap.scrollLeft
+    floatingScrollbarSyncing = false
+  }
+}
+
+function bindFloatingTableScrollbar() {
+  const bar = document.getElementById('floatingTableScrollbar')
+  if (!bar) return
+
+  bar.addEventListener(
+    'scroll',
+    () => {
+      if (!floatingScrollbarActiveWrap) updateFloatingTableScrollbar()
+      if (!floatingScrollbarActiveWrap || floatingScrollbarSyncing) return
+      floatingScrollbarSyncing = true
+      floatingScrollbarActiveWrap.scrollLeft = bar.scrollLeft
+      floatingScrollbarSyncing = false
+    },
+    { passive: true }
+  )
+
+  document.querySelectorAll('.table-wrap').forEach((wrap) => {
+    if (wrap.dataset.floatingScrollBound) return
+    wrap.dataset.floatingScrollBound = 'true'
+    wrap.addEventListener(
+      'scroll',
+      () => {
+        if (wrap !== floatingScrollbarActiveWrap || floatingScrollbarSyncing) return
+        floatingScrollbarSyncing = true
+        bar.scrollLeft = wrap.scrollLeft
+        floatingScrollbarSyncing = false
+      },
+      { passive: true }
+    )
+  })
+
+  if (!floatingScrollbarWindowBound) {
+    window.addEventListener('scroll', updateFloatingTableScrollbar, { passive: true })
+    window.addEventListener('resize', updateFloatingTableScrollbar)
+    floatingScrollbarWindowBound = true
+  }
+
+  requestAnimationFrame(updateFloatingTableScrollbar)
 }
 
 function bindAuthEvents() {
