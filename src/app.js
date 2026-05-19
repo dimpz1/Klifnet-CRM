@@ -5535,7 +5535,6 @@ function renderCobros(companies) {
 
 function renderLogin() {
   document.body.classList.remove('has-floating-table-scrollbar')
-  const allowedEmails = (state.auth.allowedEmails || []).join(' / ')
   return `
     <div class="app-shell auth-shell">
       <header class="topbar">
@@ -5553,7 +5552,6 @@ function renderLogin() {
           <label><span>Correo</span><input type="email" value="${attr(state.login.email)}" data-login="email" autocomplete="username"></label>
           <label><span>Password</span><input type="password" value="${attr(state.login.password)}" data-login="password" autocomplete="current-password"></label>
           <button class="button primary" id="loginButton">${icon('log-in')}Entrar</button>
-          <p>Correos autorizados: ${esc(allowedEmails || 'felipe.gomez@klifnet.com / isaacgestrada94@gmail.com')}</p>
         </section>
         <details class="auth-card" ${state.auth.setupRequired ? 'open' : ''}>
           <summary>${icon('user-plus')}Crear acceso con app key</summary>
