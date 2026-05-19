@@ -381,6 +381,7 @@ const state = {
     setupAppKey: '',
     setupToken: ''
   },
+  apiLog: [],
   sourceLabel: '',
   lastImportAt: '',
   selectedCompany: '',
@@ -1115,6 +1116,7 @@ async function savePrivateJson(kind, payload) {
 }
 
 async function apiJson(url, options = {}) {
+  const method = options.method || 'GET'
   const response = await fetch(url, {
     credentials: 'same-origin',
     ...options,
@@ -1124,6 +1126,14 @@ async function apiJson(url, options = {}) {
     }
   })
   const result = await response.json().catch(() => ({}))
+  pushApiLog({
+    method,
+    url,
+    status: response.status,
+    ok: response.ok && result.ok !== false,
+    message: result.message || result.error || (result.delivered ? 'Token enviado' : ''),
+    detail: [result.smtpError, result.tokenPath, result.fallback].filter(Boolean).join(' | ')
+  })
   if (!response.ok || result.ok === false) throw new Error(result.error || 'No se pudo completar la operacion.')
   return result
 }
@@ -1132,6 +1142,22 @@ function syncLoginFieldsFromDom() {
   document.querySelectorAll('[data-login]').forEach((input) => {
     state.login = { ...state.login, [input.dataset.login]: input.value }
   })
+}
+
+function pushApiLog(entry) {
+  const cleanUrl = String(entry.url || '').replace(/\?.*$/, '')
+  state.apiLog = [
+    {
+      time: new Date().toLocaleTimeString('es-MX', { hour12: false }),
+      method: entry.method || 'GET',
+      url: cleanUrl,
+      status: entry.status || '',
+      ok: Boolean(entry.ok),
+      message: entry.message || '',
+      detail: entry.detail || ''
+    },
+    ...state.apiLog
+  ].slice(0, 8)
 }
 
 async function refreshAuth() {
@@ -5576,6 +5602,7 @@ function renderLogin() {
           <label><span>Password nuevo</span><input type="password" value="${attr(state.login.resetPassword)}" data-login="resetPassword" autocomplete="new-password"></label>
           <button class="button primary" type="button" id="resetPasswordButton">${icon('rotate-ccw-key')}Restablecer password</button>
         </details>
+        ${renderApiLogPanel()}
       </main>
     </div>
   `
@@ -5594,6 +5621,30 @@ function renderAccountSecurity() {
       <label><span>Token</span><input value="${attr(state.login.resetToken)}" data-login="resetToken" autocomplete="one-time-code"></label>
       <label><span>Password nuevo con token</span><input type="password" value="${attr(state.login.resetPassword)}" data-login="resetPassword" autocomplete="new-password"></label>
       <button class="button primary" type="button" id="accountResetPasswordButton">${icon('rotate-ccw-key')}Guardar con token</button>
+    </section>
+    ${renderApiLogPanel()}
+  `
+}
+
+function renderApiLogPanel() {
+  if (!state.apiLog.length) return ''
+  return `
+    <section class="auth-card api-log-panel">
+      <div><span>Testing API</span><h2>Ultimas llamadas</h2></div>
+      <div class="api-log-list">
+        ${state.apiLog
+          .map(
+            (item) => `
+              <div class="api-log-item ${item.ok ? 'ok' : 'warn'}">
+                <strong>${esc(item.time)} ${esc(item.method)} ${esc(item.url)}</strong>
+                <span>${esc(String(item.status))} ${item.ok ? 'OK' : 'ERROR'}</span>
+                ${item.message ? `<small>${esc(item.message)}</small>` : ''}
+                ${item.detail ? `<code>${esc(item.detail)}</code>` : ''}
+              </div>
+            `
+          )
+          .join('')}
+      </div>
     </section>
   `
 }

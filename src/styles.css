@@ -918,6 +918,44 @@ tbody tr:focus-within {
   font-weight: 800;
 }
 
+.api-log-panel {
+  padding-bottom: 16px;
+}
+
+.api-log-list {
+  display: grid;
+  gap: 8px;
+}
+
+.api-log-item {
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--brand);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+}
+
+.api-log-item.warn {
+  border-left-color: var(--danger);
+}
+
+.api-log-item strong,
+.api-log-item small,
+.api-log-item code {
+  grid-column: 1 / -1;
+}
+
+.api-log-item code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-family: inherit;
+}
+
 small {
   display: block;
   margin-top: 4px;
