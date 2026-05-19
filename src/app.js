@@ -16,7 +16,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 10
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 14
+const lineRelationBaseVersion = 15
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -519,7 +519,12 @@ function normalizeDeviceIdentifiers(device) {
     uid: uid || mainImei,
     imei: mainImei || uid,
     imeiLong: imeiLong || mainImei || uid,
-    imeiShort
+    imeiShort,
+    lineIccid: importTextValue(device.lineIccid || device.iccid),
+    lineOperator: importTextValue(device.lineOperator),
+    lineCarrier: importTextValue(device.lineCarrier),
+    linePhone: importTextValue(device.linePhone),
+    lineMatchSource: importTextValue(device.lineMatchSource)
   }
 }
 
@@ -2363,6 +2368,25 @@ function lineForDevice(device) {
   return state.lines.find((line) => lineMatchesDeviceByImei(line, device)) || state.lines.find((line) => lineMatchesDeviceByPhone(line, device)) || null
 }
 
+function deviceLineIccid(device, line = lineForDevice(device)) {
+  return line?.iccid || importTextValue(device.lineIccid || device.iccid)
+}
+
+function deviceLineOperator(device, line = lineForDevice(device)) {
+  if (line) return lineTypeLabel(line.lineType)
+  return importTextValue(device.lineOperator)
+}
+
+function deviceLineCarrier(device, line = lineForDevice(device)) {
+  if (line?.carrier && normalizeHeader(line.carrier) !== normalizeHeader(lineTypeLabel(line.lineType))) return line.carrier
+  return importTextValue(device.lineCarrier)
+}
+
+function deviceLineMatchLabel(device, line = lineForDevice(device)) {
+  if (line) return lineMatchMethod(line, [device]) === 'telefono' ? 'Match por telefono' : 'Match por IMEI'
+  return importTextValue(device.lineMatchSource) ? 'Base de lineas' : ''
+}
+
 function lineMatchKeys(line, devices = state.devices) {
   return unique(lineIdentifierKeys(line))
 }
@@ -3232,14 +3256,17 @@ function filteredDevices() {
   const companyFilter = normalizeHeader(state.equipmentCompanyFilter)
   return state.devices.filter((device) => {
     const line = lineForDevice(device)
+    const lineIccid = deviceLineIccid(device, line)
+    const lineOperator = deviceLineOperator(device, line)
+    const lineCarrier = deviceLineCarrier(device, line)
     const companyMatches = !companyFilter || normalizeHeader(device.company).includes(companyFilter)
     const cycleMatches = !state.equipmentCycleFilter || deviceBillingCycle(device) === state.equipmentCycleFilter
     const queryMatches =
       !query ||
       normalizeHeader(
         `${device.company} ${device.groups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType} ${
-          line?.iccid || ''
-        } ${line ? lineTypeLabel(line.lineType) : ''} ${line?.carrier || ''}`
+          lineIccid || ''
+        } ${lineOperator || ''} ${lineCarrier || ''} ${device.linePhone || ''}`
       ).includes(query)
     return companyMatches && cycleMatches && queryMatches
   })
@@ -4559,9 +4586,11 @@ function deviceTable(devices) {
           ${devices
             .map((device) => {
               const line = lineForDevice(device)
-              const lineOperator = line ? lineTypeLabel(line.lineType) : ''
-              const lineCarrier = line?.carrier && normalizeHeader(line.carrier) !== normalizeHeader(lineOperator) ? `<small>${esc(line.carrier)}</small>` : ''
-              const matchMethod = line ? lineMatchMethod(line, [device]) : ''
+              const lineIccid = deviceLineIccid(device, line)
+              const lineOperator = deviceLineOperator(device, line)
+              const lineCarrierText = deviceLineCarrier(device, line)
+              const lineCarrier = lineCarrierText ? `<small>${esc(lineCarrierText)}</small>` : ''
+              const matchLabel = deviceLineMatchLabel(device, line)
               return `
                 <tr>
                   <td><input list="equipmentCompanyList" value="${attr(device.company)}" data-device="${attr(device.id)}" data-field="company"></td>
@@ -4571,8 +4600,8 @@ function deviceTable(devices) {
                   <td><input value="${attr(device.imei || '')}" data-device="${attr(device.id)}" data-field="imei"></td>
                   <td><input value="${attr(deviceImeiLong(device))}" data-device="${attr(device.id)}" data-field="imeiLong"></td>
                   <td><input value="${attr(deviceImeiShort(device))}" data-device="${attr(device.id)}" data-field="imeiShort"></td>
-                  <td>${line ? `${esc(line.iccid || '-')}<small>${matchMethod === 'telefono' ? 'Match por telefono' : 'Match por IMEI'}</small>` : '-'}</td>
-                  <td>${line ? `${esc(lineOperator)}${lineCarrier}` : '-'}</td>
+                  <td>${lineIccid ? `${esc(lineIccid)}${matchLabel ? `<small>${esc(matchLabel)}</small>` : ''}` : '-'}</td>
+                  <td>${lineOperator ? `${esc(lineOperator)}${lineCarrier}` : '-'}</td>
                   <td><input value="${attr(device.phone || '')}" data-device="${attr(device.id)}" data-field="phone"></td>
                   <td><input value="${attr(device.deviceType || '')}" data-device="${attr(device.id)}" data-field="deviceType"></td>
                   <td>
