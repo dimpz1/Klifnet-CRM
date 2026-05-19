@@ -16,7 +16,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 10
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 15
+const lineRelationBaseVersion = 16
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -1836,7 +1836,7 @@ function normalizePhone(value) {
   return String(value ?? '').replace(/\D/g, '')
 }
 
-const linePhoneCandidates = ['Linea', 'Linea celular', 'Telefono', 'Telefono linea', 'MSISDN', 'Numero', 'Numero celular', 'DN', 'Celular']
+const linePhoneCandidates = ['MSISDN', 'MSIDN', 'Linea celular', 'Telefono', 'Telefono linea', 'Numero de telefono', 'Numero celular', 'Numero', 'Linea', 'DN', 'Celular']
 const lineIccCandidates = ['ICCID', 'ICC', 'ICCID / ICC', 'SIM ICCID', 'SIM', 'Numero SIM', 'No SIM', 'Simcard', 'Chip', 'Numero chip', 'No chip', 'SIM ID', 'ID SIM']
 const lineImeiCandidates = ['IMEI', 'IMEI largo', 'IMEI corto', 'IMEI equipo', 'IMEI dispositivo', 'Equipo IMEI', 'Device IMEI', 'IMEI Lock', 'IMEI locked', 'Dispositivo', 'UID', 'Identificador']
 
@@ -2368,6 +2368,22 @@ function lineForDevice(device) {
   return state.lines.find((line) => lineMatchesDeviceByImei(line, device)) || state.lines.find((line) => lineMatchesDeviceByPhone(line, device)) || null
 }
 
+function preferredLinePhoneFromRecord(record) {
+  return [
+    record.msisdn,
+    record.MSISDN,
+    record.msidn,
+    record.MSIDN,
+    record.relacion_2023_msisdn,
+    record.telefono,
+    record.phone,
+    record.linea,
+    record.Linea
+  ]
+    .map(normalizePhoneCandidate)
+    .find(Boolean)
+}
+
 function deviceLineIccid(device, line = lineForDevice(device)) {
   return line?.iccid || importTextValue(device.lineIccid || device.iccid)
 }
@@ -2380,6 +2396,10 @@ function deviceLineOperator(device, line = lineForDevice(device)) {
 function deviceLineCarrier(device, line = lineForDevice(device)) {
   if (line?.carrier && normalizeHeader(line.carrier) !== normalizeHeader(lineTypeLabel(line.lineType))) return line.carrier
   return importTextValue(device.lineCarrier)
+}
+
+function deviceLinePhone(device, line = lineForDevice(device)) {
+  return line?.phone || importTextValue(device.linePhone)
 }
 
 function deviceLineMatchLabel(device, line = lineForDevice(device)) {
@@ -2800,7 +2820,7 @@ function lineFromRelationRecord(record, index) {
       relationId: record.relacion_id,
       sourceLineId: record.linea_id,
       company: record.cliente_perfil || (isBernardo ? 'Bernardo' : record.cliente_fuente) || '',
-      phone: record.telefono,
+      phone: preferredLinePhoneFromRecord(record),
       lineType: provider,
       providerOverride: provider,
       iccid: record.iccid_luhn || record.iccid,
@@ -2830,7 +2850,9 @@ function relationRecordFromRow(row) {
     proveedor: rowValue(row, ['Proveedor', 'Provider']),
     estatus_servicio: rowValue(row, ['Estatus servicio', 'Status servicio', 'Service status', 'Estatus']),
     estatus_original: rowValue(row, ['Estatus original', 'Original status']),
-    telefono: rowValue(row, ['Telefono', 'Teléfono', 'Linea celular', 'MSISDN']),
+    telefono: rowValue(row, ['Telefono', 'Teléfono', 'TelÃ©fono', 'Linea celular', 'Línea celular', 'Linea telefónica', 'Phone', 'Numero telefono', 'Número de teléfono', 'Numero de telefono']),
+    msisdn: rowValue(row, ['MSISDN', 'MSIDN', 'MSISDN linea', 'MSISDN línea', 'MSISDN lÃ­nea', 'Linea MSISDN']),
+    relacion_2023_msisdn: rowValue(row, ['Relacion 2023 MSISDN', 'Relación 2023 MSISDN', 'RelaciÃ³n 2023 MSISDN', 'relacion_2023_msisdn']),
     iccid: rowValue(row, ['ICCID', 'ICC']),
     iccid_luhn: rowValue(row, ['ICCID Luhn', 'ICCID LUHN']),
     sim_ultimos4: rowValue(row, ['SIM ultimos 4', 'SIM últimos 4']),
@@ -3259,6 +3281,7 @@ function filteredDevices() {
     const lineIccid = deviceLineIccid(device, line)
     const lineOperator = deviceLineOperator(device, line)
     const lineCarrier = deviceLineCarrier(device, line)
+    const linePhone = deviceLinePhone(device, line)
     const companyMatches = !companyFilter || normalizeHeader(device.company).includes(companyFilter)
     const cycleMatches = !state.equipmentCycleFilter || deviceBillingCycle(device) === state.equipmentCycleFilter
     const queryMatches =
@@ -3266,7 +3289,7 @@ function filteredDevices() {
       normalizeHeader(
         `${device.company} ${device.groups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType} ${
           lineIccid || ''
-        } ${lineOperator || ''} ${lineCarrier || ''} ${device.linePhone || ''}`
+        } ${lineOperator || ''} ${lineCarrier || ''} ${linePhone || ''}`
       ).includes(query)
     return companyMatches && cycleMatches && queryMatches
   })
@@ -4579,7 +4602,7 @@ function deviceTable(devices) {
       <table>
         <thead>
           <tr>
-            <th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>ICCID</th><th>Operadora</th><th>Telefono</th><th>Tipo</th><th>Cobro</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Origen</th><th>Ultimo mensaje</th><th>Estado</th>
+            <th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>ICCID</th><th>Operadora</th><th>Linea / MSISDN</th><th>Telefono Wialon</th><th>Tipo</th><th>Cobro</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Origen</th><th>Ultimo mensaje</th><th>Estado</th>
           </tr>
         </thead>
         <tbody>
@@ -4588,6 +4611,7 @@ function deviceTable(devices) {
               const line = lineForDevice(device)
               const lineIccid = deviceLineIccid(device, line)
               const lineOperator = deviceLineOperator(device, line)
+              const linePhone = deviceLinePhone(device, line)
               const lineCarrierText = deviceLineCarrier(device, line)
               const lineCarrier = lineCarrierText ? `<small>${esc(lineCarrierText)}</small>` : ''
               const matchLabel = deviceLineMatchLabel(device, line)
@@ -4602,6 +4626,7 @@ function deviceTable(devices) {
                   <td><input value="${attr(deviceImeiShort(device))}" data-device="${attr(device.id)}" data-field="imeiShort"></td>
                   <td>${lineIccid ? `${esc(lineIccid)}${matchLabel ? `<small>${esc(matchLabel)}</small>` : ''}` : '-'}</td>
                   <td>${lineOperator ? `${esc(lineOperator)}${lineCarrier}` : '-'}</td>
+                  <td>${linePhone ? `${esc(linePhone)}<small>${lineOperator ? esc(lineOperator) : 'Linea'}</small>` : '-'}</td>
                   <td><input value="${attr(device.phone || '')}" data-device="${attr(device.id)}" data-field="phone"></td>
                   <td><input value="${attr(device.deviceType || '')}" data-device="${attr(device.id)}" data-field="deviceType"></td>
                   <td>
@@ -4752,7 +4777,7 @@ function renderEquipos() {
         <label><span>IMEI largo</span><input value="${attr(d.imeiLong)}" data-new-device="imeiLong"></label>
         <label><span>IMEI corto</span><input value="${attr(d.imeiShort)}" data-new-device="imeiShort"></label>
         <label><span>Tipo</span><input value="${attr(d.deviceType)}" data-new-device="deviceType"></label>
-        <label><span>Telefono</span><input value="${attr(d.phone)}" data-new-device="phone"></label>
+        <label><span>Telefono Wialon</span><input value="${attr(d.phone)}" data-new-device="phone"></label>
         <label><span>Precio pactado</span><input type="number" min="0" step="0.01" value="${attr(d.agreedPrice)}" data-new-device="agreedPrice"></label>
         <label><span>Fecha venta</span><input type="date" value="${attr(d.saleDate)}" data-new-device="saleDate"></label>
         <label class="wide"><span>Nota precio</span><input value="${attr(d.priceNote)}" data-new-device="priceNote"></label>
