@@ -7,6 +7,9 @@ const authLogoutUrl = '/api/auth/logout'
 const authChangePasswordUrl = '/api/auth/change-password'
 const authForgotPasswordUrl = '/api/auth/forgot-password'
 const authResetPasswordUrl = '/api/auth/reset-password'
+const authSetupInfoUrl = '/api/auth/setup-info'
+const authSetupTokenUrl = '/api/auth/setup-token'
+const authSetupUrl = '/api/auth/setup'
 const usersUrl = '/api/users'
 const privateFileUrl = '/api/private-file'
 const seedFile = 'DispositivosWialon_Abril2026.xlsx'
@@ -358,7 +361,7 @@ const state = {
   lineTypeFilter: '',
   linePage: 1,
   lineRelationBaseVersion: 0,
-  auth: { loading: true, user: null, users: [] },
+  auth: { loading: true, dataLoading: false, setupRequired: false, allowedEmails: [], user: null, users: [] },
   login: {
     email: '',
     password: '',
@@ -371,7 +374,12 @@ const state = {
     name: '',
     newEmail: '',
     newPassword: '',
-    newRole: 'usuario'
+    newRole: 'usuario',
+    setupName: '',
+    setupEmail: '',
+    setupPassword: '',
+    setupAppKey: '',
+    setupToken: ''
   },
   sourceLabel: '',
   lastImportAt: '',
@@ -1108,6 +1116,7 @@ async function savePrivateJson(kind, payload) {
 
 async function apiJson(url, options = {}) {
   const response = await fetch(url, {
+    credentials: 'same-origin',
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -1119,27 +1128,47 @@ async function apiJson(url, options = {}) {
   return result
 }
 
+function syncLoginFieldsFromDom() {
+  document.querySelectorAll('[data-login]').forEach((input) => {
+    state.login = { ...state.login, [input.dataset.login]: input.value }
+  })
+}
+
 async function refreshAuth() {
   try {
     const result = await apiJson(authMeUrl, { method: 'GET' })
-    state.auth = { loading: false, user: result.user || null, users: result.users || [] }
+    state.auth = {
+      ...state.auth,
+      loading: false,
+      dataLoading: false,
+      setupRequired: Boolean(result.setupRequired),
+      allowedEmails: result.allowedEmails || state.auth.allowedEmails || [],
+      user: result.user || null,
+      users: result.users || []
+    }
     return Boolean(result.user)
   } catch (error) {
-    state.auth = { loading: false, user: null, users: [] }
+    state.auth = { ...state.auth, loading: false, dataLoading: false, user: null, users: [] }
     return false
   }
 }
 
 async function loginUser() {
+  syncLoginFieldsFromDom()
   try {
+    state.notice = 'Validando acceso...'
+    render()
     const result = await apiJson(authLoginUrl, {
       method: 'POST',
       body: JSON.stringify({ email: state.login.email, password: state.login.password })
     })
-    state.auth = { loading: false, user: result.user || null, users: result.users || [] }
+    state.auth = { ...state.auth, loading: false, dataLoading: true, user: result.user || null, users: result.users || [] }
     state.login = { ...state.login, password: '' }
+    state.notice = 'Acceso listo. Cargando datos del CRM...'
+    render()
     await initDataAfterAuth()
   } catch (error) {
+    state.auth = { ...state.auth, loading: false, dataLoading: false }
     state.notice = error.message
     render()
   }
@@ -1150,11 +1179,12 @@ async function logoutUser() {
     await apiJson(authLogoutUrl, { method: 'POST', body: '{}' })
   } catch {}
   localStorage.removeItem(storageKey)
-  Object.assign(state, { auth: { loading: false, user: null, users: [] }, notice: 'Sesion cerrada.' })
+  Object.assign(state, { auth: { ...state.auth, loading: false, dataLoading: false, user: null, users: [] }, notice: 'Sesion cerrada.' })
   render()
 }
 
 async function createUser() {
+  syncLoginFieldsFromDom()
   try {
     const result = await apiJson(usersUrl, {
       method: 'POST',
@@ -1188,6 +1218,7 @@ async function deleteUser(id) {
 }
 
 async function changeOwnPassword() {
+  syncLoginFieldsFromDom()
   try {
     await apiJson(authChangePasswordUrl, {
       method: 'POST',
@@ -1206,12 +1237,21 @@ async function changeOwnPassword() {
 }
 
 async function requestPasswordReset() {
+  syncLoginFieldsFromDom()
+  const email = state.login.forgotEmail || state.login.resetEmail || state.login.email || state.auth.user?.email || ''
+  if (!email) {
+    state.notice = 'Captura el correo para enviar token.'
+    render()
+    return
+  }
   try {
+    state.notice = 'Enviando token...'
+    render()
     const result = await apiJson(authForgotPasswordUrl, {
       method: 'POST',
-      body: JSON.stringify({ email: state.login.forgotEmail || state.login.email })
+      body: JSON.stringify({ email })
     })
-    state.login = { ...state.login, resetEmail: state.login.forgotEmail || state.login.email }
+    state.login = { ...state.login, forgotEmail: email, resetEmail: email }
     state.notice = result.delivered ? 'Token enviado al correo.' : 'Token generado. Revisa el archivo local del servidor si no hay correo configurado.'
     render()
   } catch (error) {
@@ -1221,17 +1261,75 @@ async function requestPasswordReset() {
 }
 
 async function resetPasswordWithToken() {
+  syncLoginFieldsFromDom()
+  const email = state.login.resetEmail || state.login.forgotEmail || state.login.email || state.auth.user?.email || ''
   try {
     await apiJson(authResetPasswordUrl, {
       method: 'POST',
       body: JSON.stringify({
-        email: state.login.resetEmail,
+        email,
         token: state.login.resetToken,
         newPassword: state.login.resetPassword
       })
     })
-    state.login = { ...state.login, email: state.login.resetEmail, password: '', resetToken: '', resetPassword: '' }
+    state.login = { ...state.login, email, resetEmail: email, password: '', resetToken: '', resetPassword: '' }
     state.notice = 'Password restablecido. Ya puedes iniciar sesion.'
+    render()
+  } catch (error) {
+    state.notice = error.message
+    render()
+  }
+}
+
+async function requestSetupToken() {
+  syncLoginFieldsFromDom()
+  const email = state.login.setupEmail || state.login.email || ''
+  if (!email || !state.login.setupAppKey) {
+    state.notice = 'Captura correo autorizado y app key para enviar token.'
+    render()
+    return
+  }
+  try {
+    state.notice = 'Enviando token de alta...'
+    render()
+    const result = await apiJson(authSetupTokenUrl, {
+      method: 'POST',
+      body: JSON.stringify({ email, appKey: state.login.setupAppKey })
+    })
+    state.login = { ...state.login, setupEmail: email }
+    state.notice = result.delivered ? 'Token de alta enviado al correo.' : 'Token de alta generado. Revisa el archivo local del servidor si no hay correo configurado.'
+    render()
+  } catch (error) {
+    state.notice = error.message
+    render()
+  }
+}
+
+async function setupUserWithToken() {
+  syncLoginFieldsFromDom()
+  const email = state.login.setupEmail || state.login.email || ''
+  try {
+    const result = await apiJson(authSetupUrl, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: state.login.setupName,
+        email,
+        password: state.login.setupPassword,
+        appKey: state.login.setupAppKey,
+        token: state.login.setupToken
+      })
+    })
+    state.login = {
+      ...state.login,
+      email,
+      password: '',
+      setupName: '',
+      setupEmail: email,
+      setupPassword: '',
+      setupToken: ''
+    }
+    state.auth = { ...state.auth, setupRequired: false }
+    state.notice = result.message || 'Cuenta creada. Ya puedes iniciar sesion.'
     render()
   } catch (error) {
     state.notice = error.message
@@ -5437,7 +5535,7 @@ function renderCobros(companies) {
 
 function renderLogin() {
   document.body.classList.remove('has-floating-table-scrollbar')
-  const isAdmin = state.auth.user?.role === 'admin'
+  const allowedEmails = (state.auth.allowedEmails || []).join(' / ')
   return `
     <div class="app-shell auth-shell">
       <header class="topbar">
@@ -5455,16 +5553,26 @@ function renderLogin() {
           <label><span>Correo</span><input type="email" value="${attr(state.login.email)}" data-login="email" autocomplete="username"></label>
           <label><span>Password</span><input type="password" value="${attr(state.login.password)}" data-login="password" autocomplete="current-password"></label>
           <button class="button primary" id="loginButton">${icon('log-in')}Entrar</button>
-          <p>Admin inicial: felipe.gomez@klifnet.com</p>
+          <p>Correos autorizados: ${esc(allowedEmails || 'felipe.gomez@klifnet.com / isaacgestrada94@gmail.com')}</p>
         </section>
+        <details class="auth-card" ${state.auth.setupRequired ? 'open' : ''}>
+          <summary>${icon('user-plus')}Crear acceso con app key</summary>
+          <label><span>Nombre</span><input value="${attr(state.login.setupName)}" data-login="setupName" autocomplete="name"></label>
+          <label><span>Correo autorizado</span><input type="email" value="${attr(state.login.setupEmail)}" data-login="setupEmail" autocomplete="username"></label>
+          <label><span>App key</span><input type="password" value="${attr(state.login.setupAppKey)}" data-login="setupAppKey" autocomplete="one-time-code"></label>
+          <button class="button" type="button" id="setupTokenButton">${icon('mail')}Enviar token de alta</button>
+          <label><span>Token</span><input value="${attr(state.login.setupToken)}" data-login="setupToken" autocomplete="one-time-code"></label>
+          <label><span>Password nuevo</span><input type="password" value="${attr(state.login.setupPassword)}" data-login="setupPassword" autocomplete="new-password"></label>
+          <button class="button primary" type="button" id="setupUserButton">${icon('shield-check')}Crear cuenta</button>
+        </details>
         <details class="auth-card">
           <summary>${icon('key-round')}Recuperar password</summary>
           <label><span>Correo</span><input type="email" value="${attr(state.login.forgotEmail)}" data-login="forgotEmail" placeholder="tu@correo.com"></label>
-          <button class="button" id="forgotPasswordButton">${icon('mail')}Enviar token</button>
+          <button class="button" type="button" id="forgotPasswordButton">${icon('mail')}Enviar token</button>
           <label><span>Correo</span><input type="email" value="${attr(state.login.resetEmail)}" data-login="resetEmail"></label>
           <label><span>Token</span><input value="${attr(state.login.resetToken)}" data-login="resetToken" autocomplete="one-time-code"></label>
           <label><span>Password nuevo</span><input type="password" value="${attr(state.login.resetPassword)}" data-login="resetPassword" autocomplete="new-password"></label>
-          <button class="button primary" id="resetPasswordButton">${icon('rotate-ccw-key')}Restablecer password</button>
+          <button class="button primary" type="button" id="resetPasswordButton">${icon('rotate-ccw-key')}Restablecer password</button>
         </details>
       </main>
     </div>
@@ -5478,6 +5586,12 @@ function renderAccountSecurity() {
       <label><span>Password actual</span><input type="password" value="${attr(state.login.currentPassword)}" data-login="currentPassword" autocomplete="current-password"></label>
       <label><span>Password nuevo</span><input type="password" value="${attr(state.login.accountNewPassword)}" data-login="accountNewPassword" autocomplete="new-password"></label>
       <button class="button primary" id="changePasswordButton">${icon('key-round')}Guardar password</button>
+      <hr>
+      <label><span>Correo</span><input type="email" value="${attr(state.login.resetEmail || state.auth.user?.email || '')}" data-login="resetEmail" autocomplete="username"></label>
+      <button class="button" type="button" id="accountForgotPasswordButton">${icon('mail')}Enviar token</button>
+      <label><span>Token</span><input value="${attr(state.login.resetToken)}" data-login="resetToken" autocomplete="one-time-code"></label>
+      <label><span>Password nuevo con token</span><input type="password" value="${attr(state.login.resetPassword)}" data-login="resetPassword" autocomplete="new-password"></label>
+      <button class="button primary" type="button" id="accountResetPasswordButton">${icon('rotate-ccw-key')}Guardar con token</button>
     </section>
   `
 }
@@ -5606,6 +5720,7 @@ function render() {
           )
           .join('')}
       </nav>
+      ${state.auth.dataLoading ? '<div class="notice">Cargando datos del CRM en segundo plano...</div>' : ''}
       ${state.notice ? `<div class="notice">${esc(state.notice)}</div>` : ''}
       <main>${body}</main>
     </div>
@@ -5718,12 +5833,23 @@ function bindAuthEvents() {
     input.addEventListener('input', save)
     input.addEventListener('change', save)
     input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') loginUser()
+      if (event.key !== 'Enter') return
+      if (input.dataset.login.startsWith('setup')) {
+        setupUserWithToken()
+        return
+      }
+      if (input.dataset.login.startsWith('reset')) {
+        resetPasswordWithToken()
+        return
+      }
+      loginUser()
     })
   })
   document.getElementById('loginButton')?.addEventListener('click', loginUser)
   document.getElementById('forgotPasswordButton')?.addEventListener('click', requestPasswordReset)
   document.getElementById('resetPasswordButton')?.addEventListener('click', resetPasswordWithToken)
+  document.getElementById('setupTokenButton')?.addEventListener('click', requestSetupToken)
+  document.getElementById('setupUserButton')?.addEventListener('click', setupUserWithToken)
 }
 
 function bindEvents() {
@@ -5746,6 +5872,8 @@ function bindEvents() {
   })
   document.getElementById('createUserButton')?.addEventListener('click', createUser)
   document.getElementById('changePasswordButton')?.addEventListener('click', changeOwnPassword)
+  document.getElementById('accountForgotPasswordButton')?.addEventListener('click', requestPasswordReset)
+  document.getElementById('accountResetPasswordButton')?.addEventListener('click', resetPasswordWithToken)
   document.querySelectorAll('[data-delete-user]').forEach((button) => {
     button.addEventListener('click', () => deleteUser(button.dataset.deleteUser))
   })
@@ -6277,47 +6405,50 @@ function startServerStatePolling() {
 }
 
 async function initDataAfterAuth() {
-  const loadedFromServer = await loadStateFromServer()
-  const loadedFromLocal = loadedFromServer ? false : loadStateFromLocal()
+  try {
+    const loadedFromServer = await loadStateFromServer()
+    const loadedFromLocal = loadedFromServer ? false : loadStateFromLocal()
 
-  if (!state.devices.length) {
-    await loadSeedFile()
-  } else if (loadedFromLocal && !loadedFromServer) {
-    persistState()
-  }
+    if (!state.devices.length) {
+      await loadSeedFile()
+    } else if (loadedFromLocal && !loadedFromServer) {
+      persistState()
+    }
 
-  if (state.lineResetVersion !== lineResetVersion) {
-    clearLineState()
-    persistState()
-  }
+    if (state.lineResetVersion !== lineResetVersion) {
+      clearLineState()
+      persistState()
+    }
 
-  if (state.lineRelationBaseVersion !== lineRelationBaseVersion) {
-    await revalidateLineasPage()
     if (state.lineRelationBaseVersion !== lineRelationBaseVersion) {
-      state.lineRelationBaseVersion = lineRelationBaseVersion
-      persistState()
+      await revalidateLineasPage()
+      if (state.lineRelationBaseVersion !== lineRelationBaseVersion) {
+        state.lineRelationBaseVersion = lineRelationBaseVersion
+        persistState()
+      }
     }
-  }
 
-  if (state.rawRows.length && state.lineImport?.autoVersion !== lineAutoImportVersion) {
-    const label = state.sourceLabel || 'Base guardada'
-    const lineMerge = mergeLineRows(state.lines, state.rawRows, label, { requireIcc: true, markMissing: false })
-    if (lineMerge.imported.length) {
-      state.lines = lineMerge.lines
-      state.lineImport = lineImportState(label, state.rawRows.length, lineMerge.imported, lineMerge.stats, {
-        autoVersion: lineAutoImportVersion
-      })
-      persistState()
+    if (state.rawRows.length && state.lineImport?.autoVersion !== lineAutoImportVersion) {
+      const label = state.sourceLabel || 'Base guardada'
+      const lineMerge = mergeLineRows(state.lines, state.rawRows, label, { requireIcc: true, markMissing: false })
+      if (lineMerge.imported.length) {
+        state.lines = lineMerge.lines
+        state.lineImport = lineImportState(label, state.rawRows.length, lineMerge.imported, lineMerge.stats, {
+          autoVersion: lineAutoImportVersion
+        })
+        persistState()
+      }
     }
-  }
 
-  if (state.devices.length && state.paymentImport?.version !== paymentImportVersion) {
-    await loadPaymentSeed({ keepView: true })
-    return
+    if (state.devices.length && state.paymentImport?.version !== paymentImportVersion) {
+      await loadPaymentSeed({ keepView: true })
+    }
+  } finally {
+    state.auth = { ...state.auth, dataLoading: false }
+    if (state.notice === 'Acceso listo. Cargando datos del CRM...') state.notice = ''
+    render()
+    startServerStatePolling()
   }
-
-  render()
-  startServerStatePolling()
 }
 
 async function init() {

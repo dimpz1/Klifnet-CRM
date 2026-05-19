@@ -14,13 +14,15 @@ Abre `http://127.0.0.1:8787`.
 
 Para usarlo desde otros equipos de la misma red WiFi, ejecuta el script y abre la URL LAN que muestra PowerShell, por ejemplo `http://192.168.1.183:8787/`.
 
-El CRM pide login por correo. El primer arranque crea un admin para `felipe.gomez@klifnet.com` y guarda la clave temporal en `data/admin-inicial.txt`.
+El CRM pide login por correo. En una instalacion nueva, primero crea tu cuenta desde la pantalla de login con `app key` + token. Si no defines `KLIFNET_APP_KEY` en `.env`, el servidor genera una en `data/app-key.txt`.
+
+Solo se aceptan estos correos para crear cuenta: `felipe.gomez@klifnet.com` e `isaacgestrada94@gmail.com`. El primer correo creado queda como admin; los siguientes quedan como usuarios normales.
 
 El CRM guarda estado, usuarios, bases privadas y archivos subidos cifrados en `data/`. Esa carpeta no se sube a GitHub. Para pasar la app a otra PC, clona el repo y copia tambien la carpeta `data/` desde la PC servidor si quieres conservar bases, usuarios y estado.
 
 Algunas bases semilla pueden subirse cifradas una vez dentro de `data/private-files/`. La llave `data/secret.key`, `.env`, passwords, tokens y respaldos locales no deben subirse; sin esa llave las bases cifradas no se pueden abrir en otra PC.
 
-Cada usuario puede cambiar su password desde `Cuenta` / `Usuarios`. La recuperacion genera un token dinamico; si no hay un servicio de correo configurado, el token queda solo en la PC servidor en `data/password-reset-tokens.txt`. Tambien puedes generar tokens de un solo uso con:
+Cada usuario puede cambiar su password desde `Cuenta` / `Usuarios`, ya sea con password actual o con token enviado a su correo. La recuperacion genera un token dinamico; si no hay un servicio de correo configurado, el token queda solo en la PC servidor en `data/password-reset-tokens.txt`. Tambien puedes generar tokens de un solo uso con:
 
 ```powershell
 node scripts\generate-one-time-tokens.mjs 10000 --force

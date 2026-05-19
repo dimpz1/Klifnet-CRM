@@ -19,6 +19,7 @@ const usersFile = path.join(dataDir, 'users.enc')
 const passwordResetFile = path.join(dataDir, 'password-resets.enc')
 const passwordResetOutboxFile = path.join(dataDir, 'password-reset-tokens.txt')
 const oneTimeTokensFile = path.join(dataDir, 'one-time-tokens.enc')
+const appKeyFile = path.join(dataDir, 'app-key.txt')
 const stateFile = path.join(dataDir, 'server-state.enc')
 const userStateDir = path.join(dataDir, 'user-states')
 const legacyStateFile = path.join(dataDir, 'server-state.json')
@@ -27,6 +28,7 @@ const adminBootstrapFile = path.join(dataDir, 'admin-inicial.txt')
 const maxBodyBytes = 50 * 1024 * 1024
 const sessionTtlMs = 1000 * 60 * 60 * 12
 const resetTokenTtlMs = 1000 * 60 * 20
+const defaultAllowedEmails = ['felipe.gomez@klifnet.com', 'isaacgestrada94@gmail.com']
 
 const privateFileMap = {
   wialon: 'DispositivosWialon_Abril2026.xlsx.enc',
@@ -225,6 +227,35 @@ function secureToken(prefix = 'KR') {
 
 function keyedTokenHash(token) {
   return crypto.createHmac('sha256', getEncryptionKey()).update(String(token || '').trim()).digest('hex')
+}
+
+function allowedAuthEmails() {
+  const configured = String(process.env.KLIFNET_ALLOWED_EMAILS || '')
+    .split(/[,\s;]+/g)
+    .map(normalizeEmail)
+    .filter(Boolean)
+  return configured.length ? configured : defaultAllowedEmails
+}
+
+function isAllowedAuthEmail(email) {
+  return allowedAuthEmails().includes(normalizeEmail(email))
+}
+
+function getAppKey() {
+  const configured = String(process.env.KLIFNET_APP_KEY || process.env.KLIFNET_SETUP_KEY || '').trim()
+  if (configured) return configured
+  ensureDataDirs()
+  if (!fs.existsSync(appKeyFile)) {
+    fs.writeFileSync(appKeyFile, `${secureToken('KAPP')}\n`, { mode: 0o600 })
+    console.log(`App key inicial guardada en ${appKeyFile}`)
+  }
+  return fs.readFileSync(appKeyFile, 'utf8').trim()
+}
+
+function verifyAppKey(value) {
+  const actualHash = crypto.createHash('sha256').update(getAppKey()).digest()
+  const inputHash = crypto.createHash('sha256').update(String(value || '').trim()).digest()
+  return crypto.timingSafeEqual(actualHash, inputHash)
 }
 
 function loadPasswordResets() {
@@ -521,28 +552,20 @@ function publicUser(user) {
   }
 }
 
-function bootstrapUsers() {
+function prepareAuthStore() {
   const payload = loadUsers()
-  if (payload.users.length) return
-  const email = normalizeEmail(process.env.KLIFNET_ADMIN_EMAIL || 'felipe.gomez@klifnet.com')
-  const password = process.env.KLIFNET_ADMIN_PASSWORD || crypto.randomBytes(9).toString('base64url')
-  const hashed = passwordHash(password)
-  payload.users.push({
-    id: crypto.randomUUID(),
-    email,
-    name: 'Administrador',
-    role: 'admin',
-    salt: hashed.salt,
-    passwordHash: hashed.hash,
-    createdAt: new Date().toISOString()
-  })
-  payload.createdAt = payload.createdAt || new Date().toISOString()
-  saveUsers(payload)
-  console.log(`Usuario admin inicial: ${email}`)
-  if (!process.env.KLIFNET_ADMIN_PASSWORD) {
-    fs.writeFileSync(adminBootstrapFile, `Correo: ${email}\nPassword temporal: ${password}\n`, { mode: 0o600 })
-    console.log(`Password temporal guardado en ${adminBootstrapFile}`)
+  if (payload.users.length) {
+    const allowed = new Set(allowedAuthEmails())
+    const before = payload.users.length
+    payload.users = payload.users.filter((user) => allowed.has(normalizeEmail(user.email)))
+    if (payload.users.length !== before) {
+      saveUsers(payload)
+      console.log('Usuarios fuera de la lista permitida fueron removidos.')
+    }
+    return
   }
+  getAppKey()
+  console.log(`Sin usuarios iniciales. Crea el primer acceso con app key y token. Correos permitidos: ${allowedAuthEmails().join(', ')}`)
 }
 
 function importLegacyStateIfNeeded() {
@@ -621,15 +644,90 @@ async function handleAuth(req, res, url) {
   if (url.pathname === '/api/auth/me' && req.method === 'GET') {
     const session = currentSession(req)
     if (!session) {
-      sendJson(res, 200, { ok: true, user: null, users: [] })
+      sendJson(res, 200, { ok: true, user: null, users: [], setupRequired: usersPayload.users.length === 0, allowedEmails: allowedAuthEmails() })
       return true
     }
     const user = usersPayload.users.find((candidate) => candidate.id === session.userId)
     sendJson(res, 200, {
       ok: true,
       user: user ? publicUser(user) : null,
-      users: user?.role === 'admin' ? usersPayload.users.map(publicUser) : []
+      users: user?.role === 'admin' ? usersPayload.users.map(publicUser) : [],
+      setupRequired: usersPayload.users.length === 0,
+      allowedEmails: allowedAuthEmails()
     })
+    return true
+  }
+
+  if (url.pathname === '/api/auth/setup-info' && req.method === 'GET') {
+    sendJson(res, 200, {
+      ok: true,
+      setupRequired: usersPayload.users.length === 0,
+      allowedEmails: allowedAuthEmails()
+    })
+    return true
+  }
+
+  if (url.pathname === '/api/auth/setup-token' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req))
+    const email = normalizeEmail(body.email)
+    if (!email || !isAllowedAuthEmail(email)) {
+      sendJson(res, 403, { ok: false, error: 'Ese correo no esta autorizado para crear cuenta.' })
+      return true
+    }
+    if (!verifyAppKey(body.appKey)) {
+      sendJson(res, 401, { ok: false, error: 'App key incorrecta.' })
+      return true
+    }
+    const token = createPasswordReset(email)
+    const delivery = await deliverResetToken(email, token)
+    sendJson(res, 200, {
+      ok: true,
+      message: 'Token generado.',
+      delivered: Boolean(delivery.sent),
+      fallback: delivery.sent ? '' : 'Servidor local'
+    })
+    return true
+  }
+
+  if (url.pathname === '/api/auth/setup' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req))
+    const email = normalizeEmail(body.email)
+    const token = String(body.token || '').trim()
+    const password = String(body.password || '')
+    if (!email || !isAllowedAuthEmail(email)) {
+      sendJson(res, 403, { ok: false, error: 'Ese correo no esta autorizado para crear cuenta.' })
+      return true
+    }
+    if (!verifyAppKey(body.appKey)) {
+      sendJson(res, 401, { ok: false, error: 'App key incorrecta.' })
+      return true
+    }
+    if (!token || password.length < 8) {
+      sendJson(res, 400, { ok: false, error: 'Captura token y password de minimo 8 caracteres.' })
+      return true
+    }
+    if (usersPayload.users.some((user) => normalizeEmail(user.email) === email)) {
+      sendJson(res, 409, { ok: false, error: 'Ese correo ya tiene cuenta.' })
+      return true
+    }
+    const validToken = consumePasswordReset(email, token) || consumeOneTimeToken(token, email)
+    if (!validToken) {
+      sendJson(res, 401, { ok: false, error: 'Token invalido, expirado o usado.' })
+      return true
+    }
+    const hashed = passwordHash(password)
+    usersPayload.users.push({
+      id: crypto.randomUUID(),
+      email,
+      name: body.name || email,
+      role: usersPayload.users.length === 0 ? 'admin' : 'usuario',
+      salt: hashed.salt,
+      passwordHash: hashed.hash,
+      createdAt: new Date().toISOString()
+    })
+    usersPayload.createdAt = usersPayload.createdAt || new Date().toISOString()
+    saveUsers(usersPayload)
+    sendJson(res, 200, { ok: true })
     return true
   }
 
@@ -725,6 +823,10 @@ async function handleAuth(req, res, url) {
     const body = JSON.parse(await readBody(req))
     const email = normalizeEmail(body.email)
     const password = String(body.password || '')
+    if (!isAllowedAuthEmail(email)) {
+      sendJson(res, 403, { ok: false, error: 'Ese correo no esta autorizado para crear cuenta.' })
+      return true
+    }
     if (!email || password.length < 8) {
       sendJson(res, 400, { ok: false, error: 'Captura correo y password de minimo 8 caracteres.' })
       return true
@@ -877,7 +979,7 @@ function serveStatic(req, res) {
 }
 
 ensureDataDirs()
-bootstrapUsers()
+prepareAuthStore()
 importLegacyStateIfNeeded()
 
 const server = http.createServer(serveStatic)
