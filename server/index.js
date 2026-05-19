@@ -10,6 +10,25 @@ import { fileURLToPath } from 'node:url'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const rootDir = path.resolve(__dirname, '..')
+
+function loadDotEnv() {
+  const envPath = path.join(rootDir, '.env')
+  if (!fs.existsSync(envPath)) return
+  for (const rawLine of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#') || !line.includes('=')) continue
+    const index = line.indexOf('=')
+    const key = line.slice(0, index).trim()
+    const value = line
+      .slice(index + 1)
+      .trim()
+      .replace(/^["']|["']$/g, '')
+    if (key && process.env[key] === undefined) process.env[key] = value
+  }
+}
+
+loadDotEnv()
+
 const port = Number(process.env.PORT || 8787)
 const host = process.env.HOST || '0.0.0.0'
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(rootDir, 'data'))
