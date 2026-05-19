@@ -38,7 +38,6 @@ const usersFile = path.join(dataDir, 'users.enc')
 const passwordResetFile = path.join(dataDir, 'password-resets.enc')
 const passwordResetOutboxFile = path.join(dataDir, 'password-reset-tokens.txt')
 const oneTimeTokensFile = path.join(dataDir, 'one-time-tokens.enc')
-const appKeyFile = path.join(dataDir, 'app-key.txt')
 const stateFile = path.join(dataDir, 'server-state.enc')
 const userStateDir = path.join(dataDir, 'user-states')
 const legacyStateFile = path.join(dataDir, 'server-state.json')
@@ -258,23 +257,6 @@ function allowedAuthEmails() {
 
 function isAllowedAuthEmail(email) {
   return allowedAuthEmails().includes(normalizeEmail(email))
-}
-
-function getAppKey() {
-  const configured = String(process.env.KLIFNET_APP_KEY || process.env.KLIFNET_SETUP_KEY || '').trim()
-  if (configured) return configured
-  ensureDataDirs()
-  if (!fs.existsSync(appKeyFile)) {
-    fs.writeFileSync(appKeyFile, `${secureToken('KAPP')}\n`, { mode: 0o600 })
-    console.log(`App key inicial guardada en ${appKeyFile}`)
-  }
-  return fs.readFileSync(appKeyFile, 'utf8').trim()
-}
-
-function verifyAppKey(value) {
-  const actualHash = crypto.createHash('sha256').update(getAppKey()).digest()
-  const inputHash = crypto.createHash('sha256').update(String(value || '').trim()).digest()
-  return crypto.timingSafeEqual(actualHash, inputHash)
 }
 
 function loadPasswordResets() {
@@ -592,8 +574,7 @@ function prepareAuthStore() {
     }
     return
   }
-  getAppKey()
-  console.log(`Sin usuarios iniciales. Crea el primer acceso con app key y token. Correos permitidos: ${allowedAuthEmails().join(', ')}`)
+  console.log(`Sin usuarios iniciales. Crea el primer acceso con correo autorizado y token. Correos permitidos: ${allowedAuthEmails().join(', ')}`)
 }
 
 function importLegacyStateIfNeeded() {
@@ -702,10 +683,6 @@ async function handleAuth(req, res, url) {
       sendJson(res, 403, { ok: false, error: 'Ese correo no esta autorizado para crear cuenta.' })
       return true
     }
-    if (!verifyAppKey(body.appKey)) {
-      sendJson(res, 401, { ok: false, error: 'App key incorrecta.' })
-      return true
-    }
     const token = createPasswordReset(email)
     const delivery = await deliverResetToken(email, token)
     sendJson(res, 200, {
@@ -726,10 +703,6 @@ async function handleAuth(req, res, url) {
     const password = String(body.password || '')
     if (!email || !isAllowedAuthEmail(email)) {
       sendJson(res, 403, { ok: false, error: 'Ese correo no esta autorizado para crear cuenta.' })
-      return true
-    }
-    if (!verifyAppKey(body.appKey)) {
-      sendJson(res, 401, { ok: false, error: 'App key incorrecta.' })
       return true
     }
     if (!token || password.length < 8) {

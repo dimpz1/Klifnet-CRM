@@ -14,7 +14,7 @@ Abre `http://127.0.0.1:8787`.
 
 Para usarlo desde otros equipos de la misma red WiFi, ejecuta el script y abre la URL LAN que muestra PowerShell, por ejemplo `http://192.168.1.183:8787/`.
 
-El CRM pide login por correo. En una instalacion nueva, primero crea tu cuenta desde la pantalla de login con `app key` + token. Si no defines `KLIFNET_APP_KEY` en `.env`, el servidor genera una en `data/app-key.txt`.
+El CRM pide login por correo. En una instalacion nueva, primero crea tu cuenta desde la pantalla de login con correo autorizado + token.
 
 Solo se aceptan estos correos para crear cuenta: `felipe.gomez@klifnet.com` e `isaacgestrada94@gmail.com`. El primer correo creado queda como admin; los siguientes quedan como usuarios normales.
 

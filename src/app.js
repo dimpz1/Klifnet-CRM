@@ -378,7 +378,6 @@ const state = {
     setupName: '',
     setupEmail: '',
     setupPassword: '',
-    setupAppKey: '',
     setupToken: ''
   },
   apiLog: [],
@@ -1314,8 +1313,8 @@ async function requestSetupToken() {
   syncLoginFieldsFromDom()
   pushApiLog({ method: 'CLICK', url: '#setup-token', status: 'UI', ok: true, message: 'Click recibido: token de alta' })
   const email = state.login.setupEmail || state.login.email || ''
-  if (!email || !state.login.setupAppKey) {
-    state.notice = 'Captura correo autorizado y app key para enviar token.'
+  if (!email) {
+    state.notice = 'Captura un correo autorizado para enviar token.'
     render()
     return
   }
@@ -1324,7 +1323,7 @@ async function requestSetupToken() {
     render()
     const result = await apiJson(authSetupTokenUrl, {
       method: 'POST',
-      body: JSON.stringify({ email, appKey: state.login.setupAppKey })
+      body: JSON.stringify({ email })
     })
     state.login = { ...state.login, setupEmail: email }
     state.notice = result.delivered
@@ -1347,7 +1346,6 @@ async function setupUserWithToken() {
         name: state.login.setupName,
         email,
         password: state.login.setupPassword,
-        appKey: state.login.setupAppKey,
         token: state.login.setupToken
       })
     })
@@ -5586,10 +5584,9 @@ function renderLogin() {
           <button class="button primary" id="loginButton">${icon('log-in')}Entrar</button>
         </section>
         <details class="auth-card" ${state.auth.setupRequired ? 'open' : ''}>
-          <summary>${icon('user-plus')}Crear acceso con app key</summary>
+          <summary>${icon('user-plus')}Crear acceso</summary>
           <label><span>Nombre</span><input value="${attr(state.login.setupName)}" data-login="setupName" autocomplete="name"></label>
           <label><span>Correo autorizado</span><input type="email" value="${attr(state.login.setupEmail)}" data-login="setupEmail" autocomplete="username"></label>
-          <label><span>App key</span><input type="password" value="${attr(state.login.setupAppKey)}" data-login="setupAppKey" autocomplete="one-time-code"></label>
           <button class="button" type="button" id="setupTokenButton">${icon('mail')}Enviar token de alta</button>
           <label><span>Token</span><input value="${attr(state.login.setupToken)}" data-login="setupToken" autocomplete="one-time-code"></label>
           <label><span>Password nuevo</span><input type="password" value="${attr(state.login.setupPassword)}" data-login="setupPassword" autocomplete="new-password"></label>
