@@ -283,13 +283,24 @@ function createPasswordReset(email) {
   return token
 }
 
-function consumePasswordReset(email, token) {
+function verifyPasswordReset(email, token) {
   const payload = loadPasswordResets()
-  const hash = keyedTokenHash(token)
+  const hash = keyedTokenHash(String(token || '').trim())
   const record = (payload.tokens || []).find((candidate) => candidate.email === email && candidate.hash === hash && !candidate.usedAt)
-  if (!record || new Date(record.expiresAt).getTime() < Date.now()) return false
-  record.usedAt = new Date().toISOString()
-  savePasswordResets(payload)
+  if (!record || new Date(record.expiresAt).getTime() < Date.now()) return null
+  return { payload, record }
+}
+
+function markPasswordResetUsed(validatedToken) {
+  if (!validatedToken?.record || !validatedToken?.payload) return
+  validatedToken.record.usedAt = new Date().toISOString()
+  savePasswordResets(validatedToken.payload)
+}
+
+function consumePasswordReset(email, token) {
+  const validatedToken = verifyPasswordReset(email, token)
+  if (!validatedToken) return false
+  markPasswordResetUsed(validatedToken)
   return true
 }
 
@@ -301,15 +312,26 @@ function saveOneTimeTokens(payload) {
   encryptJson(oneTimeTokensFile, payload)
 }
 
-function consumeOneTimeToken(token, email) {
-  if (!fs.existsSync(oneTimeTokensFile)) return false
+function verifyOneTimeToken(token) {
+  if (!fs.existsSync(oneTimeTokensFile)) return null
   const payload = loadOneTimeTokens()
-  const hash = keyedTokenHash(token)
+  const hash = keyedTokenHash(String(token || '').trim())
   const record = (payload.tokens || []).find((candidate) => candidate.hash === hash && !candidate.usedAt)
-  if (!record) return false
-  record.usedAt = new Date().toISOString()
-  record.usedBy = email
-  saveOneTimeTokens(payload)
+  if (!record) return null
+  return { payload, record }
+}
+
+function markOneTimeTokenUsed(validatedToken, email) {
+  if (!validatedToken?.record || !validatedToken?.payload) return
+  validatedToken.record.usedAt = new Date().toISOString()
+  validatedToken.record.usedBy = email
+  saveOneTimeTokens(validatedToken.payload)
+}
+
+function consumeOneTimeToken(token, email) {
+  const validatedToken = verifyOneTimeToken(token)
+  if (!validatedToken) return false
+  markOneTimeTokenUsed(validatedToken, email)
   return true
 }
 
@@ -713,8 +735,9 @@ async function handleAuth(req, res, url) {
       sendJson(res, 409, { ok: false, error: 'Ese correo ya tiene cuenta.' })
       return true
     }
-    const validToken = consumePasswordReset(email, token) || consumeOneTimeToken(token, email)
-    if (!validToken) {
+    const passwordResetToken = verifyPasswordReset(email, token)
+    const oneTimeToken = passwordResetToken ? null : verifyOneTimeToken(token)
+    if (!passwordResetToken && !oneTimeToken) {
       sendJson(res, 401, { ok: false, error: 'Token invalido, expirado o usado.' })
       return true
     }
@@ -730,6 +753,8 @@ async function handleAuth(req, res, url) {
     })
     usersPayload.createdAt = usersPayload.createdAt || new Date().toISOString()
     saveUsers(usersPayload)
+    if (passwordResetToken) markPasswordResetUsed(passwordResetToken)
+    if (oneTimeToken) markOneTimeTokenUsed(oneTimeToken, email)
     sendJson(res, 200, { ok: true })
     return true
   }
@@ -807,13 +832,16 @@ async function handleAuth(req, res, url) {
       sendJson(res, 400, { ok: false, error: 'Captura correo, token y password nuevo de minimo 8 caracteres.' })
       return true
     }
-    const validToken = consumePasswordReset(email, token) || consumeOneTimeToken(token, email)
-    if (!validToken) {
+    const passwordResetToken = verifyPasswordReset(email, token)
+    const oneTimeToken = passwordResetToken ? null : verifyOneTimeToken(token)
+    if (!passwordResetToken && !oneTimeToken) {
       sendJson(res, 401, { ok: false, error: 'Token invalido, expirado o usado.' })
       return true
     }
     setUserPassword(user, newPassword)
     saveUsers(usersPayload)
+    if (passwordResetToken) markPasswordResetUsed(passwordResetToken)
+    if (oneTimeToken) markOneTimeTokenUsed(oneTimeToken, email)
     sendJson(res, 200, { ok: true })
     return true
   }

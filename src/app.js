@@ -10,6 +10,9 @@ const authResetPasswordUrl = '/api/auth/reset-password'
 const authSetupInfoUrl = '/api/auth/setup-info'
 const authSetupTokenUrl = '/api/auth/setup-token'
 const authSetupUrl = '/api/auth/setup'
+let setupTokenRequestInFlight = false
+let setupUserRequestInFlight = false
+let resetPasswordRequestInFlight = false
 const usersUrl = '/api/users'
 const privateFileUrl = '/api/private-file'
 const seedFile = 'DispositivosWialon_Abril2026.xlsx'
@@ -1289,6 +1292,10 @@ async function requestPasswordReset() {
 }
 
 async function resetPasswordWithToken() {
+  if (resetPasswordRequestInFlight) return
+  resetPasswordRequestInFlight = true
+  const button = document.getElementById('resetPasswordButton')
+  if (button) button.disabled = true
   syncLoginFieldsFromDom()
   const email = state.login.resetEmail || state.login.forgotEmail || state.login.email || state.auth.user?.email || ''
   try {
@@ -1306,10 +1313,18 @@ async function resetPasswordWithToken() {
   } catch (error) {
     state.notice = error.message
     render()
+  } finally {
+    resetPasswordRequestInFlight = false
+    const currentButton = document.getElementById('resetPasswordButton')
+    if (currentButton) currentButton.disabled = false
   }
 }
 
 async function requestSetupToken() {
+  if (setupTokenRequestInFlight) return
+  setupTokenRequestInFlight = true
+  const button = document.getElementById('setupTokenButton')
+  if (button) button.disabled = true
   syncLoginFieldsFromDom()
   pushApiLog({ method: 'CLICK', url: '#setup-token', status: 'UI', ok: true, message: 'Click recibido: token de alta' })
   const email = state.login.setupEmail || state.login.email || ''
@@ -1333,10 +1348,18 @@ async function requestSetupToken() {
   } catch (error) {
     state.notice = error.message
     render()
+  } finally {
+    setupTokenRequestInFlight = false
+    const currentButton = document.getElementById('setupTokenButton')
+    if (currentButton) currentButton.disabled = false
   }
 }
 
 async function setupUserWithToken() {
+  if (setupUserRequestInFlight) return
+  setupUserRequestInFlight = true
+  const button = document.getElementById('setupUserButton')
+  if (button) button.disabled = true
   syncLoginFieldsFromDom()
   const email = state.login.setupEmail || state.login.email || ''
   try {
@@ -1364,6 +1387,10 @@ async function setupUserWithToken() {
   } catch (error) {
     state.notice = error.message
     render()
+  } finally {
+    setupUserRequestInFlight = false
+    const currentButton = document.getElementById('setupUserButton')
+    if (currentButton) currentButton.disabled = false
   }
 }
 
