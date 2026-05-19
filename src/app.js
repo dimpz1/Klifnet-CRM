@@ -1252,7 +1252,9 @@ async function requestPasswordReset() {
       body: JSON.stringify({ email })
     })
     state.login = { ...state.login, forgotEmail: email, resetEmail: email }
-    state.notice = result.delivered ? 'Token enviado al correo.' : 'Token generado. Revisa el archivo local del servidor si no hay correo configurado.'
+    state.notice = result.delivered
+      ? 'Token enviado al correo.'
+      : `Token generado, pero no salio por correo.${result.smtpError ? ` SMTP: ${result.smtpError}` : ''} Revisa ${result.tokenPath || 'data/password-reset-tokens.txt'} en el servidor.`
     render()
   } catch (error) {
     state.notice = error.message
@@ -1297,7 +1299,9 @@ async function requestSetupToken() {
       body: JSON.stringify({ email, appKey: state.login.setupAppKey })
     })
     state.login = { ...state.login, setupEmail: email }
-    state.notice = result.delivered ? 'Token de alta enviado al correo.' : 'Token de alta generado. Revisa el archivo local del servidor si no hay correo configurado.'
+    state.notice = result.delivered
+      ? 'Token de alta enviado al correo.'
+      : `Token de alta generado, pero no salio por correo.${result.smtpError ? ` SMTP: ${result.smtpError}` : ''} Revisa ${result.tokenPath || 'data/password-reset-tokens.txt'} en el servidor.`
     render()
   } catch (error) {
     state.notice = error.message

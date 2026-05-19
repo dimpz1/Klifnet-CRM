@@ -537,24 +537,33 @@ async function sendSmtpMail({ to, subject, text }) {
 async function deliverResetToken(email, token) {
   const subject = 'Token recuperacion KLIFNET CRM'
   const message = `Token de recuperacion KLIFNET CRM para ${email}: ${token}\nVence en 20 minutos.\n`
+  let deliveryError = ''
   if (process.env.KLIFNET_SMTP_HOST) {
     try {
       await sendSmtpMail({ to: email, subject, text: message })
       return { sent: true, via: 'smtp' }
     } catch (error) {
-      console.error(`No se pudo enviar token por SMTP: ${error.message}`)
+      deliveryError = error.message || 'Error SMTP desconocido.'
+      console.error(`No se pudo enviar token por SMTP: ${deliveryError}`)
     }
+  } else {
+    deliveryError = 'SMTP no configurado en .env.'
   }
   if (process.env.KLIFNET_RESET_WEBHOOK_URL) {
-    const response = await fetch(process.env.KLIFNET_RESET_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, subject, text: message, token })
-    })
-    if (response.ok) return { sent: true, via: 'webhook' }
+    try {
+      const response = await fetch(process.env.KLIFNET_RESET_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, subject, text: message, token })
+      })
+      if (response.ok) return { sent: true, via: 'webhook' }
+      deliveryError = `${deliveryError ? `${deliveryError} ` : ''}Webhook respondio ${response.status}.`
+    } catch (error) {
+      deliveryError = `${deliveryError ? `${deliveryError} ` : ''}${error.message || 'Error webhook desconocido.'}`
+    }
   }
   fs.appendFileSync(passwordResetOutboxFile, `${new Date().toISOString()} ${message}`, { encoding: 'utf8', mode: 0o600 })
-  return { sent: false, via: 'local', path: passwordResetOutboxFile }
+  return { sent: false, via: 'local', path: passwordResetOutboxFile, error: deliveryError }
 }
 
 function normalizeEmail(value) {
@@ -703,7 +712,9 @@ async function handleAuth(req, res, url) {
       ok: true,
       message: 'Token generado.',
       delivered: Boolean(delivery.sent),
-      fallback: delivery.sent ? '' : 'Servidor local'
+      fallback: delivery.sent ? '' : 'Servidor local',
+      tokenPath: delivery.sent ? '' : 'data/password-reset-tokens.txt',
+      smtpError: delivery.error || ''
     })
     return true
   }
@@ -806,7 +817,9 @@ async function handleAuth(req, res, url) {
       ok: true,
       message: 'Si el correo existe, se genero un token de recuperacion.',
       delivered: Boolean(delivery.sent),
-      fallback: delivery.sent ? '' : 'Servidor local'
+      fallback: delivery.sent ? '' : 'Servidor local',
+      tokenPath: delivery.sent ? '' : 'data/password-reset-tokens.txt',
+      smtpError: delivery.error || ''
     })
     return true
   }
