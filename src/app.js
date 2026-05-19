@@ -1264,6 +1264,7 @@ async function changeOwnPassword() {
 
 async function requestPasswordReset() {
   syncLoginFieldsFromDom()
+  pushApiLog({ method: 'CLICK', url: '#forgot-password-token', status: 'UI', ok: true, message: 'Click recibido: enviar token' })
   const email = state.login.forgotEmail || state.login.resetEmail || state.login.email || state.auth.user?.email || ''
   if (!email) {
     state.notice = 'Captura el correo para enviar token.'
@@ -1311,6 +1312,7 @@ async function resetPasswordWithToken() {
 
 async function requestSetupToken() {
   syncLoginFieldsFromDom()
+  pushApiLog({ method: 'CLICK', url: '#setup-token', status: 'UI', ok: true, message: 'Click recibido: token de alta' })
   const email = state.login.setupEmail || state.login.email || ''
   if (!email || !state.login.setupAppKey) {
     state.notice = 'Captura correo autorizado y app key para enviar token.'
@@ -5627,23 +5629,26 @@ function renderAccountSecurity() {
 }
 
 function renderApiLogPanel() {
-  if (!state.apiLog.length) return ''
   return `
     <section class="auth-card api-log-panel">
       <div><span>Testing API</span><h2>Ultimas llamadas</h2></div>
       <div class="api-log-list">
-        ${state.apiLog
-          .map(
-            (item) => `
-              <div class="api-log-item ${item.ok ? 'ok' : 'warn'}">
-                <strong>${esc(item.time)} ${esc(item.method)} ${esc(item.url)}</strong>
-                <span>${esc(String(item.status))} ${item.ok ? 'OK' : 'ERROR'}</span>
-                ${item.message ? `<small>${esc(item.message)}</small>` : ''}
-                ${item.detail ? `<code>${esc(item.detail)}</code>` : ''}
-              </div>
-            `
-          )
-          .join('')}
+        ${
+          state.apiLog.length
+            ? state.apiLog
+                .map(
+                  (item) => `
+                    <div class="api-log-item ${item.ok ? 'ok' : 'warn'}">
+                      <strong>${esc(item.time)} ${esc(item.method)} ${esc(item.url)}</strong>
+                      <span>${esc(String(item.status))} ${item.ok ? 'OK' : 'ERROR'}</span>
+                      ${item.message ? `<small>${esc(item.message)}</small>` : ''}
+                      ${item.detail ? `<code>${esc(item.detail)}</code>` : ''}
+                    </div>
+                  `
+                )
+                .join('')
+            : '<div class="api-log-item"><strong>Sin llamadas registradas todavia</strong><small>Al presionar Enviar token debe aparecer primero un CLICK y luego la llamada POST.</small></div>'
+        }
       </div>
     </section>
   `
