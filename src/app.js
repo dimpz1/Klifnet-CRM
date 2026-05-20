@@ -45,6 +45,7 @@ const linePageSize = 40
 let floatingScrollbarWindowBound = false
 let floatingScrollbarActiveWrap = null
 let floatingScrollbarSyncing = false
+let deviceMatchIndexCache = { devices: null, index: null }
 
 const hardwarePresets = [
   {
@@ -2556,17 +2557,69 @@ function deviceImeiSuffixLengths(device) {
   return []
 }
 
+function deviceMatchIndex(devices = state.devices) {
+  if (deviceMatchIndexCache.devices === devices && deviceMatchIndexCache.index) return deviceMatchIndexCache.index
+  const index = {
+    exact: new Map(),
+    phone: new Map(),
+    streamaxPhone: new Map(),
+    suffix: []
+  }
+  const add = (map, key, device) => {
+    if (key && !map.has(key)) map.set(key, device)
+  }
+  devices.forEach((device) => {
+    deviceIdentifierValues(device).forEach((value) => add(index.exact, normalizeIdentifier(value), device))
+    phoneMatchValues(device.phone).forEach((value) => add(isStreamaxDevice(device) ? index.streamaxPhone : index.phone, value, device))
+    const suffixLengths = deviceImeiSuffixLengths(device)
+    if (suffixLengths.length) {
+      const identifiers = deviceIdentifierValues(device)
+        .map((value) => textValue(value).replace(/\D/g, ''))
+        .filter(Boolean)
+      index.suffix.push({ device, suffixLengths, identifiers })
+    }
+  })
+  deviceMatchIndexCache = { devices, index }
+  return index
+}
+
+function matchLineDeviceWithMethod(line, devices = state.devices) {
+  const index = deviceMatchIndex(devices)
+  const phone = lineIdentifierParts(line).phone
+  for (const phoneKey of phoneMatchValues(phone)) {
+    const device = index.streamaxPhone.get(phoneKey)
+    if (device) return { device, method: 'telefono' }
+  }
+  for (const value of lineImeiValues(line)) {
+    const key = normalizeIdentifier(value)
+    const device = key ? index.exact.get(key) : null
+    if (device) return { device, method: 'imei' }
+  }
+  const lineIdentifiers = unique([...lineImeiValues(line), ...lineTextIdentifierValues(line)])
+    .map((value) => textValue(value).replace(/\D/g, ''))
+    .filter(Boolean)
+  for (const candidate of index.suffix) {
+    const matched = lineIdentifiers.some((lineIdentifier) =>
+      candidate.suffixLengths.some((length) => {
+        const suffix = deriveImeiSuffix(lineIdentifier, length)
+        return suffix && candidate.identifiers.some((deviceIdentifier) => deviceIdentifier === suffix || deviceIdentifier === lineIdentifier)
+      })
+    )
+    if (matched) return { device: candidate.device, method: 'imei' }
+  }
+  for (const phoneKey of phoneMatchValues(phone)) {
+    const device = index.phone.get(phoneKey)
+    if (device) return { device, method: 'telefono' }
+  }
+  return { device: null, method: '' }
+}
+
 function matchLineDevice(line, devices = state.devices) {
-  const byStreamaxPhone = devices.find((device) => isStreamaxDevice(device) && lineMatchesDeviceByPhone(line, device))
-  if (byStreamaxPhone) return byStreamaxPhone
-  return devices.find((device) => lineMatchesDeviceByImei(line, device)) || devices.find((device) => lineMatchesDeviceByPhone(line, device)) || null
+  return matchLineDeviceWithMethod(line, devices).device
 }
 
 function lineMatchMethod(line, devices = state.devices) {
-  if (devices.some((device) => isStreamaxDevice(device) && lineMatchesDeviceByPhone(line, device))) return 'telefono'
-  if (devices.some((device) => lineMatchesDeviceByImei(line, device))) return 'imei'
-  if (devices.some((device) => lineMatchesDeviceByPhone(line, device))) return 'telefono'
-  return ''
+  return matchLineDeviceWithMethod(line, devices).method
 }
 
 function lineMatchType(line, devices = state.devices) {
