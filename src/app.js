@@ -19,10 +19,10 @@ const seedFile = 'DispositivosWialon_Abril2026.xlsx'
 const paymentSeedFile = 'Klifnet_Admon_Mensual_Pagos.xlsx'
 const quoteTemplateFile = 'cotizacion_CalidadSP.xlsx'
 const paymentImportVersion = 4
-const lineAutoImportVersion = 13
+const lineAutoImportVersion = 14
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 20
+const lineRelationBaseVersion = 21
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -2601,11 +2601,24 @@ function lineIsWialonMatchExempt(line, devices = state.devices) {
     ) {
       return true
     }
-    if (!matchLineDevice(line, devices) && (text.includes('klifnet') || text.includes('klifet') || text.includes('felipe'))) return true
   }
   if ((type === 'emprenet' || type === 'telcel') && !matchLineDevice(line, devices) && (text.includes('disponible') || text.includes('available'))) return true
-  if (type === 'emprenet' && !matchLineDevice(line, devices) && text.includes('klifnet')) return true
   return false
+}
+
+function lineWialonExemptLabel(line) {
+  const type = normalizeLineType(line.lineType || line.providerOverride || line.carrier)
+  const text = normalizeHeader(`${line.company || ''} ${line.status || ''} ${line.notes || ''} ${line.plan || ''} ${line.source || ''}`)
+  if (type === 'emnify') {
+    if (!isActiveLine(line) || text.includes('deleted') || text.includes('disabled')) return 'Emnify baja / sin activar'
+    if (text.includes('available') || text.includes('disponible') || text.includes('sin asign') || text.includes('unassigned')) {
+      return 'Emnify disponible / sin asignar'
+    }
+  }
+  if ((type === 'emprenet' || type === 'telcel') && (text.includes('disponible') || text.includes('available'))) {
+    return `${lineTypeLabel(type)} disponible / sin asignar`
+  }
+  return 'No asignable a Wialon'
 }
 
 function isStreamaxDevice(device) {
@@ -2727,7 +2740,7 @@ function lineMatchLabel(line) {
     const suffix = method === 'telefono' ? ' / telefono Wialon' : method === 'nombre' ? ' / nombre Wialon' : ''
     return `${device.unitName || 'Equipo'} / ${device.company || 'Sin empresa'}${suffix}`
   }
-  if (lineIsWialonMatchExempt(line)) return 'No asignable a Wialon'
+  if (lineIsWialonMatchExempt(line)) return lineWialonExemptLabel(line)
   return line.clientOnly ? 'Solo linea celular' : 'Sin match'
 }
 
@@ -3326,7 +3339,7 @@ function lineFromRelationRecord(record, index) {
       clientOnly: isBernardo || !imei,
       notes: [record.alias, record.estatus_original, record.renovacion_fuente, record.match_fuente, record.equipo_wialon_nombre, record.equipo_wialon_tipo, record.notas].filter(Boolean).join(' | '),
       source: record.fuente || 'base_relacion_lineas',
-      providerManual: true,
+      providerManual: false,
       recordState: 'vigente'
     },
     index
@@ -3429,7 +3442,7 @@ function reconcileRelationLine(currentLine, relationLine) {
     providerOverride: base.lineType,
     carrier: base.carrier || current.carrier,
     source: base.source || current.source,
-    providerManual: true,
+    providerManual: false,
     providerDetectedBy: 'archivo proveedor',
     recordState: current.recordState === 'manual' ? 'manual' : 'vigente'
   })
