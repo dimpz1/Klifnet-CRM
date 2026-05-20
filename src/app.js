@@ -19,10 +19,10 @@ const seedFile = 'DispositivosWialon_Abril2026.xlsx'
 const paymentSeedFile = 'Klifnet_Admon_Mensual_Pagos.xlsx'
 const quoteTemplateFile = 'cotizacion_CalidadSP.xlsx'
 const paymentImportVersion = 4
-const lineAutoImportVersion = 12
+const lineAutoImportVersion = 13
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 19
+const lineRelationBaseVersion = 20
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -3466,12 +3466,44 @@ function revalidateLinesWithRelationBase(relationLines = []) {
 async function revalidateLineasPage(options = {}) {
   let relationLines = []
   let source = state.lineImport?.source || 'lineas actuales'
+  let relationBaseLoaded = false
+  let relationBaseError = ''
   try {
     const payload = await fetchPrivateJson('lineas')
     relationLines = relationPayloadToLines(payload)
-    if (relationLines.length) source = 'base_relacion_lineas.json cifrada'
+    if (relationLines.length) {
+      source = 'base_relacion_lineas.json cifrada'
+      relationBaseLoaded = true
+    } else {
+      relationBaseError = 'La base privada de lineas no trae registros validos.'
+    }
   } catch (error) {
     console.warn(error)
+    relationBaseError = error.message || 'No se pudo cargar la base privada de lineas.'
+  }
+
+  if (!relationBaseLoaded) {
+    const stats = lineStats(state.lines, state.devices)
+    state.lineImport = {
+      ...(state.lineImport || {}),
+      source,
+      rows: state.lines.length,
+      imported: state.lines.length,
+      iccDetected: state.lines.filter((line) => line.iccid).length,
+      matched: stats.matched,
+      clientOnly: stats.clientOnly,
+      exempt: stats.exempt,
+      unmatched: stats.unmatched,
+      revalidatedAt: new Date().toISOString(),
+      autoVersion: lineAutoImportVersion,
+      relationBaseVersion: state.lineRelationBaseVersion,
+      relationBaseError
+    }
+    state.notice = `No se pudo revalidar Lineas con la base cifrada: ${relationBaseError}`
+    state.view = 'lineas'
+    persistState()
+    render()
+    return { ...stats, ok: false, error: relationBaseError }
   }
 
   const nextLines = revalidateLinesWithRelationBase(relationLines)
@@ -3490,9 +3522,10 @@ async function revalidateLineasPage(options = {}) {
     appliedAt: state.lineImport?.appliedAt || new Date().toISOString(),
     revalidatedAt: new Date().toISOString(),
     autoVersion: lineAutoImportVersion,
-    relationBaseVersion: relationLines.length ? lineRelationBaseVersion : state.lineRelationBaseVersion
+    relationBaseVersion: lineRelationBaseVersion,
+    relationBaseError: ''
   }
-  if (relationLines.length) state.lineRelationBaseVersion = lineRelationBaseVersion
+  state.lineRelationBaseVersion = lineRelationBaseVersion
   state.linePage = Math.min(state.linePage, linePaginationState(filteredLines().length).pageCount)
   state.view = 'lineas'
   if (options.notice) {
@@ -3500,7 +3533,7 @@ async function revalidateLineasPage(options = {}) {
   }
   persistState()
   render()
-  return stats
+  return { ...stats, ok: true }
 }
 
 async function loadLineRelationBase(options = {}) {
@@ -6891,10 +6924,10 @@ async function initDataAfterAuth() {
     }
 
     if (state.lineRelationBaseVersion !== lineRelationBaseVersion) {
-      await revalidateLineasPage()
+      const lineRevalidation = await revalidateLineasPage()
       if (state.lineRelationBaseVersion !== lineRelationBaseVersion) {
-        state.lineRelationBaseVersion = lineRelationBaseVersion
-        persistState()
+        state.notice =
+          lineRevalidation?.error || state.notice || 'No se pudo cargar la base cifrada de lineas; no se actualizo la version para evitar dejar datos mezclados como validos.'
       }
     }
 
