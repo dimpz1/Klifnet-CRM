@@ -19,10 +19,10 @@ const seedFile = 'DispositivosWialon_Abril2026.xlsx'
 const paymentSeedFile = 'Klifnet_Admon_Mensual_Pagos.xlsx'
 const quoteTemplateFile = 'cotizacion_CalidadSP.xlsx'
 const paymentImportVersion = 4
-const lineAutoImportVersion = 10
+const lineAutoImportVersion = 12
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 17
+const lineRelationBaseVersion = 19
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -2058,15 +2058,23 @@ function extractIccidFromRow(row) {
 function normalizePhoneCandidate(value) {
   const clean = normalizePhone(value)
   if (!clean || clean.startsWith('89')) return ''
+
+  // Mexico/Telcel: guardar y comparar el telefono como 10 digitos nacionales.
+  // Asi +523331234567, 523331234567 y 3331234567 son la misma linea.
+  if (clean.length === 13 && clean.startsWith('521')) return clean.slice(3)
+  if (clean.length === 12 && clean.startsWith('52')) return clean.slice(2)
+  if (clean.length === 10) return clean
+
   return clean.length >= 10 && clean.length <= 15 ? clean : ''
 }
 
 function phoneMatchValues(value) {
-  const clean = normalizePhone(value)
+  const clean = normalizePhoneCandidate(value)
   if (!clean || clean.startsWith('89')) return []
   const values = [clean]
+  if (clean.length === 10) values.push(`52${clean}`, `521${clean}`)
   if (clean.length === 12 && clean.startsWith('52')) values.push(clean.slice(2))
-  if (clean.length === 10) values.push(`52${clean}`)
+  if (clean.length === 13 && clean.startsWith('521')) values.push(clean.slice(3))
   return unique(values)
 }
 
@@ -2277,6 +2285,19 @@ function companyFromLineTag(value) {
   return ''
 }
 
+function isBernardoLine(line) {
+  const signal = normalizeHeader(
+    `${line?.company || ''} ${line?.cliente_perfil || ''} ${line?.cliente_fuente || ''} ${line?.alias || ''} ${line?.notes || ''} ${line?.notas || ''} ${line?.source || ''} ${
+      line?.fuente || ''
+    }`
+  )
+  return signal.includes('bernardo') || signal.includes('berna')
+}
+
+function lineCanMatchWialon(line) {
+  return Boolean(line && !isBernardoLine(line))
+}
+
 function parseLineCustomerText(value) {
   const renewal = parseLineRenewalText(value)
 
@@ -2392,16 +2413,23 @@ function detectLineProvider(line, fallback = '', options = {}) {
   const forced = detectLineTypeFromText(options.force)
   if (forced) return { value: forced, reason: 'archivo proveedor' }
   if (line.providerManual) {
-    const manual = detectLineTypeFromText(fallback || line.lineType)
+    const manual = detectLineTypeFromText(fallback || line.lineType || line.carrier)
     if (manual) return { value: manual, reason: 'manual' }
   }
+
+  // Primero respetar campos explicitos. Antes, cualquier telefono valido caia como Telcel,
+  // y eso movia masivamente lineas Emnify/otras proveedoras a Telcel.
+  const explicit = detectLineTypeFromText(fallback || line.lineType || line.carrier)
+  if (explicit) return { value: explicit, reason: 'campo proveedor' }
+
   const text = detectLineTypeFromText(`${line.providerHint || ''} ${line.source || ''} ${line.company || ''} ${line.model || ''} ${line.plan || ''} ${line.notes || ''}`)
   if (text) return { value: text, reason: 'base proveedor' }
+
   const byIccid = classifyLineTypeByIccid(line.iccid, line.phone)
   if (byIccid) return { value: byIccid, reason: 'prefijo ICCID' }
-  if (normalizePhoneCandidate(line.phone)) return { value: 'telcel', reason: 'numero telefonico' }
-  const explicit = detectLineTypeFromText(fallback || line.lineType)
-  if (explicit) return { value: explicit, reason: 'campo proveedor' }
+
+  // Tener numero telefonico NO significa Telcel. Telcel solo debe venir de archivo/campo
+  // Telcel o de la base de relacion; el match de Telcel se hace por telefono normalizado.
   return { value: 'emprenet', reason: 'default' }
 }
 
@@ -2475,12 +2503,9 @@ function normalizeLine(line, index = 0) {
     recordState: textValue(line.recordState) || 'vigente'
   }
   clean.imei = clean.imei || clean.imeiLong || clean.imeiShort || clean.imei1 || clean.imei2 || clean.linkedDeviceUid
-  clean.clientOnly = clean.clientOnly || !clean.imei
-  if (
-    normalizeHeader(clean.company).startsWith('bernardo') &&
-    lineBillingCycle(clean) === 'anual' &&
-    (clean.annualPrice === '' || Number(clean.annualPrice) <= 0)
-  ) {
+  const bernardoLine = isBernardoLine({ ...line, ...clean })
+  clean.clientOnly = clean.clientOnly || bernardoLine || !clean.imei
+  if (bernardoLine && lineBillingCycle(clean) === 'anual' && (clean.annualPrice === '' || Number(clean.annualPrice) <= 0)) {
     clean.annualPrice = '550'
   }
   clean.id = line.id || `${lineKey(clean)}-${index}`
@@ -2529,6 +2554,7 @@ function lineFromRow(row, index, label, options = {}) {
 }
 
 function lineMatchesDeviceByImei(line, device) {
+  if (!lineCanMatchWialon(line)) return false
   if (lineImeiValues(line).some((value) => {
     const imei = normalizeIdentifier(value)
     return imei && deviceMatchesIdentifier(device, imei)
@@ -2549,11 +2575,13 @@ function lineMatchesDeviceByImei(line, device) {
 }
 
 function lineMatchesDeviceByPhone(line, device) {
+  if (!lineCanMatchWialon(line)) return false
   const phone = lineIdentifierParts(line).phone
   return Boolean(phone && deviceMatchesPhone(device, phone))
 }
 
 function lineMatchesDeviceByName(line, device) {
+  if (!lineCanMatchWialon(line)) return false
   const deviceName = normalizeHeader(device?.unitName)
   return Boolean(deviceName && lineNameMatchValues(line).includes(deviceName))
 }
@@ -2561,7 +2589,6 @@ function lineMatchesDeviceByName(line, device) {
 function lineIsWialonMatchExempt(line, devices = state.devices) {
   const type = normalizeLineType(line.lineType || line.providerOverride || line.carrier)
   const text = normalizeHeader(`${line.company || ''} ${line.status || ''} ${line.notes || ''} ${line.plan || ''} ${line.source || ''}`)
-  if (normalizeHeader(line.company).startsWith('bernardo')) return true
   if (type === 'emnify') {
     if (!isActiveLine(line)) return true
     if (
@@ -2641,6 +2668,7 @@ function deviceMatchIndex(devices = state.devices) {
 }
 
 function matchLineDeviceWithMethod(line, devices = state.devices) {
+  if (!lineCanMatchWialon(line)) return { device: null, method: '' }
   const index = deviceMatchIndex(devices)
   const phone = lineIdentifierParts(line).phone
   for (const phoneKey of phoneMatchValues(phone)) {
@@ -2684,6 +2712,7 @@ function lineMatchMethod(line, devices = state.devices) {
 }
 
 function lineMatchType(line, devices = state.devices) {
+  if (isBernardoLine(line)) return 'solo_linea'
   if (matchLineDevice(line, devices)) return 'equipo'
   if (lineIsWialonMatchExempt(line, devices)) return 'no_asignada'
   if (line.clientOnly) return 'solo_linea'
@@ -2691,6 +2720,7 @@ function lineMatchType(line, devices = state.devices) {
 }
 
 function lineMatchLabel(line) {
+  if (isBernardoLine(line)) return 'Solo linea celular'
   const device = matchLineDevice(line)
   if (device) {
     const method = lineMatchMethod(line)
@@ -3293,7 +3323,7 @@ function lineFromRelationRecord(record, index) {
       billingCycle: isBernardo ? 'anual' : 'anual',
       renewalDate: record.fecha_renovacion || '',
       annualPrice: isBernardo ? '550' : '',
-      clientOnly: !imei,
+      clientOnly: isBernardo || !imei,
       notes: [record.alias, record.estatus_original, record.renovacion_fuente, record.match_fuente, record.equipo_wialon_nombre, record.equipo_wialon_tipo, record.notas].filter(Boolean).join(' | '),
       source: record.fuente || 'base_relacion_lineas',
       providerManual: true,
@@ -3392,7 +3422,7 @@ function reconcileRelationLine(currentLine, relationLine) {
     billingCycle: current.billingCycle || base.billingCycle,
     renewalDate: current.renewalDate || base.renewalDate,
     annualPrice: current.annualPrice || base.annualPrice,
-    clientOnly: current.clientOnly && !current.imei ? true : base.clientOnly,
+    clientOnly: isBernardoLine(base) ? true : current.clientOnly && !current.imei ? true : base.clientOnly,
     notes: current.notes || base.notes,
     plan: base.plan || current.plan,
     lineType: base.lineType,
@@ -5483,7 +5513,7 @@ function renderLineas(companies) {
           ? `<div class="notice">Ultima base de lineas: ${esc(state.lineImport.source)} (${state.lineImport.imported} lineas, ${state.lineImport.iccDetected || 0} con ICC), ${state.lineImport.matched} con equipo, ${state.lineImport.clientOnly} solo linea, ${state.lineImport.exempt || 0} no asignables, ${state.lineImport.unmatched} sin match accionable.</div>`
           : '<div class="notice">Importa la base de lineas activas para cruzarlas contra IMEI o contra el telefono Wialon. Para Bernardo tambien lee renovaciones escritas como: bernardo 15 mayo 2026.</div>'
       }
-      <div class="notice">Clasificacion automatica: archivo/base con proveedor explicito manda; 8934 y 8949 = Emnify; 8952 sin telefono = Emprenet; 8952 con telefono = Telcel. El cruce con Wialon usa IMEI, UID y telefono; las Emnify desactivadas/deleted/disponibles sin asignar no cuentan como sin match.</div>
+      <div class="notice">Clasificacion automatica: archivo/base con proveedor explicito manda; si no hay proveedor, 8934 y 8949 = Emnify, 8952 sin telefono = Emprenet y 8952 con telefono = Telcel. El cruce con Wialon usa IMEI, UID y telefono; Bernardo/Berna se conserva como solo linea, y las Emnify desactivadas/deleted/disponibles sin asignar no cuentan como sin match.</div>
       ${renderPagination(lines.length, pagination)}
       ${renderLineProviderSections(pageLines)}
       ${renderPagination(lines.length, pagination)}
