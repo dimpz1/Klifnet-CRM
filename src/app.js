@@ -22,7 +22,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 10
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 16
+const lineRelationBaseVersion = 17
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -42,6 +42,7 @@ const lineTypeOptions = [
 
 const equipmentPageSize = 40
 const linePageSize = 40
+const tablePageSize = 40
 let floatingScrollbarWindowBound = false
 let floatingScrollbarActiveWrap = null
 let floatingScrollbarSyncing = false
@@ -352,12 +353,15 @@ const state = {
   equipmentCompanyFilter: '',
   equipmentCycleFilter: '',
   equipmentPage: 1,
+  companyPage: 1,
   cobrosCompany: '',
   cobrosGroup: '',
   cobrosCycleFilter: '',
+  cobrosPage: 1,
   billingCompany: '',
   billingGroup: '',
   billingQuery: '',
+  billingPage: 1,
   lineQuery: '',
   lineIccQuery: '',
   lineStatusFilter: '',
@@ -1053,7 +1057,10 @@ function stateSnapshot() {
     lastImportAt: state.lastImportAt,
     equipmentCompanyFilter: state.equipmentCompanyFilter,
     equipmentCycleFilter: state.equipmentCycleFilter,
-    equipmentPage: state.equipmentPage
+    equipmentPage: state.equipmentPage,
+    companyPage: state.companyPage,
+    cobrosPage: state.cobrosPage,
+    billingPage: state.billingPage
   }
 }
 
@@ -2130,7 +2137,7 @@ function lineIdentifierParts(line) {
 }
 
 function lineImeiValues(line) {
-  return unique([line.imei, line.imeiLong, line.imeiShort, line.imei_largo, line.imei_corto])
+  return unique([line.imei, line.imeiLong, line.imeiShort, line.imei_largo, line.imei_corto, line.imei_1, line.imei_2, line.imei1, line.imei2, line.equipo_wialon_uid, line.linkedDeviceUid])
 }
 
 function lineTextIdentifierValues(line) {
@@ -2139,6 +2146,15 @@ function lineTextIdentifierValues(line) {
       .map(importTextValue)
       .flatMap((value) => value.match(/\b\d{5,12}\b/g) || [])
   )
+}
+
+function lineNameMatchValues(line) {
+  const generic = new Set(['klifnet', 'klifet', 'active', 'enabled', 'deleted', 'disabled', 'disponible', 'asignada'])
+  return unique([line.alias, line.unitName, line.notes])
+    .flatMap((value) => importTextValue(value).split(/[|;]/g))
+    .flatMap((value) => importTextValue(value).split(/\s*,\s*/g))
+    .map(normalizeHeader)
+    .filter((value) => value.length >= 4 && !generic.has(value) && !value.startsWith('relacion ') && !value.startsWith('match '))
 }
 
 function lineKey(line) {
@@ -2438,8 +2454,13 @@ function normalizeLine(line, index = 0) {
     imei: importTextValue(line.imei),
     imeiLong: importTextValue(line.imeiLong || line.imei_largo),
     imeiShort: importTextValue(line.imeiShort || line.imei_corto),
+    imei1: importTextValue(line.imei_1 || line.imei1),
+    imei2: importTextValue(line.imei_2 || line.imei2),
+    linkedDeviceUid: importTextValue(line.linkedDeviceUid || line.equipo_wialon_uid),
     carrier: importTextValue(line.carrier) || lineTypeLabel(lineType),
     plan: importTextValue(line.plan),
+    alias: importTextValue(line.alias),
+    unitName: importTextValue(line.unitName),
     relationId: importTextValue(line.relationId || line.relacion_id || line.relation_id),
     sourceLineId: importTextValue(line.sourceLineId || line.linea_id || line.line_id),
     status: normalizeLineStatus(line.status),
@@ -2453,7 +2474,7 @@ function normalizeLine(line, index = 0) {
     providerDetectedBy: providerDetection.reason,
     recordState: textValue(line.recordState) || 'vigente'
   }
-  clean.imei = clean.imei || clean.imeiLong || clean.imeiShort
+  clean.imei = clean.imei || clean.imeiLong || clean.imeiShort || clean.imei1 || clean.imei2 || clean.linkedDeviceUid
   clean.clientOnly = clean.clientOnly || !clean.imei
   if (
     normalizeHeader(clean.company).startsWith('bernardo') &&
@@ -2532,6 +2553,34 @@ function lineMatchesDeviceByPhone(line, device) {
   return Boolean(phone && deviceMatchesPhone(device, phone))
 }
 
+function lineMatchesDeviceByName(line, device) {
+  const deviceName = normalizeHeader(device?.unitName)
+  return Boolean(deviceName && lineNameMatchValues(line).includes(deviceName))
+}
+
+function lineIsWialonMatchExempt(line, devices = state.devices) {
+  const type = normalizeLineType(line.lineType || line.providerOverride || line.carrier)
+  const text = normalizeHeader(`${line.company || ''} ${line.status || ''} ${line.notes || ''} ${line.plan || ''} ${line.source || ''}`)
+  if (normalizeHeader(line.company).startsWith('bernardo')) return true
+  if (type === 'emnify') {
+    if (!isActiveLine(line)) return true
+    if (
+      text.includes('deleted') ||
+      text.includes('disabled') ||
+      text.includes('available') ||
+      text.includes('disponible') ||
+      text.includes('sin asign') ||
+      text.includes('unassigned')
+    ) {
+      return true
+    }
+    if (!matchLineDevice(line, devices) && (text.includes('klifnet') || text.includes('klifet') || text.includes('felipe'))) return true
+  }
+  if ((type === 'emprenet' || type === 'telcel') && !matchLineDevice(line, devices) && (text.includes('disponible') || text.includes('available'))) return true
+  if (type === 'emprenet' && !matchLineDevice(line, devices) && text.includes('klifnet')) return true
+  return false
+}
+
 function isStreamaxDevice(device) {
   return deviceText(device).includes('streamax')
 }
@@ -2563,14 +2612,21 @@ function deviceMatchIndex(devices = state.devices) {
     exact: new Map(),
     phone: new Map(),
     streamaxPhone: new Map(),
+    name: new Map(),
     suffix: []
   }
+  const duplicateNames = new Set()
   const add = (map, key, device) => {
     if (key && !map.has(key)) map.set(key, device)
   }
   devices.forEach((device) => {
     deviceIdentifierValues(device).forEach((value) => add(index.exact, normalizeIdentifier(value), device))
     phoneMatchValues(device.phone).forEach((value) => add(isStreamaxDevice(device) ? index.streamaxPhone : index.phone, value, device))
+    const deviceName = normalizeHeader(device.unitName)
+    if (deviceName) {
+      if (index.name.has(deviceName)) duplicateNames.add(deviceName)
+      else index.name.set(deviceName, device)
+    }
     const suffixLengths = deviceImeiSuffixLengths(device)
     if (suffixLengths.length) {
       const identifiers = deviceIdentifierValues(device)
@@ -2579,6 +2635,7 @@ function deviceMatchIndex(devices = state.devices) {
       index.suffix.push({ device, suffixLengths, identifiers })
     }
   })
+  duplicateNames.forEach((name) => index.name.delete(name))
   deviceMatchIndexCache = { devices, index }
   return index
 }
@@ -2611,6 +2668,10 @@ function matchLineDeviceWithMethod(line, devices = state.devices) {
     const device = index.phone.get(phoneKey)
     if (device) return { device, method: 'telefono' }
   }
+  for (const name of lineNameMatchValues(line)) {
+    const device = index.name.get(name)
+    if (device) return { device, method: 'nombre' }
+  }
   return { device: null, method: '' }
 }
 
@@ -2624,6 +2685,7 @@ function lineMatchMethod(line, devices = state.devices) {
 
 function lineMatchType(line, devices = state.devices) {
   if (matchLineDevice(line, devices)) return 'equipo'
+  if (lineIsWialonMatchExempt(line, devices)) return 'no_asignada'
   if (line.clientOnly) return 'solo_linea'
   return 'sin_match'
 }
@@ -2632,15 +2694,36 @@ function lineMatchLabel(line) {
   const device = matchLineDevice(line)
   if (device) {
     const method = lineMatchMethod(line)
-    const suffix = method === 'telefono' ? ' / telefono Wialon' : ''
+    const suffix = method === 'telefono' ? ' / telefono Wialon' : method === 'nombre' ? ' / nombre Wialon' : ''
     return `${device.unitName || 'Equipo'} / ${device.company || 'Sin empresa'}${suffix}`
   }
+  if (lineIsWialonMatchExempt(line)) return 'No asignable a Wialon'
   return line.clientOnly ? 'Solo linea celular' : 'Sin match'
 }
 
+function lineMatchTypeText(line) {
+  const matchType = lineMatchType(line)
+  if (matchType === 'equipo') return 'Equipo GPS'
+  if (matchType === 'no_asignada') return 'No asignable'
+  if (matchType === 'solo_linea') return 'Solo linea celular'
+  return 'Sin match'
+}
+
 function lineForDevice(device) {
-  if (isStreamaxDevice(device)) return state.lines.find((line) => lineMatchesDeviceByPhone(line, device)) || state.lines.find((line) => lineMatchesDeviceByImei(line, device)) || null
-  return state.lines.find((line) => lineMatchesDeviceByImei(line, device)) || state.lines.find((line) => lineMatchesDeviceByPhone(line, device)) || null
+  if (isStreamaxDevice(device)) {
+    return (
+      state.lines.find((line) => lineMatchesDeviceByPhone(line, device)) ||
+      state.lines.find((line) => lineMatchesDeviceByImei(line, device)) ||
+      state.lines.find((line) => lineMatchesDeviceByName(line, device)) ||
+      null
+    )
+  }
+  return (
+    state.lines.find((line) => lineMatchesDeviceByImei(line, device)) ||
+    state.lines.find((line) => lineMatchesDeviceByPhone(line, device)) ||
+    state.lines.find((line) => lineMatchesDeviceByName(line, device)) ||
+    null
+  )
 }
 
 function preferredLinePhoneFromRecord(record) {
@@ -2657,6 +2740,42 @@ function preferredLinePhoneFromRecord(record) {
   ]
     .map(normalizePhoneCandidate)
     .find(Boolean)
+}
+
+function preferredLineImeiFromRecord(record) {
+  return [
+    record.imei,
+    record.imei_largo,
+    record.imeiLong,
+    record.imei_1,
+    record.imei1,
+    record.imei_2,
+    record.imei2,
+    record.imei_corto,
+    record.imeiShort,
+    record.equipo_wialon_uid
+  ]
+    .map(importTextValue)
+    .find(Boolean)
+}
+
+function preferredLineImeiLongFromRecord(record) {
+  return [
+    record.imei_largo,
+    record.imeiLong,
+    record.imei,
+    record.imei_1,
+    record.imei1,
+    record.imei_2,
+    record.imei2,
+    record.equipo_wialon_uid
+  ]
+    .map(importTextValue)
+    .find(Boolean)
+}
+
+function preferredLineImeiShortFromRecord(record, sourceImei = '') {
+  return [record.imei_corto, record.imeiShort, record.imei_2, record.imei2, deriveShortImei(sourceImei)].map(importTextValue).find(Boolean)
 }
 
 function deviceLineIccid(device, line = lineForDevice(device)) {
@@ -2678,7 +2797,12 @@ function deviceLinePhone(device, line = lineForDevice(device)) {
 }
 
 function deviceLineMatchLabel(device, line = lineForDevice(device)) {
-  if (line) return lineMatchMethod(line, [device]) === 'telefono' ? 'Match por telefono' : 'Match por IMEI'
+  if (line) {
+    const method = lineMatchMethod(line, [device])
+    if (method === 'telefono') return 'Match por telefono'
+    if (method === 'nombre') return 'Match por nombre'
+    return 'Match por IMEI'
+  }
   return importTextValue(device.lineMatchSource) ? 'Base de lineas' : ''
 }
 
@@ -2838,6 +2962,7 @@ function lineStats(lines = state.lines, devices = state.devices) {
     inactive: lines.filter((line) => !isActiveLine(line)).length,
     matched: lines.filter((line) => lineMatchType(line, devices) === 'equipo').length,
     clientOnly: lines.filter((line) => lineMatchType(line, devices) === 'solo_linea').length,
+    exempt: lines.filter((line) => lineMatchType(line, devices) === 'no_asignada').length,
     unmatched: lines.filter((line) => lineMatchType(line, devices) === 'sin_match').length
   }
 }
@@ -2885,6 +3010,46 @@ function visiblePageNumbers(page, pageCount) {
     items.push(number)
     return items
   }, [])
+}
+
+function tablePaginationState(total, pageValue, pageSize = tablePageSize) {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize))
+  const page = Math.min(Math.max(1, Number(pageValue || 1)), pageCount)
+  const start = total ? (page - 1) * pageSize : 0
+  const end = Math.min(start + pageSize, total)
+  return {
+    page,
+    pageCount,
+    start,
+    end,
+    pageSize
+  }
+}
+
+function renderTablePagination(total, pagination, options = {}) {
+  const label = options.label || 'registros'
+  const dataAttr = options.dataAttr || 'data-table-page'
+  const ariaLabel = options.ariaLabel || `Paginacion de ${label}`
+  if (total <= pagination.pageSize) {
+    return `<div class="pager"><div class="pager-summary">Mostrando ${total} de ${total} ${esc(label)}</div></div>`
+  }
+  const pages = visiblePageNumbers(pagination.page, pagination.pageCount)
+  return `
+    <div class="pager">
+      <div class="pager-summary">Mostrando ${pagination.start + 1}-${pagination.end} de ${total} ${esc(label)} - ${pagination.pageSize} por hoja</div>
+      <div class="pager-controls" aria-label="${attr(ariaLabel)}">
+        <button class="icon-button" ${dataAttr}="${pagination.page - 1}" ${pagination.page <= 1 ? 'disabled' : ''} title="Pagina anterior">${icon('chevron-left')}</button>
+        ${pages
+          .map((page) =>
+            page === '...'
+              ? '<span class="pager-gap">...</span>'
+              : `<button class="pager-page ${page === pagination.page ? 'active' : ''}" ${dataAttr}="${page}" ${page === pagination.page ? 'disabled' : ''}>${page}</button>`
+          )
+          .join('')}
+        <button class="icon-button" ${dataAttr}="${pagination.page + 1}" ${pagination.page >= pagination.pageCount ? 'disabled' : ''} title="Pagina siguiente">${icon('chevron-right')}</button>
+      </div>
+    </div>
+  `
 }
 
 function renderPagination(total, pagination) {
@@ -3091,6 +3256,7 @@ function lineImportState(label, rowsLength, imported, stats, extra = {}) {
     iccDetected: imported.filter((line) => line.iccid).length,
     matched: stats.matched,
     clientOnly: stats.clientOnly,
+    exempt: stats.exempt,
     unmatched: stats.unmatched,
     appliedAt: new Date().toISOString(),
     ...extra
@@ -3100,27 +3266,35 @@ function lineImportState(label, rowsLength, imported, stats, extra = {}) {
 function lineFromRelationRecord(record, index) {
   const provider = record.proveedor || record.provider || ''
   const isBernardo = normalizeHeader(record.cliente_perfil || record.cliente_fuente || record.alias).includes('bernardo') || normalizeHeader(record.alias).startsWith('berna')
+  const imei = preferredLineImeiFromRecord(record)
+  const imeiLong = preferredLineImeiLongFromRecord(record)
+  const imeiShort = preferredLineImeiShortFromRecord(record, imeiLong || imei)
   return normalizeLine(
     {
       id: `${normalizeHeader(provider) || 'linea'}-${record.linea_id || record.relacion_id || index}`,
       relationId: record.relacion_id,
       sourceLineId: record.linea_id,
-      company: record.cliente_perfil || (isBernardo ? 'Bernardo' : record.cliente_fuente) || '',
+      company: record.cliente_perfil || (isBernardo ? 'Bernardo' : record.equipo_wialon_cuenta || record.cliente_fuente) || '',
       phone: preferredLinePhoneFromRecord(record),
       lineType: provider,
       providerOverride: provider,
       iccid: record.iccid_luhn || record.iccid,
-      imei: record.imei,
-      imeiLong: record.imei_largo || record.imeiLong,
-      imeiShort: record.imei_corto || record.imeiShort,
+      imei,
+      imeiLong,
+      imeiShort,
+      imei1: record.imei_1 || record.imei1,
+      imei2: record.imei_2 || record.imei2,
+      linkedDeviceUid: record.equipo_wialon_uid,
       carrier: record.operador || provider,
       plan: record.plan,
+      alias: record.alias,
+      unitName: record.equipo_wialon_nombre,
       status: record.estatus_servicio || record.estatus_original || 'activa',
       billingCycle: isBernardo ? 'anual' : 'anual',
       renewalDate: record.fecha_renovacion || '',
       annualPrice: isBernardo ? '550' : '',
-      clientOnly: !record.imei,
-      notes: [record.alias, record.renovacion_fuente, record.notas].filter(Boolean).join(' | '),
+      clientOnly: !imei,
+      notes: [record.alias, record.estatus_original, record.renovacion_fuente, record.match_fuente, record.equipo_wialon_nombre, record.equipo_wialon_tipo, record.notas].filter(Boolean).join(' | '),
       source: record.fuente || 'base_relacion_lineas',
       providerManual: true,
       recordState: 'vigente'
@@ -3145,6 +3319,14 @@ function relationRecordFromRow(row) {
     imei: rowValue(row, ['IMEI']),
     imei_largo: rowValue(row, ['IMEI largo', 'IMEI Largo', 'IMEI completo', 'Long IMEI']),
     imei_corto: rowValue(row, ['IMEI corto', 'IMEI Corto', 'Short IMEI']),
+    imei_1: rowValue(row, ['IMEI 1', 'IMEI1', 'imei_1']),
+    imei_2: rowValue(row, ['IMEI 2', 'IMEI2', 'imei_2']),
+    equipo_wialon_uid: rowValue(row, ['Equipo Wialon UID', 'Wialon UID', 'UID Wialon', 'equipo_wialon_uid']),
+    equipo_wialon_nombre: rowValue(row, ['Equipo Wialon nombre', 'Nombre Wialon', 'Unidad Wialon', 'equipo_wialon_nombre']),
+    equipo_wialon_cuenta: rowValue(row, ['Equipo Wialon cuenta', 'Cuenta Wialon', 'Empresa Wialon', 'equipo_wialon_cuenta']),
+    equipo_wialon_tipo: rowValue(row, ['Equipo Wialon tipo', 'Tipo Wialon', 'Modelo Wialon', 'equipo_wialon_tipo']),
+    match_fuente: rowValue(row, ['Match fuente', 'Fuente match', 'match_fuente']),
+    renovacion_fuente: rowValue(row, ['Renovacion fuente', 'Renovación fuente', 'renovacion_fuente']),
     imsi: rowValue(row, ['IMSI']),
     plan: rowValue(row, ['Plan']),
     operador: rowValue(row, ['Operador', 'Carrier']),
@@ -3273,6 +3455,7 @@ async function revalidateLineasPage(options = {}) {
     iccDetected: nextLines.filter((line) => line.iccid).length,
     matched: stats.matched,
     clientOnly: stats.clientOnly,
+    exempt: stats.exempt,
     unmatched: stats.unmatched,
     appliedAt: state.lineImport?.appliedAt || new Date().toISOString(),
     revalidatedAt: new Date().toISOString(),
@@ -3283,7 +3466,7 @@ async function revalidateLineasPage(options = {}) {
   state.linePage = Math.min(state.linePage, linePaginationState(filteredLines().length).pageCount)
   state.view = 'lineas'
   if (options.notice) {
-    state.notice = `Lineas revalidadas: ${stats.matched} con equipo por IMEI o telefono Wialon, ${stats.clientOnly} solo linea, ${stats.unmatched} sin match.`
+    state.notice = `Lineas revalidadas: ${stats.matched} con equipo por IMEI o telefono Wialon, ${stats.clientOnly} solo linea, ${stats.exempt} no asignables, ${stats.unmatched} sin match accionable.`
   }
   persistState()
   render()
@@ -3376,7 +3559,7 @@ async function handleLineFile(file) {
     lines: merged,
     lineImport: lineImportState(file.name, parsed.rows.length, imported, stats),
     view: 'lineas',
-    notice: `Lineas importadas: ${imported.length}; ${imported.filter((line) => line.iccid).length} con ICC, ${stats.matched} ligadas a equipo, ${stats.clientOnly} solo linea, ${stats.unmatched} sin match.`
+    notice: `Lineas importadas: ${imported.length}; ${imported.filter((line) => line.iccid).length} con ICC, ${stats.matched} ligadas a equipo, ${stats.clientOnly} solo linea, ${stats.exempt} no asignables, ${stats.unmatched} sin match accionable.`
   })
 }
 
@@ -3394,7 +3577,7 @@ async function handleEmnifyFile(file) {
     lines: merged,
     lineImport: lineImportState(`Emnify - ${file.name}`, parsed.rows.length, imported, stats),
     view: 'lineas',
-    notice: `Emnify importado: ${imported.length} lineas; ${imported.filter((line) => line.iccid).length} con ICC, ${stats.matched} ligadas a equipo. Se actualizaron coincidencias antes de crear nuevas.`
+    notice: `Emnify importado: ${imported.length} lineas; ${imported.filter((line) => line.iccid).length} con ICC, ${stats.matched} ligadas a equipo, ${stats.exempt} no asignables. Se actualizaron coincidencias antes de crear nuevas.`
   })
 }
 
@@ -3452,7 +3635,7 @@ async function exportLinesXlsx() {
     line.carrier,
     line.plan,
     line.status,
-    lineMatchType(line) === 'equipo' ? 'Equipo GPS' : line.clientOnly ? 'Solo linea celular' : 'Sin match',
+    lineMatchTypeText(line),
     line.billingCycle,
     line.renewalDate,
     line.annualPrice,
@@ -3497,7 +3680,7 @@ async function exportLineMatchReportXlsx() {
       line.carrier,
       line.plan,
       line.status,
-      lineMatchType(line) === 'equipo' ? 'Equipo GPS' : line.clientOnly ? 'Solo linea celular' : 'Sin match',
+      lineMatchTypeText(line),
       line.billingCycle,
       line.renewalDate,
       line.annualPrice,
@@ -3508,11 +3691,13 @@ async function exportLineMatchReportXlsx() {
     ]
   const withDevice = state.lines.filter((line) => lineMatchType(line) === 'equipo')
   const clientOnly = state.lines.filter((line) => lineMatchType(line) === 'solo_linea')
+  const exempt = state.lines.filter((line) => lineMatchType(line) === 'no_asignada')
   const unmatched = state.lines.filter((line) => lineMatchType(line) === 'sin_match')
   const summaryRows = [
     ['Categoria', 'Cantidad'],
     ['Con equipo', withDevice.length],
     ['Solo linea', clientOnly.length],
+    ['No asignable', exempt.length],
     ['Sin match', unmatched.length],
     ['Total', state.lines.length]
   ]
@@ -3520,6 +3705,7 @@ async function exportLineMatchReportXlsx() {
     { name: 'Resumen', rows: summaryRows },
     { name: 'Con equipo', rows: [header, ...withDevice.map((line) => toRow(line))] },
     { name: 'Solo linea', rows: [header, ...clientOnly.map((line) => toRow(line))] },
+    { name: 'No asignable', rows: [header, ...exempt.map((line) => toRow(line))] },
     { name: 'Sin match', rows: [header, ...unmatched.map((line) => toRow(line))] }
   ])
 }
@@ -4853,14 +5039,17 @@ function metric(label, value, tone = 'default') {
 }
 
 function companyTable(companies) {
+  const pagination = tablePaginationState(companies.length, state.companyPage)
+  const pageCompanies = companies.slice(pagination.start, pagination.end)
   return `
+    ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas' })}
     <div class="table-wrap">
       <table>
         <thead>
           <tr><th>Empresa</th><th>Grupos</th><th>Equipos</th><th>Facturables</th><th>Cobro</th><th></th></tr>
         </thead>
         <tbody>
-          ${companies
+          ${pageCompanies
             .map((company) => {
               const monthly = company.devices.filter((device) => isBillableDevice(device) && deviceBillingCycle(device) === 'mensual').length
               const annual = company.devices.filter((device) => isBillableDevice(device) && deviceBillingCycle(device) === 'anual').length
@@ -4879,6 +5068,7 @@ function companyTable(companies) {
         </tbody>
       </table>
     </div>
+    ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas' })}
   `
 }
 
@@ -4940,14 +5130,17 @@ function deviceTable(devices) {
 
 function billingTable() {
   if (!state.billingRows.length) return '<div class="empty-state">Sin lista generada.</div>'
+  const pagination = tablePaginationState(state.billingRows.length, state.billingPage)
+  const pageRows = state.billingRows.slice(pagination.start, pagination.end)
   return `
+    ${renderTablePagination(state.billingRows.length, pagination, { label: 'prefacturas', dataAttr: 'data-billing-page', ariaLabel: 'Paginacion de prefacturas' })}
     <div class="table-wrap">
       <table>
         <thead>
           <tr><th>Empresa</th><th>Periodo</th><th>Mensuales</th><th>Anuales</th><th>Semestrales</th><th>Equipos</th><th>Lineas</th><th>Total partidas</th><th>Subtotal</th><th>IVA</th><th>Total</th><th>Estado</th></tr>
         </thead>
         <tbody>
-          ${state.billingRows
+          ${pageRows
             .map(
               (row) => `
                 <tr>
@@ -4969,6 +5162,7 @@ function billingTable() {
         </tbody>
       </table>
     </div>
+    ${renderTablePagination(state.billingRows.length, pagination, { label: 'prefacturas', dataAttr: 'data-billing-page', ariaLabel: 'Paginacion de prefacturas' })}
   `
 }
 
@@ -5012,9 +5206,12 @@ function renderResumen(companies, stats) {
 }
 
 function renderEmpresas(companies) {
+  const pagination = tablePaginationState(companies.length, state.companyPage)
+  const pageCompanies = companies.slice(pagination.start, pagination.end)
   return `
+    ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas' })}
     <section class="company-list">
-      ${companies
+      ${pageCompanies
         .map(
           (company) => `
             <details class="company-row">
@@ -5041,6 +5238,7 @@ function renderEmpresas(companies) {
         )
         .join('')}
     </section>
+    ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas' })}
   `
 }
 
@@ -5095,7 +5293,7 @@ function renderLineRows(lines) {
   return lines
     .map((line) => {
       const matchType = lineMatchType(line)
-      const pillClass = matchType === 'equipo' ? 'ok' : matchType === 'solo_linea' ? 'warn' : 'red'
+      const pillClass = matchType === 'equipo' ? 'ok' : matchType === 'no_asignada' || matchType === 'solo_linea' ? 'warn' : 'red'
       return `
         <tr>
           <td><input value="${attr(line.company)}" data-line="${attr(line.id)}" data-line-field="company"></td>
@@ -5187,6 +5385,7 @@ function renderLineas(companies) {
         ${metric('Desactivadas', stats.inactive, 'red')}
         ${metric('Con equipo', stats.matched)}
         ${metric('Solo lineas', stats.clientOnly, 'amber')}
+        ${metric('No asignables', stats.exempt, 'amber')}
         ${metric('Sin match', stats.unmatched, 'red')}
       </section>
       <section class="line-profile-grid">
@@ -5271,6 +5470,7 @@ function renderLineas(companies) {
             <option value="">Todos</option>
             <option value="equipo" ${state.lineMatchFilter === 'equipo' ? 'selected' : ''}>Con equipo GPS</option>
             <option value="solo_linea" ${state.lineMatchFilter === 'solo_linea' ? 'selected' : ''}>Solo linea celular</option>
+            <option value="no_asignada" ${state.lineMatchFilter === 'no_asignada' ? 'selected' : ''}>No asignables Wialon</option>
             <option value="sin_match" ${state.lineMatchFilter === 'sin_match' ? 'selected' : ''}>Sin match</option>
           </select>
         </label>
@@ -5280,10 +5480,10 @@ function renderLineas(companies) {
       </div>
       ${
         state.lineImport
-          ? `<div class="notice">Ultima base de lineas: ${esc(state.lineImport.source)} (${state.lineImport.imported} lineas, ${state.lineImport.iccDetected || 0} con ICC), ${state.lineImport.matched} con equipo, ${state.lineImport.clientOnly} solo linea, ${state.lineImport.unmatched} sin match.</div>`
+          ? `<div class="notice">Ultima base de lineas: ${esc(state.lineImport.source)} (${state.lineImport.imported} lineas, ${state.lineImport.iccDetected || 0} con ICC), ${state.lineImport.matched} con equipo, ${state.lineImport.clientOnly} solo linea, ${state.lineImport.exempt || 0} no asignables, ${state.lineImport.unmatched} sin match accionable.</div>`
           : '<div class="notice">Importa la base de lineas activas para cruzarlas contra IMEI o contra el telefono Wialon. Para Bernardo tambien lee renovaciones escritas como: bernardo 15 mayo 2026.</div>'
       }
-      <div class="notice">Clasificacion automatica: archivo/base con proveedor explicito manda; 8934 y 8949 = Emnify; 8952 sin telefono = Emprenet; 8952 con telefono = Telcel. El cruce con Wialon usa IMEI y telefono.</div>
+      <div class="notice">Clasificacion automatica: archivo/base con proveedor explicito manda; 8934 y 8949 = Emnify; 8952 sin telefono = Emprenet; 8952 con telefono = Telcel. El cruce con Wialon usa IMEI, UID y telefono; las Emnify desactivadas/deleted/disponibles sin asignar no cuentan como sin match.</div>
       ${renderPagination(lines.length, pagination)}
       ${renderLineProviderSections(pageLines)}
       ${renderPagination(lines.length, pagination)}
@@ -5650,6 +5850,8 @@ function renderCotizaciones(companies) {
 
 function renderCobros(companies) {
   const devices = filteredCobrosDevices()
+  const pagination = tablePaginationState(devices.length, state.cobrosPage)
+  const pageDevices = devices.slice(pagination.start, pagination.end)
   const groups = cobrosGroups()
   return `
     <section class="client-layout">
@@ -5680,13 +5882,14 @@ function renderCobros(companies) {
         </label>
         <div class="filter-count"><span>Equipos visibles</span><strong>${devices.length}</strong></div>
       </div>
+      ${renderTablePagination(devices.length, pagination, { label: 'equipos', dataAttr: 'data-cobros-page', ariaLabel: 'Paginacion de cobros' })}
       <div class="table-wrap devices-table">
         <table>
           <thead>
             <tr><th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Origen</th><th>Cobro</th><th>Fecha renovacion</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Estado</th></tr>
           </thead>
           <tbody>
-            ${devices
+            ${pageDevices
               .map(
                 (device) => `
                   <tr>
@@ -5717,6 +5920,7 @@ function renderCobros(companies) {
           </tbody>
         </table>
       </div>
+      ${renderTablePagination(devices.length, pagination, { label: 'equipos', dataAttr: 'data-cobros-page', ariaLabel: 'Paginacion de cobros' })}
     </section>
   `
 }
@@ -6130,8 +6334,14 @@ function bindEvents() {
 
   document.querySelectorAll('[data-company]').forEach((button) => {
     button.addEventListener('click', () =>
-      setState({ selectedCompany: button.dataset.company, cobrosCompany: button.dataset.company, cobrosGroup: '', query: '', view: 'cobros' })
+      setState({ selectedCompany: button.dataset.company, cobrosCompany: button.dataset.company, cobrosGroup: '', query: '', cobrosPage: 1, view: 'cobros' })
     )
+  })
+
+  document.querySelectorAll('[data-company-page]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setState({ companyPage: Math.max(1, Number(button.dataset.companyPage || 1)) })
+    })
   })
 
   document.querySelectorAll('[data-new-device]').forEach((input) => {
@@ -6224,6 +6434,7 @@ function bindEvents() {
   document.getElementById('searchInput')?.addEventListener('input', (event) => {
     state.query = event.target.value
     state.equipmentPage = 1
+    state.cobrosPage = 1
     persistState()
     renderPreservingInput('#searchInput')
   })
@@ -6246,29 +6457,42 @@ function bindEvents() {
   })
 
   document.getElementById('cobrosCompany')?.addEventListener('change', (event) => {
-    setState({ cobrosCompany: event.target.value, cobrosGroup: '' })
+    setState({ cobrosCompany: event.target.value, cobrosGroup: '', cobrosPage: 1 })
   })
 
   document.getElementById('cobrosGroup')?.addEventListener('change', (event) => {
-    setState({ cobrosGroup: event.target.value })
+    setState({ cobrosGroup: event.target.value, cobrosPage: 1 })
   })
 
   document.getElementById('cobrosCycleFilter')?.addEventListener('change', (event) => {
-    setState({ cobrosCycleFilter: event.target.value })
+    setState({ cobrosCycleFilter: event.target.value, cobrosPage: 1 })
+  })
+
+  document.querySelectorAll('[data-cobros-page]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setState({ cobrosPage: Math.max(1, Number(button.dataset.cobrosPage || 1)) })
+    })
   })
 
   document.getElementById('billingCompany')?.addEventListener('change', (event) => {
-    setState({ billingCompany: event.target.value, billingGroup: '' })
+    setState({ billingCompany: event.target.value, billingGroup: '', billingPage: 1 })
   })
 
   document.getElementById('billingGroup')?.addEventListener('change', (event) => {
-    setState({ billingGroup: event.target.value })
+    setState({ billingGroup: event.target.value, billingPage: 1 })
   })
 
   document.getElementById('billingSearchInput')?.addEventListener('input', (event) => {
     state.billingQuery = event.target.value
+    state.billingPage = 1
     persistState()
     renderPreservingInput('#billingSearchInput')
+  })
+
+  document.querySelectorAll('[data-billing-page]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setState({ billingPage: Math.max(1, Number(button.dataset.billingPage || 1)) })
+    })
   })
 
   document.querySelectorAll('[data-device]').forEach((input) => {
@@ -6558,7 +6782,10 @@ function applySavedState(parsed = {}) {
       lastImportAt: parsed.lastImportAt || '',
       equipmentCompanyFilter: parsed.equipmentCompanyFilter || '',
       equipmentCycleFilter: parsed.equipmentCycleFilter || '',
-      equipmentPage: Math.max(1, Number(parsed.equipmentPage || 1))
+      equipmentPage: Math.max(1, Number(parsed.equipmentPage || 1)),
+      companyPage: Math.max(1, Number(parsed.companyPage || 1)),
+      cobrosPage: Math.max(1, Number(parsed.cobrosPage || 1)),
+      billingPage: Math.max(1, Number(parsed.billingPage || 1))
     })
     const previousLineCount = state.lines.length
     state.lines = dedupeLines(state.lines, state.devices)
