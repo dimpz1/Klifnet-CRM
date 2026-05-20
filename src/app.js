@@ -475,6 +475,12 @@ function deriveShortImei(value) {
   return clean.length > 6 ? clean.slice(-6) : clean
 }
 
+function deriveImeiSuffix(value, length) {
+  const clean = textValue(value).replace(/\D/g, '')
+  if (!clean || clean.length < length) return ''
+  return clean.slice(-length)
+}
+
 function isDerivedShortIdentifier(value, source) {
   const cleanValue = textValue(value).replace(/\D/g, '')
   const cleanSource = textValue(source).replace(/\D/g, '')
@@ -491,6 +497,12 @@ function deviceImeiShort(device) {
 
 function deviceIdentifierValues(device) {
   return unique([device.uid, device.imei, device.imeiLong, device.imeiShort, deviceImeiLong(device), deviceImeiShort(device)])
+}
+
+function deviceText(device) {
+  return normalizeHeader(
+    `${device?.deviceType || ''} ${device?.unitName || ''} ${Array.isArray(device?.groups) ? device.groups.join(' ') : device?.groups || ''}`
+  )
 }
 
 function deviceIdentifierKeys(device) {
@@ -1993,7 +2005,8 @@ function normalizePhone(value) {
 
 const linePhoneCandidates = ['MSISDN', 'MSIDN', 'Linea celular', 'Telefono', 'Telefono linea', 'Numero de telefono', 'Numero celular', 'Numero', 'Linea', 'DN', 'Celular']
 const lineIccCandidates = ['ICCID', 'ICC', 'ICCID / ICC', 'SIM ICCID', 'SIM', 'Numero SIM', 'No SIM', 'Simcard', 'Chip', 'Numero chip', 'No chip', 'SIM ID', 'ID SIM']
-const lineImeiCandidates = ['IMEI', 'IMEI largo', 'IMEI corto', 'IMEI equipo', 'IMEI dispositivo', 'Equipo IMEI', 'Device IMEI', 'IMEI Lock', 'IMEI locked', 'Dispositivo', 'UID', 'Identificador']
+const lineImeiCandidates = ['IMEI', 'IMEI largo', 'IMEI corto', 'IMEI equipo', 'IMEI dispositivo', 'Equipo IMEI', 'Device IMEI', 'Dispositivo', 'UID', 'Identificador']
+const lineImeiIgnoredHeaders = ['imeisv', 'imei sv', 'imei lock', 'imei locked', 'lock imei']
 
 function normalizeIccid(value) {
   const clean = textValue(value).replace(/\D/g, '')
@@ -2077,10 +2090,22 @@ function normalizeImeiCandidate(value) {
 }
 
 function extractImeiFromRow(row) {
-  const direct = rowCandidateValues(row, lineImeiCandidates, true)
-    .map((value) => normalizeImeiCandidate(value) || textValue(value))
+  const exact = rowCandidateValues(row, ['IMEI largo', 'IMEI completo', 'Long IMEI', 'IMEI equipo', 'IMEI dispositivo', 'Device IMEI', 'IMEI'], false)
+    .map(normalizeImeiCandidate)
     .find(Boolean)
-  if (direct) return direct
+  if (exact) return exact
+  const loose = Object.entries(row)
+    .filter(([key]) => {
+      const cleanKey = normalizeHeader(key)
+      if (!cleanKey || lineImeiIgnoredHeaders.includes(cleanKey)) return false
+      return lineImeiCandidates.some((candidate) => {
+        const cleanCandidate = normalizeHeader(candidate)
+        return cleanKey.includes(cleanCandidate) || cleanCandidate.includes(cleanKey)
+      })
+    })
+    .map(([, value]) => normalizeImeiCandidate(value))
+    .find(Boolean)
+  if (loose) return loose
   if (normalizeHeader(row.__sheet).includes('stock')) {
     const stockImei = normalizeImeiCandidate(row['Columna 7'])
     if (stockImei) return stockImei
@@ -2105,6 +2130,14 @@ function lineIdentifierParts(line) {
 
 function lineImeiValues(line) {
   return unique([line.imei, line.imeiLong, line.imeiShort, line.imei_largo, line.imei_corto])
+}
+
+function lineTextIdentifierValues(line) {
+  return unique(
+    [line.notes, line.providerHint, line.alias, line.model]
+      .map(importTextValue)
+      .flatMap((value) => value.match(/\b\d{5,12}\b/g) || [])
+  )
 }
 
 function lineKey(line) {
@@ -2444,7 +2477,7 @@ function lineFromRow(row, index, label, options = {}) {
   const billing = rowValueLoose(row, ['Cobro', 'Forma de pago', 'Tipo de pago', 'Periodicidad', 'Renovacion'])
   const payments = rowValueLoose(row, ['No. Pagos', 'Pagos'])
   const status = rowValueLoose(row, ['Estado', 'Estatus', 'Status', 'SIM Status', 'Lifecycle status', 'Connectivity status'])
-  const notes = rowValueLoose(row, ['Notas', 'Comentario', 'Comentarios', 'Observaciones'])
+  const notes = rowValueLoose(row, ['Notas', 'Comentario', 'Comentarios', 'Observaciones', 'Tags', 'Etiqueta', 'Etiquetas', 'Name', 'Nombre'])
   const renewalDate = renewalSignal?.renewalDate || rowValueLoose(row, ['Fecha renovacion', 'Renovacion', 'Vencimiento', 'Fecha vencimiento', 'Fecha pago', 'Proximo pago']) || ''
   const carrier = rowValueLoose(row, ['Compania', 'Operador', 'Carrier', 'Proveedor', 'Red']) || options.defaultCarrier || ''
   const rowCompany = rowValueLoose(row, ['Cliente', 'Empresa', 'Razon social', 'Cuenta', 'Nombre cliente', 'Customer', 'Organization', 'Grupo', 'Grupos', 'Assigned to', 'Workspace'])
@@ -2474,9 +2507,22 @@ function lineFromRow(row, index, label, options = {}) {
 }
 
 function lineMatchesDeviceByImei(line, device) {
-  return lineImeiValues(line).some((value) => {
+  if (lineImeiValues(line).some((value) => {
     const imei = normalizeIdentifier(value)
     return imei && deviceMatchesIdentifier(device, imei)
+  })) {
+    return true
+  }
+  const suffixLengths = deviceImeiSuffixLengths(device)
+  if (!suffixLengths.length) return false
+  const deviceValues = deviceIdentifierValues(device).map((value) => textValue(value).replace(/\D/g, '')).filter(Boolean)
+  return unique([...lineImeiValues(line), ...lineTextIdentifierValues(line)]).some((value) => {
+    const cleanLineImei = textValue(value).replace(/\D/g, '')
+    if (!cleanLineImei) return false
+    return suffixLengths.some((length) => {
+      const suffix = deriveImeiSuffix(cleanLineImei, length)
+      return suffix && deviceValues.some((deviceValue) => deviceValue === suffix || deviceValue === cleanLineImei)
+    })
   })
 }
 
@@ -2486,7 +2532,28 @@ function lineMatchesDeviceByPhone(line, device) {
 }
 
 function isStreamaxDevice(device) {
-  return normalizeHeader(`${device?.deviceType || ''} ${device?.unitName || ''}`).includes('streamax')
+  return deviceText(device).includes('streamax')
+}
+
+function isSuntechDevice(device) {
+  return deviceText(device).includes('suntech')
+}
+
+function isCalampDevice(device) {
+  const text = deviceText(device)
+  return text.includes('calamp') || text.includes('cal amp')
+}
+
+function isCellocatorDevice(device) {
+  const text = deviceText(device)
+  return text.includes('cellocator') || text.includes('cello locator') || text.includes('cello')
+}
+
+function deviceImeiSuffixLengths(device) {
+  if (isSuntechDevice(device)) return [10, 9, 6]
+  if (isCalampDevice(device)) return [9, 10]
+  if (isCellocatorDevice(device)) return [7, 6]
+  return []
 }
 
 function matchLineDevice(line, devices = state.devices) {
@@ -2566,7 +2633,16 @@ function lineMatchKeys(line, devices = state.devices) {
   return unique(lineIdentifierKeys(line))
 }
 
+function sameLineIccid(firstLine, secondLine) {
+  const firstIccid = lineIdentifierParts(firstLine).iccid
+  const secondIccid = lineIdentifierParts(secondLine).iccid
+  return Boolean(firstIccid && secondIccid && firstIccid === secondIccid)
+}
+
 function mergeLineRecord(oldLine, normalizedLine) {
+  const preserveImeiByExistingIcc = sameLineIccid(oldLine, normalizedLine) && Boolean(oldLine.imei || oldLine.imeiLong || oldLine.imeiShort)
+  const preserveSuntechImei = isSuntechDevice(matchLineDevice(oldLine))
+  const preserveExistingImei = preserveImeiByExistingIcc || preserveSuntechImei
   const providerIsManual = Boolean(oldLine.providerManual)
   const incomingProviderIsDefault = normalizedLine.providerDetectedBy === 'default'
   const oldLineType = normalizeLineType(oldLine.lineType)
@@ -2584,9 +2660,9 @@ function mergeLineRecord(oldLine, normalizedLine) {
     phone: normalizedLine.phone || oldLine.phone,
     lineType: nextLineType,
     iccid: normalizedLine.iccid || oldLine.iccid,
-    imei: normalizedLine.imei || oldLine.imei,
-    imeiLong: normalizedLine.imeiLong || oldLine.imeiLong,
-    imeiShort: normalizedLine.imeiShort || oldLine.imeiShort,
+    imei: preserveExistingImei ? oldLine.imei || normalizedLine.imei : normalizedLine.imei || oldLine.imei,
+    imeiLong: preserveExistingImei ? oldLine.imeiLong || normalizedLine.imeiLong : normalizedLine.imeiLong || oldLine.imeiLong,
+    imeiShort: preserveExistingImei ? oldLine.imeiShort || normalizedLine.imeiShort : normalizedLine.imeiShort || oldLine.imeiShort,
     carrier: nextCarrier,
     plan: normalizedLine.plan || oldLine.plan,
     status: normalizedLine.status || oldLine.status,
@@ -2937,7 +3013,9 @@ function enrichLinesFromBridge(lines, bridge, devices = state.devices) {
     const source = lineImei ? bridge.get(`imei:${lineImei}`) : null
     const device = matchLineDevice(source ? { ...normalized, imei: normalized.imei || source.imei } : normalized, devices)
     const linkedCompany = sanitizeLineCompany(device?.company) || sanitizeLineCompany(source?.company) || normalized.company
-    const linkedImei = deviceImeiLong(device || {}) || source?.imei || normalized.imei
+    const linkedImei = isSuntechDevice(device)
+      ? deviceImeiLong(device || {}) || normalized.imei || source?.imei
+      : normalized.imei || source?.imei || deviceImeiLong(device || {})
     if (!source && !device) return normalized
     return normalizeLine(
       {
