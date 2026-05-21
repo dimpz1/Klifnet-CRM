@@ -24,7 +24,7 @@ const lineSeedImportVersion = 0
 const lineResetVersion = 1
 const lineRelationBaseVersion = 25
 const standardMonthlyPriceVersion = 2
-const quoteDefaultsVersion = 8
+const quoteDefaultsVersion = 9
 const standardMonthlyPrice = 297.36
 const standardHardwarePrice = 1152.66
 const cityInstallationPrice = 350
@@ -35,7 +35,6 @@ const lineTypeOptions = [
   { value: 'emprenet', label: 'Emprenet' },
   { value: 'telcel', label: 'Telcel' },
   { value: 'telcel-prepago', label: 'Telcel prepago' },
-  { value: 'telcel-postpago', label: 'Telcel post pago' },
   { value: 'm2m', label: 'M2M' },
   { value: 'emnify', label: 'Emnify' },
   { value: 'wemobile', label: 'WeMobile' }
@@ -303,6 +302,7 @@ const defaultQuote = {
   accessoryQuantity: 1,
   accessories: [],
   installationZone: 'city',
+  installationMode: 'separate',
   installationPricePerDevice: cityInstallationPrice,
   travelFee: 0,
   travelNotes: '',
@@ -799,6 +799,10 @@ function installationPriceForZone(zone) {
   return zone === 'outside' ? outsideInstallationPrice : cityInstallationPrice
 }
 
+function normalizeInstallationMode(value) {
+  return ['separate', 'included', 'none'].includes(value) ? value : 'separate'
+}
+
 function roundCurrency(value) {
   return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100
 }
@@ -1067,6 +1071,7 @@ function normalizeQuoteDefaults(parsedQuote = {}) {
     dashcamSupplier: baseQuote.dashcamSupplier || defaultQuote.dashcamSupplier,
     dashcamUrl: baseQuote.dashcamUrl || defaultQuote.dashcamUrl,
     installationZone: baseQuote.installationZone || defaultQuote.installationZone,
+    installationMode: normalizeInstallationMode(baseQuote.installationMode),
     installationPricePerDevice:
       Number(baseQuote.installationPricePerDevice ?? baseQuote.setupPricePerDevice ?? installationPriceForZone(baseQuote.installationZone)) ||
       installationPriceForZone(baseQuote.installationZone),
@@ -2522,7 +2527,7 @@ function normalizeLineType(value) {
   if (clean.includes('wemobile') || clean.includes('we mobile')) return 'wemobile'
   if (clean.includes('m2m') || clean.includes('m 2 m')) return 'm2m'
   if (clean.includes('telcel') && (clean.includes('prepago') || clean.includes('pre pago') || clean.includes('telcelprep'))) return 'telcel-prepago'
-  if (clean.includes('telcel') && (clean.includes('postpago') || clean.includes('post pago') || clean.includes('pospago') || clean.includes('pos pago'))) return 'telcel-postpago'
+  if (clean.includes('telcel') && (clean.includes('postpago') || clean.includes('post pago') || clean.includes('pospago') || clean.includes('pos pago'))) return 'telcel'
   if (clean.includes('telcel')) return 'telcel'
   return lineTypeOptions.some((option) => option.value === clean) ? clean : 'emprenet'
 }
@@ -2535,9 +2540,26 @@ function detectLineTypeFromText(value) {
   if (clean.includes('wemobile') || clean.includes('we mobile')) return 'wemobile'
   if (clean.includes('m2m') || clean.includes('m 2 m')) return 'm2m'
   if (clean.includes('telcel') && (clean.includes('prepago') || clean.includes('pre pago') || clean.includes('telcelprep'))) return 'telcel-prepago'
-  if (clean.includes('telcel') && (clean.includes('postpago') || clean.includes('post pago') || clean.includes('pospago') || clean.includes('pos pago'))) return 'telcel-postpago'
+  if (clean.includes('telcel') && (clean.includes('postpago') || clean.includes('post pago') || clean.includes('pospago') || clean.includes('pos pago'))) return 'telcel'
   if (clean.includes('telcel')) return 'telcel'
   return lineTypeOptions.some((option) => option.value === clean) ? clean : ''
+}
+
+function lineLooksStreamax(line = {}) {
+  return normalizeHeader(
+    [
+      line.model,
+      line.unitName,
+      line.alias,
+      line.notes,
+      line.providerHint,
+      line.source,
+      line.plan,
+      line.carrier,
+      line.equipo_wialon_nombre,
+      line.equipo_wialon_tipo
+    ].join(' ')
+  ).includes('streamax')
 }
 
 function classifyLineTypeByIccid(iccid, phone) {
@@ -2548,6 +2570,7 @@ function classifyLineTypeByIccid(iccid, phone) {
 }
 
 function detectLineProvider(line, fallback = '', options = {}) {
+  if (lineLooksStreamax(line)) return { value: 'telcel-prepago', reason: 'streamax' }
   const forced = detectLineTypeFromText(options.force)
   if (forced) return { value: forced, reason: 'archivo proveedor' }
   if (line.providerManual) {
@@ -2589,6 +2612,7 @@ function providerDetectionLabel(value) {
     'empresa/modelo/fuente': 'Base proveedor',
     'numero telefonico': 'Numero telefonico',
     'campo proveedor': 'Campo proveedor',
+    streamax: 'Streamax prepago',
     default: 'Default'
   }
   return labels[textValue(value)] || textValue(value) || 'Default'
@@ -3443,11 +3467,21 @@ function enrichLinesFromBridge(lines, bridge, devices = state.devices) {
     const linkedImei = isSuntechDevice(device)
       ? deviceImeiLong(device || {}) || normalized.imei || source?.imei
       : normalized.imei || source?.imei || deviceImeiLong(device || {})
+    const streamax = isStreamaxDevice(device)
     if (!source && !device) return normalized
     return normalizeLine(
       {
         ...normalized,
         company: linkedCompany,
+        ...(streamax
+          ? {
+              lineType: 'telcel-prepago',
+              providerOverride: 'telcel-prepago',
+              carrier: 'Telcel prepago',
+              providerManual: false,
+              providerDetectedBy: 'streamax'
+            }
+          : {}),
         imei: linkedImei,
         clientOnly: normalized.clientOnly && !linkedImei,
         notes: normalized.notes || (linkedImei ? `IMEI ligado desde ${device ? 'Wialon' : source.source}` : normalized.notes)
@@ -4202,7 +4236,12 @@ function buildQuote() {
         ? Number(quote.lineAnnualPrice || 0) / 2
         : Number(quote.lineAnnualPrice || 0)
   const hardwareUnitPrice = hardwareSalePriceFromQuote(quote)
-  const installationUnitPrice = Number(quote.installationPricePerDevice || quote.setupPricePerDevice || installationPriceForZone(quote.installationZone))
+  const installationMode = normalizeInstallationMode(quote.installationMode)
+  const installationBaseUnitPrice = Number(quote.installationPricePerDevice || quote.setupPricePerDevice || installationPriceForZone(quote.installationZone))
+  const installationIncludedAmount = installationMode === 'included' ? installationBaseUnitPrice : 0
+  const hardwareBaseUnitPrice = hardwareUnitPrice
+  const hardwareQuoteUnitPrice = hardwareUnitPrice + installationIncludedAmount
+  const installationUnitPrice = installationMode === 'separate' ? installationBaseUnitPrice : 0
   const travelFee = Number(quote.travelFee || 0)
   const monthlyUnitPrice = Number(quote.monthlyPricePerDevice || 0) || Number(state.billing.monthlyPricePerDevice || 0)
   const recurringGrossSubtotal = quantity * recurringUnitPrice
@@ -4214,11 +4253,11 @@ function buildQuote() {
   const equipmentRecurringSubtotal = Math.max(0, recurringGrossSubtotal - firstMonthDiscount)
   const lineRecurringSubtotal = Math.max(0, lineRecurringGrossSubtotal - lineFirstMonthDiscount)
   const recurringSubtotal = equipmentRecurringSubtotal + lineRecurringSubtotal
-  const hardwareSubtotal = quantity * hardwareUnitPrice
+  const hardwareSubtotal = quantity * hardwareQuoteUnitPrice
   const installationSubtotal = quantity * installationUnitPrice
   const accessoryRows = quoteAccessoryRows(quote)
   const accessorySubtotal = accessoryRows.reduce((sum, row) => sum + row.subtotal, 0)
-  const setupUnitPrice = hardwareUnitPrice + installationUnitPrice
+  const setupUnitPrice = hardwareQuoteUnitPrice + installationUnitPrice
   const setupSubtotal = hardwareSubtotal + installationSubtotal + travelFee
   const subtotal = recurringSubtotal + setupSubtotal + accessorySubtotal
   const tax = subtotal * Number(quote.ivaRate || 0)
@@ -4258,8 +4297,12 @@ function buildQuote() {
     hardwareDiscountPercent: Number(quote.hardwareDiscountPercent ?? syscomDiscountPercent),
     hardwareNetCost: syscomNetCost(quote.hardwareCostPerDevice, quote.hardwareDiscountPercent),
     hardwareMarginPercent: Number(quote.hardwareMarginPercent ?? 30),
-    hardwareUnitPrice,
+    hardwareBaseUnitPrice,
+    hardwareUnitPrice: hardwareQuoteUnitPrice,
+    installationMode,
     installationZone: quote.installationZone || 'city',
+    installationBaseUnitPrice,
+    installationIncludedAmount,
     installationUnitPrice,
     travelFee,
     travelNotes: quote.travelNotes || '',
@@ -5370,6 +5413,7 @@ async function exportQuoteXlsx() {
     ['Descuento proveedor GPS %', quote.hardwareDiscountPercent],
     ['Costo neto GPS', quote.hardwareNetCost],
     ['Ganancia GPS %', quote.hardwareMarginPercent],
+    ['Modo instalacion', quote.installationMode === 'included' ? 'Incluida en precio GPS' : quote.installationMode === 'none' ? 'Sin instalacion' : 'Instalacion separada'],
     ['Zona instalacion', quote.installationZone === 'outside' ? 'Fuera de ciudad' : quote.installationZone === 'town' ? 'Pueblo / traslado' : 'Dentro de ciudad'],
     ['Notas traslado', quote.travelNotes],
     [],
@@ -5379,8 +5423,8 @@ async function exportQuoteXlsx() {
     ['Accesorios'],
     ...quote.accessoryRows.map((row) => [`${row.label} (${row.margin}% ganancia)`, row.quantity, row.unitPrice, row.subtotal]),
     ['Instalacion y viaticos'],
-    ['Instalacion por equipo', quote.quantity, quote.installationUnitPrice, quote.installationSubtotal],
-    ['Viaticos traslado tecnico', 1, quote.travelFee, quote.travelFee],
+    ...(quote.installationSubtotal > 0 ? [['Instalacion por equipo', quote.quantity, quote.installationUnitPrice, quote.installationSubtotal]] : []),
+    ...(quote.travelFee > 0 ? [['Viaticos traslado tecnico', 1, quote.travelFee, quote.travelFee]] : []),
     ['Mensualidades'],
     ...quoteRecurringRows(quote).map((row) => [row.description, row.quantity, row.unitPrice, row.amount]),
     [],
@@ -6073,7 +6117,6 @@ function renderCotizaciones(companies) {
               ${quoteAttendantOptions.map((name) => `<option value="${attr(name)}" ${(q.attendant || defaultQuote.attendant) === name ? 'selected' : ''}>${esc(name)}</option>`).join('')}
             </select>
           </label>
-          <label><span>Cantidad cotizada</span><input type="number" min="0" step="1" value="${attr(q.equipmentCount)}" data-quote="equipmentCount" placeholder="0"></label>
           <label>
             <span>Moneda</span>
             <select data-quote="currency">
@@ -6147,6 +6190,7 @@ function renderCotizaciones(companies) {
           </label>
           <label><span>Cantidad equipos</span><input type="number" min="0" step="1" value="${attr(q.equipmentCount)}" data-quote="equipmentCount" placeholder="0"></label>
           <label><span>Venta GPS</span><input type="number" min="0" step="0.01" value="${attr(hardwareSalePriceFromQuote(q))}" data-quote="hardwarePricePerDevice"></label>
+          <div class="quote-total-chip"><span>Venta aplicada</span><strong>${money(quote.hardwareUnitPrice, quote.currency)}</strong></div>
         </div>
       </div>
 
@@ -6190,6 +6234,14 @@ function renderCotizaciones(companies) {
         </div>
         <div class="quote-section-grid">
           <label>
+            <span>Negociacion</span>
+            <select data-quote="installationMode">
+              <option value="separate" ${quote.installationMode === 'separate' ? 'selected' : ''}>Instalacion separada</option>
+              <option value="included" ${quote.installationMode === 'included' ? 'selected' : ''}>Incluida en precio GPS</option>
+              <option value="none" ${quote.installationMode === 'none' ? 'selected' : ''}>Sin instalacion</option>
+            </select>
+          </label>
+          <label>
             <span>Zona instalacion</span>
             <select data-quote="installationZone">
               <option value="city" ${q.installationZone === 'city' ? 'selected' : ''}>Dentro de ciudad</option>
@@ -6199,6 +6251,7 @@ function renderCotizaciones(companies) {
           </label>
           <label><span>Instalacion por equipo</span><input type="number" min="0" step="0.01" value="${attr(q.installationPricePerDevice)}" data-quote="installationPricePerDevice"></label>
           <label><span>Viaticos traslado</span><input type="number" min="0" step="0.01" value="${attr(q.travelFee)}" data-quote="travelFee"></label>
+          <div class="quote-total-chip"><span>${quote.installationMode === 'included' ? 'Absorbida en GPS' : quote.installationMode === 'none' ? 'Instalacion apagada' : 'Instalacion visible'}</span><strong>${money(quote.installationMode === 'included' ? quote.installationIncludedAmount * quote.quantity : quote.installationSubtotal, quote.currency)}</strong></div>
           <label class="wide"><span>Notas traslado</span><input value="${attr(q.travelNotes)}" data-quote="travelNotes" placeholder="Traslado ida y vuelta del tecnico segun ubicacion"></label>
         </div>
       </div>
@@ -6241,18 +6294,18 @@ function renderCotizaciones(companies) {
               )
               .join('')}
             <tr class="section-row"><td colspan="4">Instalacion y viaticos</td></tr>
-            <tr>
-              <td>Instalacion por equipo</td>
-              <td>${quote.quantity}</td>
-              <td>${money(quote.installationUnitPrice, quote.currency)}</td>
-              <td>${money(quote.installationSubtotal, quote.currency)}</td>
-            </tr>
-            <tr>
-              <td>Viaticos traslado tecnico</td>
-              <td>1</td>
-              <td>${money(quote.travelFee, quote.currency)}</td>
-              <td>${money(quote.travelFee, quote.currency)}</td>
-            </tr>
+            ${
+              quote.installationMode === 'included' && quote.installationIncludedAmount > 0
+                ? `<tr><td>Instalacion incluida en precio GPS</td><td>${quote.quantity}</td><td>${money(0, quote.currency)}</td><td>${money(0, quote.currency)}</td></tr>`
+                : quote.installationSubtotal > 0
+                  ? `<tr><td>Instalacion por equipo</td><td>${quote.quantity}</td><td>${money(quote.installationUnitPrice, quote.currency)}</td><td>${money(quote.installationSubtotal, quote.currency)}</td></tr>`
+                  : `<tr><td>Sin instalacion cotizada</td><td>-</td><td>${money(0, quote.currency)}</td><td>${money(0, quote.currency)}</td></tr>`
+            }
+            ${
+              quote.travelFee > 0
+                ? `<tr><td>Viaticos traslado tecnico</td><td>1</td><td>${money(quote.travelFee, quote.currency)}</td><td>${money(quote.travelFee, quote.currency)}</td></tr>`
+                : ''
+            }
             <tr class="section-row"><td colspan="4">Mensualidades</td></tr>
             ${quoteRecurringRows(quote)
               .map(
