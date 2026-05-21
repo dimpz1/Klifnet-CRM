@@ -118,11 +118,30 @@ function encryptBuffer(buffer) {
   )
 }
 
-function decryptBuffer(filePath) {
-  const payload = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+function isEncryptedPayload(payload) {
+  return Boolean(payload && payload.version === 1 && payload.alg === 'aes-256-gcm' && payload.iv && payload.tag && payload.data)
+}
+
+function decryptPayload(payload) {
   const decipher = crypto.createDecipheriv('aes-256-gcm', getEncryptionKey(), Buffer.from(payload.iv, 'base64'))
   decipher.setAuthTag(Buffer.from(payload.tag, 'base64'))
   return Buffer.concat([decipher.update(Buffer.from(payload.data, 'base64')), decipher.final()])
+}
+
+function decryptBuffer(filePath) {
+  const payload = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+  return decryptPayload(payload)
+}
+
+function readMaybeEncryptedBuffer(filePath) {
+  const raw = fs.readFileSync(filePath)
+  try {
+    const payload = JSON.parse(raw.toString('utf8'))
+    if (isEncryptedPayload(payload)) return decryptPayload(payload)
+  } catch {
+    // Plain binary/private files are allowed for local-only deployments.
+  }
+  return raw
 }
 
 function encryptJson(filePath, payload) {
@@ -936,7 +955,7 @@ async function handleApi(req, res, url) {
         sendJson(res, 404, { ok: false, error: 'Base privada no encontrada.' })
         return
       }
-      sendBuffer(res, 200, decryptBuffer(filePath), binaryTypes[kind] || 'application/octet-stream')
+      sendBuffer(res, 200, readMaybeEncryptedBuffer(filePath), binaryTypes[kind] || 'application/octet-stream')
       return
     }
 

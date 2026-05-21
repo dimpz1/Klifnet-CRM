@@ -22,7 +22,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 14
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 21
+const lineRelationBaseVersion = 23
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.5
 const standardHardwarePrice = 1152.66
@@ -50,6 +50,7 @@ let floatingScrollbarWindowBound = false
 let floatingScrollbarActiveWrap = null
 let floatingScrollbarSyncing = false
 let deviceMatchIndexCache = { devices: null, index: null }
+let lineForDeviceIndexCache = { lines: null, devices: null, index: null }
 
 const hardwarePresets = [
   {
@@ -2631,7 +2632,7 @@ function lineMatchesDeviceByName(line, device) {
   return Boolean(deviceName && lineNameMatchValues(line).includes(deviceName))
 }
 
-function lineIsWialonMatchExempt(line, devices = state.devices) {
+function lineIsWialonMatchExempt(line, devices = state.devices, match = null) {
   const type = normalizeLineType(line.lineType || line.providerOverride || line.carrier)
   const text = normalizeHeader(`${line.company || ''} ${line.status || ''} ${line.notes || ''} ${line.plan || ''} ${line.source || ''}`)
   if (type === 'emnify') {
@@ -2647,7 +2648,8 @@ function lineIsWialonMatchExempt(line, devices = state.devices) {
       return true
     }
   }
-  if ((type === 'emprenet' || type === 'telcel') && !matchLineDevice(line, devices) && (text.includes('disponible') || text.includes('available'))) return true
+  const hasDeviceMatch = match ? Boolean(match.device) : Boolean(matchLineDevice(line, devices))
+  if ((type === 'emprenet' || type === 'telcel') && !hasDeviceMatch && (text.includes('disponible') || text.includes('available'))) return true
   return false
 }
 
@@ -2771,8 +2773,17 @@ function lineMatchMethod(line, devices = state.devices) {
 
 function lineMatchType(line, devices = state.devices) {
   if (isBernardoLine(line)) return 'solo_linea'
-  if (matchLineDevice(line, devices)) return 'equipo'
-  if (lineIsWialonMatchExempt(line, devices)) return 'no_asignada'
+  const match = matchLineDeviceWithMethod(line, devices)
+  if (match.device) return 'equipo'
+  if (lineIsWialonMatchExempt(line, devices, match)) return 'no_asignada'
+  if (line.clientOnly) return 'solo_linea'
+  return 'sin_match'
+}
+
+function lineMatchTypeFromMatch(line, match, devices = state.devices) {
+  if (isBernardoLine(line)) return 'solo_linea'
+  if (match?.device) return 'equipo'
+  if (lineIsWialonMatchExempt(line, devices, match)) return 'no_asignada'
   if (line.clientOnly) return 'solo_linea'
   return 'sin_match'
 }
@@ -2797,21 +2808,28 @@ function lineMatchTypeText(line) {
   return 'Sin match'
 }
 
-function lineForDevice(device) {
-  if (isStreamaxDevice(device)) {
-    return (
-      state.lines.find((line) => lineMatchesDeviceByPhone(line, device)) ||
-      state.lines.find((line) => lineMatchesDeviceByImei(line, device)) ||
-      state.lines.find((line) => lineMatchesDeviceByName(line, device)) ||
-      null
-    )
+function lineForDeviceIndex(lines = state.lines, devices = state.devices) {
+  if (lineForDeviceIndexCache.lines === lines && lineForDeviceIndexCache.devices === devices && lineForDeviceIndexCache.index) {
+    return lineForDeviceIndexCache.index
   }
-  return (
-    state.lines.find((line) => lineMatchesDeviceByImei(line, device)) ||
-    state.lines.find((line) => lineMatchesDeviceByPhone(line, device)) ||
-    state.lines.find((line) => lineMatchesDeviceByName(line, device)) ||
-    null
-  )
+  const index = new Map()
+  lines.forEach((line) => {
+    const match = matchLineDeviceWithMethod(line, devices)
+    const deviceId = match.device?.id
+    if (deviceId && !index.has(deviceId)) index.set(deviceId, { line, method: match.method })
+  })
+  lineForDeviceIndexCache = { lines, devices, index }
+  return index
+}
+
+function lineForDevice(device) {
+  return lineForDeviceIndex().get(device?.id)?.line || null
+}
+
+function lineForDeviceMatchMethod(device, line = lineForDevice(device)) {
+  const cached = lineForDeviceIndex().get(device?.id)
+  if (cached?.line?.id === line?.id) return cached.method
+  return line ? lineMatchMethod(line, [device]) : ''
 }
 
 function preferredLinePhoneFromRecord(record) {
@@ -2886,7 +2904,7 @@ function deviceLinePhone(device, line = lineForDevice(device)) {
 
 function deviceLineMatchLabel(device, line = lineForDevice(device)) {
   if (line) {
-    const method = lineMatchMethod(line, [device])
+    const method = lineForDeviceMatchMethod(device, line)
     if (method === 'telefono') return 'Match por telefono'
     if (method === 'nombre') return 'Match por nombre'
     return 'Match por IMEI'
@@ -3046,15 +3064,23 @@ function dedupeLines(lines, devices = state.devices) {
 }
 
 function lineStats(lines = state.lines, devices = state.devices) {
-  return {
-    total: lines.length,
-    active: lines.filter(isActiveLine).length,
-    inactive: lines.filter((line) => !isActiveLine(line)).length,
-    matched: lines.filter((line) => lineMatchType(line, devices) === 'equipo').length,
-    clientOnly: lines.filter((line) => lineMatchType(line, devices) === 'solo_linea').length,
-    exempt: lines.filter((line) => lineMatchType(line, devices) === 'no_asignada').length,
-    unmatched: lines.filter((line) => lineMatchType(line, devices) === 'sin_match').length
-  }
+  return lines.reduce((totals, line) => {
+    const match = matchLineDeviceWithMethod(line, devices)
+    const matchType = lineMatchTypeFromMatch(line, match, devices)
+    totals.total += 1
+    if (isActiveLine(line)) totals.active += 1
+    else totals.inactive += 1
+    totals[matchType === 'equipo' ? 'matched' : matchType === 'solo_linea' ? 'clientOnly' : matchType === 'no_asignada' ? 'exempt' : 'unmatched'] += 1
+    return totals
+  }, {
+    total: 0,
+    active: 0,
+    inactive: 0,
+    matched: 0,
+    clientOnly: 0,
+    exempt: 0,
+    unmatched: 0
+  })
 }
 
 function filteredLines() {
