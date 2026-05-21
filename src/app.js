@@ -49,6 +49,7 @@ const tablePageSize = 40
 let floatingScrollbarWindowBound = false
 let floatingScrollbarActiveWrap = null
 let floatingScrollbarSyncing = false
+let stickyLayoutWindowBound = false
 let deviceMatchIndexCache = { devices: null, index: null }
 let lineForDeviceIndexCache = { lines: null, devices: null, index: null }
 
@@ -3263,12 +3264,13 @@ function renderTablePagination(total, pagination, options = {}) {
   const label = options.label || 'registros'
   const dataAttr = options.dataAttr || 'data-table-page'
   const ariaLabel = options.ariaLabel || `Paginacion de ${label}`
+  const pagerClass = `pager${options.sticky ? ' sticky-pager' : ''}`
   if (total <= pagination.pageSize) {
-    return `<div class="pager"><div class="pager-summary">Mostrando ${total} de ${total} ${esc(label)}</div></div>`
+    return `<div class="${pagerClass}"><div class="pager-summary">Mostrando ${total} de ${total} ${esc(label)}</div></div>`
   }
   const pages = visiblePageNumbers(pagination.page, pagination.pageCount)
   return `
-    <div class="pager">
+    <div class="${pagerClass}">
       <div class="pager-summary">Mostrando ${pagination.start + 1}-${pagination.end} de ${total} ${esc(label)} - ${pagination.pageSize} por hoja</div>
       <div class="pager-controls" aria-label="${attr(ariaLabel)}">
         <button class="icon-button" ${dataAttr}="${pagination.page - 1}" ${pagination.page <= 1 ? 'disabled' : ''} title="Pagina anterior">${icon('chevron-left')}</button>
@@ -3285,13 +3287,14 @@ function renderTablePagination(total, pagination, options = {}) {
   `
 }
 
-function renderPagination(total, pagination) {
+function renderPagination(total, pagination, options = {}) {
+  const pagerClass = `pager${options.sticky ? ' sticky-pager' : ''}`
   if (total <= linePageSize) {
-    return `<div class="pager"><div class="pager-summary">Mostrando ${total} de ${total} lineas</div></div>`
+    return `<div class="${pagerClass}"><div class="pager-summary">Mostrando ${total} de ${total} lineas</div></div>`
   }
   const pages = visiblePageNumbers(pagination.page, pagination.pageCount)
   return `
-    <div class="pager">
+    <div class="${pagerClass}">
       <div class="pager-summary">Mostrando ${pagination.start + 1}-${pagination.end} de ${total} lineas - ${linePageSize} por hoja</div>
       <div class="pager-controls" aria-label="Paginacion de lineas">
         <button class="icon-button" data-line-page="${pagination.page - 1}" ${pagination.page <= 1 ? 'disabled' : ''} title="Pagina anterior">${icon('chevron-left')}</button>
@@ -3321,13 +3324,14 @@ function equipmentPaginationState(total) {
   }
 }
 
-function renderEquipmentPagination(total, pagination) {
+function renderEquipmentPagination(total, pagination, options = {}) {
+  const pagerClass = `pager${options.sticky ? ' sticky-pager' : ''}`
   if (total <= equipmentPageSize) {
-    return `<div class="pager"><div class="pager-summary">Mostrando ${total} de ${total} equipos</div></div>`
+    return `<div class="${pagerClass}"><div class="pager-summary">Mostrando ${total} de ${total} equipos</div></div>`
   }
   const pages = visiblePageNumbers(pagination.page, pagination.pageCount)
   return `
-    <div class="pager">
+    <div class="${pagerClass}">
       <div class="pager-summary">Mostrando ${pagination.start + 1}-${pagination.end} de ${total} equipos - ${equipmentPageSize} por hoja</div>
       <div class="pager-controls" aria-label="Paginacion de equipos">
         <button class="icon-button" data-equipment-page="${pagination.page - 1}" ${pagination.page <= 1 ? 'disabled' : ''} title="Pagina anterior">${icon('chevron-left')}</button>
@@ -5479,7 +5483,7 @@ function companyTable(companies) {
   const pagination = tablePaginationState(companies.length, state.companyPage)
   const pageCompanies = companies.slice(pagination.start, pagination.end)
   return `
-    ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas' })}
+    ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas', sticky: true })}
     <div class="table-wrap">
       <table>
         <thead>
@@ -5571,7 +5575,7 @@ function billingTable() {
   const pagination = tablePaginationState(state.billingRows.length, state.billingPage)
   const pageRows = state.billingRows.slice(pagination.start, pagination.end)
   return `
-    ${renderTablePagination(state.billingRows.length, pagination, { label: 'prefacturas', dataAttr: 'data-billing-page', ariaLabel: 'Paginacion de prefacturas' })}
+    ${renderTablePagination(state.billingRows.length, pagination, { label: 'prefacturas', dataAttr: 'data-billing-page', ariaLabel: 'Paginacion de prefacturas', sticky: true })}
     <div class="table-wrap">
       <table>
         <thead>
@@ -5649,7 +5653,7 @@ function renderEmpresas(companies) {
   const pagination = tablePaginationState(companies.length, state.companyPage)
   const pageCompanies = companies.slice(pagination.start, pagination.end)
   return `
-    ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas' })}
+    ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas', sticky: true })}
     <section class="company-list">
       ${pageCompanies
         .map(
@@ -5692,25 +5696,7 @@ function renderEquipos() {
   const d = state.newDevice
   return `
     <section>
-      <div class="billing-settings">
-        <label><span>Empresa</span><input list="equipmentCompanyList" value="${attr(d.company)}" data-new-device="company" placeholder="Selecciona o escribe nueva empresa"></label>
-        <label><span>Grupo</span><input value="${attr(d.groups)}" data-new-device="groups" placeholder="Grupo o grupos"></label>
-        <label><span>Equipo</span><input value="${attr(d.unitName)}" data-new-device="unitName"></label>
-        <label><span>UID</span><input value="${attr(d.uid)}" data-new-device="uid"></label>
-        <label><span>IMEI</span><input value="${attr(d.imei)}" data-new-device="imei"></label>
-        <label><span>IMEI largo</span><input value="${attr(d.imeiLong)}" data-new-device="imeiLong"></label>
-        <label><span>IMEI corto</span><input value="${attr(d.imeiShort)}" data-new-device="imeiShort"></label>
-        <label><span>Tipo</span><input value="${attr(d.deviceType)}" data-new-device="deviceType"></label>
-        <label><span>Telefono Wialon</span><input value="${attr(d.phone)}" data-new-device="phone"></label>
-        <label>
-          <span>Vendido por</span>
-          <select data-new-device="soldBy">${sellerSelectOptions(d.soldBy || defaultNewEquipmentSeller)}</select>
-        </label>
-        <label><span>Precio pactado</span><input type="number" min="0" step="0.01" value="${attr(d.agreedPrice)}" data-new-device="agreedPrice"></label>
-        <label><span>Fecha venta</span><input type="date" value="${attr(d.saleDate)}" data-new-device="saleDate"></label>
-        <label class="wide"><span>Nota precio</span><input value="${attr(d.priceNote)}" data-new-device="priceNote"></label>
-        <button class="button primary" id="addManualDevice">${icon('plus')}Agregar equipo</button>
-      </div>
+      ${renderEquipmentPagination(devices.length, pagination, { sticky: true })}
       <datalist id="equipmentCompanyList">
         ${companyOptions.map((company) => `<option value="${attr(company)}"></option>`).join('')}
       </datalist>
@@ -5725,7 +5711,28 @@ function renderEquipos() {
         </select>
         <span>${devices.length} equipos</span>
       </div>
-      ${renderEquipmentPagination(devices.length, pagination)}
+      <details class="compact-panel">
+        <summary>${icon('plus')}Alta manual de equipo</summary>
+        <div class="billing-settings">
+          <label><span>Empresa</span><input list="equipmentCompanyList" value="${attr(d.company)}" data-new-device="company" placeholder="Selecciona o escribe nueva empresa"></label>
+          <label><span>Grupo</span><input value="${attr(d.groups)}" data-new-device="groups" placeholder="Grupo o grupos"></label>
+          <label><span>Equipo</span><input value="${attr(d.unitName)}" data-new-device="unitName"></label>
+          <label><span>UID</span><input value="${attr(d.uid)}" data-new-device="uid"></label>
+          <label><span>IMEI</span><input value="${attr(d.imei)}" data-new-device="imei"></label>
+          <label><span>IMEI largo</span><input value="${attr(d.imeiLong)}" data-new-device="imeiLong"></label>
+          <label><span>IMEI corto</span><input value="${attr(d.imeiShort)}" data-new-device="imeiShort"></label>
+          <label><span>Tipo</span><input value="${attr(d.deviceType)}" data-new-device="deviceType"></label>
+          <label><span>Telefono Wialon</span><input value="${attr(d.phone)}" data-new-device="phone"></label>
+          <label>
+            <span>Vendido por</span>
+            <select data-new-device="soldBy">${sellerSelectOptions(d.soldBy || defaultNewEquipmentSeller)}</select>
+          </label>
+          <label><span>Precio pactado</span><input type="number" min="0" step="0.01" value="${attr(d.agreedPrice)}" data-new-device="agreedPrice"></label>
+          <label><span>Fecha venta</span><input type="date" value="${attr(d.saleDate)}" data-new-device="saleDate"></label>
+          <label class="wide"><span>Nota precio</span><input value="${attr(d.priceNote)}" data-new-device="priceNote"></label>
+          <button class="button primary" id="addManualDevice">${icon('plus')}Agregar equipo</button>
+        </div>
+      </details>
       ${deviceTable(pageDevices)}
       ${renderEquipmentPagination(devices.length, pagination)}
     </section>
@@ -5824,69 +5831,76 @@ function renderLineas(companies) {
   const options = lineCompanyOptions(companies)
   return `
     <section class="billing-layout">
-      <section class="metric-grid billing-metrics">
-        ${metric('Lineas', stats.total)}
-        ${metric('Activas', stats.active)}
-        ${metric('Desactivadas', stats.inactive, 'red')}
-        ${metric('Con equipo', stats.matched)}
-        ${metric('Solo lineas', stats.clientOnly, 'amber')}
-        ${metric('No asignables', stats.exempt, 'amber')}
-        ${metric('Sin match', stats.unmatched, 'red')}
-      </section>
-      <section class="line-profile-grid">
-        ${providerGroups
-          .map(
-            (group) => `
-              <div class="line-profile-card">
-                <span>Proveedora</span>
-                <strong>${esc(group.label)}</strong>
-                <div><b>${group.lines.length}</b> lineas</div>
-                <small>${esc(lineProviderStatusSummary(group))}</small>
-              </div>`
-          )
-          .join('')}
-      </section>
-      <div class="billing-settings">
-        <label>
-          <span>Empresa / Cliente</span>
-          <input list="lineCompanyList" value="${attr(d.company)}" data-new-line="company" placeholder="Cliente">
-        </label>
-        <label><span>Linea celular</span><input value="${attr(d.phone)}" data-new-line="phone" placeholder="Numero"></label>
-        <label>
-          <span>Tipo linea</span>
-          <select data-new-line="lineType">
-            ${lineTypeOptions.map((option) => `<option value="${attr(option.value)}" ${normalizeLineType(d.lineType) === option.value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}
-          </select>
-        </label>
-        <label><span>ICCID / ICC</span><input value="${attr(d.iccid)}" data-new-line="iccid" placeholder="SIM"></label>
-        <label><span>IMEI equipo</span><input value="${attr(d.imei)}" data-new-line="imei" placeholder="IMEI si aplica"></label>
-        <label>
-          <span>Vendido por</span>
-          <select data-new-line="soldBy">${sellerSelectOptions(d.soldBy || defaultNewEquipmentSeller)}</select>
-        </label>
-        <label><span>Operador</span><input value="${attr(d.carrier)}" data-new-line="carrier" placeholder="Telcel, AT&T, etc."></label>
-        <label><span>Plan</span><input value="${attr(d.plan)}" data-new-line="plan" placeholder="Plan / paquete"></label>
-        <label>
-          <span>Estatus</span>
-          <select data-new-line="status">
-            <option value="activa" ${d.status === 'activa' ? 'selected' : ''}>Activa</option>
-            <option value="desactivada" ${d.status === 'desactivada' ? 'selected' : ''}>Desactivada</option>
-          </select>
-        </label>
-        <label>
-          <span>Cobro</span>
-          <select data-new-line="billingCycle">
-            <option value="anual" ${d.billingCycle === 'anual' ? 'selected' : ''}>Anual</option>
-            <option value="semestral" ${d.billingCycle === 'semestral' ? 'selected' : ''}>Semestral</option>
-            <option value="mensual" ${d.billingCycle === 'mensual' ? 'selected' : ''}>Mensual</option>
-          </select>
-        </label>
-        <label><span>Renovacion</span><input type="date" value="${attr(d.renewalDate)}" data-new-line="renewalDate"></label>
-        <label><span>Precio pactado</span><input type="number" min="0" step="0.01" value="${attr(d.annualPrice)}" data-new-line="annualPrice"></label>
-        <label class="check-field"><input type="checkbox" data-new-line="clientOnly" ${d.clientOnly ? 'checked' : ''}><span>Solo linea celular</span></label>
-        <label class="wide"><span>Notas</span><input value="${attr(d.notes)}" data-new-line="notes" placeholder='Ej. bernardo 15 mayo 2026'></label>
-        <button class="button primary" id="addManualLine">${icon('plus')}Agregar linea</button>
-      </div>
+      ${renderPagination(lines.length, pagination, { sticky: true })}
+      <details class="compact-panel">
+        <summary>${icon('bar-chart-3')}Resumen de lineas y proveedoras</summary>
+        <section class="metric-grid billing-metrics">
+          ${metric('Lineas', stats.total)}
+          ${metric('Activas', stats.active)}
+          ${metric('Desactivadas', stats.inactive, 'red')}
+          ${metric('Con equipo', stats.matched)}
+          ${metric('Solo lineas', stats.clientOnly, 'amber')}
+          ${metric('No asignables', stats.exempt, 'amber')}
+          ${metric('Sin match', stats.unmatched, 'red')}
+        </section>
+        <section class="line-profile-grid">
+          ${providerGroups
+            .map(
+              (group) => `
+                <div class="line-profile-card">
+                  <span>Proveedora</span>
+                  <strong>${esc(group.label)}</strong>
+                  <div><b>${group.lines.length}</b> lineas</div>
+                  <small>${esc(lineProviderStatusSummary(group))}</small>
+                </div>`
+            )
+            .join('')}
+        </section>
+      </details>
+      <details class="compact-panel">
+        <summary>${icon('plus')}Alta manual de linea</summary>
+        <div class="billing-settings">
+          <label>
+            <span>Empresa / Cliente</span>
+            <input list="lineCompanyList" value="${attr(d.company)}" data-new-line="company" placeholder="Cliente">
+          </label>
+          <label><span>Linea celular</span><input value="${attr(d.phone)}" data-new-line="phone" placeholder="Numero"></label>
+          <label>
+            <span>Tipo linea</span>
+            <select data-new-line="lineType">
+              ${lineTypeOptions.map((option) => `<option value="${attr(option.value)}" ${normalizeLineType(d.lineType) === option.value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}
+            </select>
+          </label>
+          <label><span>ICCID / ICC</span><input value="${attr(d.iccid)}" data-new-line="iccid" placeholder="SIM"></label>
+          <label><span>IMEI equipo</span><input value="${attr(d.imei)}" data-new-line="imei" placeholder="IMEI si aplica"></label>
+          <label>
+            <span>Vendido por</span>
+            <select data-new-line="soldBy">${sellerSelectOptions(d.soldBy || defaultNewEquipmentSeller)}</select>
+          </label>
+          <label><span>Operador</span><input value="${attr(d.carrier)}" data-new-line="carrier" placeholder="Telcel, AT&T, etc."></label>
+          <label><span>Plan</span><input value="${attr(d.plan)}" data-new-line="plan" placeholder="Plan / paquete"></label>
+          <label>
+            <span>Estatus</span>
+            <select data-new-line="status">
+              <option value="activa" ${d.status === 'activa' ? 'selected' : ''}>Activa</option>
+              <option value="desactivada" ${d.status === 'desactivada' ? 'selected' : ''}>Desactivada</option>
+            </select>
+          </label>
+          <label>
+            <span>Cobro</span>
+            <select data-new-line="billingCycle">
+              <option value="anual" ${d.billingCycle === 'anual' ? 'selected' : ''}>Anual</option>
+              <option value="semestral" ${d.billingCycle === 'semestral' ? 'selected' : ''}>Semestral</option>
+              <option value="mensual" ${d.billingCycle === 'mensual' ? 'selected' : ''}>Mensual</option>
+            </select>
+          </label>
+          <label><span>Renovacion</span><input type="date" value="${attr(d.renewalDate)}" data-new-line="renewalDate"></label>
+          <label><span>Precio pactado</span><input type="number" min="0" step="0.01" value="${attr(d.annualPrice)}" data-new-line="annualPrice"></label>
+          <label class="check-field"><input type="checkbox" data-new-line="clientOnly" ${d.clientOnly ? 'checked' : ''}><span>Solo linea celular</span></label>
+          <label class="wide"><span>Notas</span><input value="${attr(d.notes)}" data-new-line="notes" placeholder='Ej. bernardo 15 mayo 2026'></label>
+          <button class="button primary" id="addManualLine">${icon('plus')}Agregar linea</button>
+        </div>
+      </details>
       <datalist id="lineCompanyList">
         ${options.map((company) => `<option value="${attr(company)}"></option>`).join('')}
       </datalist>
@@ -5933,7 +5947,6 @@ function renderLineas(companies) {
           : '<div class="notice">Importa la base de lineas activas para cruzarlas contra IMEI o contra el telefono Wialon. Para Bernardo tambien lee renovaciones escritas como: bernardo 15 mayo 2026.</div>'
       }
       <div class="notice">Clasificacion automatica: archivo/base con proveedor explicito manda; si no hay proveedor, 8934 y 8949 = Emnify, 8952 sin telefono = Emprenet y 8952 con telefono = Telcel. El cruce con Wialon usa IMEI, UID y telefono; Bernardo/Berna se conserva como solo linea, y las Emnify desactivadas/deleted/disponibles sin asignar no cuentan como sin match.</div>
-      ${renderPagination(lines.length, pagination)}
       ${renderLineProviderSections(pageLines)}
       ${renderPagination(lines.length, pagination)}
     </section>
@@ -6340,6 +6353,7 @@ function renderCobros(companies) {
   const groups = cobrosGroups()
   return `
     <section class="client-layout">
+      ${renderTablePagination(devices.length, pagination, { label: 'equipos', dataAttr: 'data-cobros-page', ariaLabel: 'Paginacion de cobros', sticky: true })}
       <div class="billing-filters">
         <label>
           <span>Empresa</span>
@@ -6367,7 +6381,6 @@ function renderCobros(companies) {
         </label>
         <div class="filter-count"><span>Equipos visibles</span><strong>${devices.length}</strong></div>
       </div>
-      ${renderTablePagination(devices.length, pagination, { label: 'equipos', dataAttr: 'data-cobros-page', ariaLabel: 'Paginacion de cobros' })}
       <div class="table-wrap devices-table">
         <table>
           <thead>
@@ -6634,7 +6647,27 @@ function render() {
 
   bindEvents()
   if (window.lucide) window.lucide.createIcons()
+  bindStickyLayout()
   bindFloatingTableScrollbar()
+}
+
+function updateStickyLayoutOffsets() {
+  const topbar = document.querySelector('.topbar')
+  const tabs = document.querySelector('.tabs')
+  const topbarTop = 8
+  const topbarHeight = topbar ? Math.ceil(topbar.getBoundingClientRect().height) : 0
+  const tabsHeight = tabs ? Math.ceil(tabs.getBoundingClientRect().height) : 0
+  const tabsTop = topbarHeight ? topbarTop + topbarHeight + 8 : 0
+  const pagerTop = tabs ? tabsTop + tabsHeight + 8 : topbarTop
+  document.documentElement.style.setProperty('--sticky-tabs-top', `${tabsTop}px`)
+  document.documentElement.style.setProperty('--sticky-pager-top', `${pagerTop}px`)
+}
+
+function bindStickyLayout() {
+  requestAnimationFrame(updateStickyLayoutOffsets)
+  if (stickyLayoutWindowBound) return
+  window.addEventListener('resize', updateStickyLayoutOffsets)
+  stickyLayoutWindowBound = true
 }
 
 function wideTableWraps() {
