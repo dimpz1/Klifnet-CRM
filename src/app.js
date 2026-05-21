@@ -22,7 +22,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 14
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 24
+const lineRelationBaseVersion = 25
 const standardMonthlyPriceVersion = 2
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.36
@@ -3495,7 +3495,10 @@ function relationPayloadToLines(payload) {
     throw new Error('El servidor entrego la base de lineas todavia cifrada; actualiza y reinicia el servidor.')
   }
   const rows = Array.isArray(payload?.lineas) ? payload.lineas : []
-  return rows.map(lineFromRelationRecord)
+  return rows.map((row, index) => {
+    const relationShape = row?.proveedor || row?.provider || row?.relacion_id || row?.linea_id || row?.iccid_luhn || row?.equipo_wialon_cuenta || row?.cliente_fuente
+    return relationShape ? lineFromRelationRecord(row, index) : normalizeLine(row, index)
+  })
 }
 
 function lineRelationKeys(line) {

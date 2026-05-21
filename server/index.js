@@ -691,6 +691,21 @@ function privateFileCandidates(kind) {
   return (Array.isArray(mapped) ? mapped : [mapped]).map((fileName) => path.join(privateFilesDir, fileName))
 }
 
+function normalizeLineBasePayload(payload) {
+  if (Array.isArray(payload)) return { source: 'base_relacion_lineas_array', lineas: payload, normalizedLineas: true }
+  if (Array.isArray(payload?.lineas)) return payload
+  if (Array.isArray(payload?.lines)) return { ...payload, lineas: payload.lines, normalizedLineas: true }
+  if (Array.isArray(payload?.state?.lines)) {
+    return {
+      source: payload.source || 'server-state-lines',
+      updatedAt: payload.updatedAt || '',
+      lineas: payload.state.lines,
+      normalizedLineas: true
+    }
+  }
+  return null
+}
+
 function readPrivateFile(kind) {
   const candidates = privateFileCandidates(kind).filter((filePath) => fs.existsSync(filePath))
   let lastError = ''
@@ -699,10 +714,13 @@ function readPrivateFile(kind) {
       const buffer = readMaybeEncryptedBuffer(filePath, { strict: true })
       if (kind === 'lineas') {
         const payload = JSON.parse(buffer.toString('utf8'))
-        if (!Array.isArray(payload?.lineas)) {
-          lastError = `${path.basename(filePath)} no trae lineas[].`
+        const normalizedPayload = normalizeLineBasePayload(payload)
+        if (!normalizedPayload) {
+          const keys = Array.isArray(payload) ? ['array'] : Object.keys(payload || {}).slice(0, 12)
+          lastError = `${path.basename(filePath)} no trae lineas[], lines[] ni state.lines[]. Campos encontrados: ${keys.join(', ') || 'sin campos'}.`
           continue
         }
+        return { buffer: Buffer.from(JSON.stringify(normalizedPayload)), filePath }
       }
       return { buffer, filePath }
     } catch (error) {
