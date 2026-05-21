@@ -470,6 +470,30 @@ function unique(values) {
   return Array.from(new Set(values.map((value) => textValue(value)).filter(Boolean)))
 }
 
+function expandScientificText(value) {
+  const raw = importTextValue(value)
+  const match = raw.match(/^([+-]?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/)
+  if (!match) return raw
+  const [, sign, integer, fraction = '', exponentText] = match
+  const exponent = Number(exponentText)
+  if (!Number.isFinite(exponent)) return raw
+  const digits = `${integer}${fraction}`
+  const decimalIndex = integer.length + exponent
+  if (decimalIndex <= 0) return `${sign}0.${'0'.repeat(Math.abs(decimalIndex))}${digits}`.replace(/\.?0+$/, '')
+  if (decimalIndex >= digits.length) return `${sign}${digits}${'0'.repeat(decimalIndex - digits.length)}`
+  return `${sign}${digits.slice(0, decimalIndex)}.${digits.slice(decimalIndex)}`.replace(/\.?0+$/, '')
+}
+
+function normalizeIdentifierText(value) {
+  return expandScientificText(value)
+    .replace(/^[`'\u00b4]+/, '')
+    .replace(/\u00a0/g, '')
+    .replace(/\s+/g, '')
+    .replace(/[\u200b-\u200d\ufeff]/g, '')
+    .replace(/[^\dA-Za-z+.-]/g, '')
+    .replace(/\.0+$/, '')
+}
+
 function normalizeSeller(value, fallback = defaultEquipmentSeller) {
   const clean = textValue(value)
   return quoteAttendantOptions.includes(clean) ? clean : fallback
@@ -495,7 +519,7 @@ function icon(name) {
 }
 
 function normalizeIdentifier(value) {
-  return normalizeHeader(value).replace(/\s+/g, '')
+  return normalizeHeader(normalizeIdentifierText(value) || value).replace(/\s+/g, '')
 }
 
 function deriveShortImei(value) {
@@ -1687,12 +1711,18 @@ function worksheetMatrix(doc, shared) {
         value = Array.from(cell.getElementsByTagName('t')).map((node) => node.textContent || '').join('')
       } else {
         const raw = cell.getElementsByTagName('v')[0]?.textContent || ''
-        value = type === 's' ? shared[Number(raw)] || '' : raw
+        if (type === 's') {
+          value = shared[Number(raw)] || ''
+        } else if (type === 'b') {
+          value = raw === '1' ? 'TRUE' : raw === '0' ? 'FALSE' : raw
+        } else {
+          value = raw
+        }
       }
 
       row[index] = value
     })
-    matrix.push(row.map((value) => textValue(value)))
+    matrix.push(row.map((value) => importTextValue(value)))
   })
   return matrix
 }
@@ -1725,11 +1755,20 @@ async function parseXlsx(buffer) {
   return { rows, columns, mapping: detectMapping(columns) }
 }
 
+function csvDelimiter(text) {
+  const sample = String(text || '').split(/\r?\n/).find((line) => line.trim()) || ''
+  const candidates = [',', ';', '\t', '|']
+  return candidates
+    .map((delimiter) => ({ delimiter, count: sample.split(delimiter).length - 1 }))
+    .sort((a, b) => b.count - a.count)[0]?.delimiter || ','
+}
+
 function parseCsv(text) {
   const rows = []
   let row = []
   let cell = ''
   let quoted = false
+  const delimiter = csvDelimiter(text)
 
   for (let i = 0; i < text.length; i += 1) {
     const char = text[i]
@@ -1739,7 +1778,7 @@ function parseCsv(text) {
       i += 1
     } else if (char === '"') {
       quoted = !quoted
-    } else if (!quoted && char === ',') {
+    } else if (!quoted && char === delimiter) {
       row.push(cell)
       cell = ''
     } else if (!quoted && (char === '\n' || char === '\r')) {
@@ -1760,28 +1799,61 @@ function parseCsv(text) {
 function headerScore(row) {
   const knownHeaders = new Set([
     'nombre',
+    'name',
     'cliente',
+    'customer',
     'empresa',
+    'razon social',
     'cuenta',
+    'account',
     'grupo',
     'grupos',
     'icc',
     'iccid',
+    'icc id',
+    'iccid luhn',
+    'sim',
+    'sim id',
     'msisdn',
+    'msidn',
     'telefono',
+    'phone',
+    'phone number',
+    'number',
     'linea',
+    'linea celular',
+    'line',
     'imei',
+    'imei largo',
     'imei corto',
+    'imei 1',
+    'imei 2',
+    'device imei',
     'proveedor',
+    'proveedora',
+    'provider',
+    'operador',
+    'carrier',
     'status',
+    'estatus',
     'estado',
     'vencimiento',
-    'sim id',
+    'renovacion',
+    'fecha renovacion',
+    'renewal',
+    'lifecycle status',
+    'connectivity status',
     'endpoint id',
     'endpoint name',
     'assigned to',
-    'workspace'
+    'workspace',
+    'organization',
+    'iccid icc',
+    'vendido por',
+    'precio pactado'
   ])
+  const meaningfulCells = row.filter((cell) => normalizeHeader(cell)).length
+  if (meaningfulCells < 2) return 0
   return row.reduce((score, cell) => {
     const clean = normalizeHeader(cell)
     if (!clean) return score
@@ -1792,7 +1864,7 @@ function headerScore(row) {
 
 function detectHeaderIndex(matrix) {
   let best = { index: -1, score: 0 }
-  matrix.slice(0, 25).forEach((row, index) => {
+  matrix.slice(0, 60).forEach((row, index) => {
     const score = headerScore(row)
     if (score > best.score) best = { index, score }
   })
@@ -1820,13 +1892,14 @@ function rowsFromMatrix(matrix, sheetName = '') {
   const rows = cleanedMatrix
     .slice(headerIndex >= 0 ? headerIndex + 1 : 0)
     .filter((row) => row.some((cell) => textValue(cell)))
-    .map((row) => {
+    .map((row, rowIndex) => {
       const output = {}
       headers.forEach((header, index) => {
         output[header] = importTextValue(row[index])
         output[`Columna ${index + 1}`] = importTextValue(row[index])
       })
       output.__sheet = sheetName
+      output.__row = String((headerIndex >= 0 ? headerIndex + 2 : 1) + rowIndex)
       return output
     })
   const columns = unique(rows.flatMap((row) => Object.keys(row)))
@@ -1835,7 +1908,7 @@ function rowsFromMatrix(matrix, sheetName = '') {
 
 async function parseWorkbookFile(fileOrBuffer, filename = '') {
   if (filename.toLowerCase().endsWith('.csv')) {
-    const text = typeof fileOrBuffer === 'string' ? fileOrBuffer : new TextDecoder().decode(fileOrBuffer)
+    const text = (typeof fileOrBuffer === 'string' ? fileOrBuffer : new TextDecoder().decode(fileOrBuffer)).replace(/^\ufeff/, '')
     return parseCsv(text)
   }
   return parseXlsx(fileOrBuffer)
@@ -1907,7 +1980,7 @@ function rowValue(row, candidates) {
   for (const candidate of candidates) {
     const cleanCandidate = normalizeHeader(candidate)
     const match = entries.find(([key]) => normalizeHeader(key) === cleanCandidate)
-    if (match) return textValue(match[1])
+    if (match) return importTextValue(match[1])
   }
   return ''
 }
@@ -1922,7 +1995,7 @@ function rowValueLoose(row, candidates) {
       const cleanKey = normalizeHeader(key)
       return cleanKey.includes(cleanCandidate) || cleanCandidate.includes(cleanKey)
     })
-    if (match) return textValue(match[1])
+    if (match) return importTextValue(match[1])
   }
   return ''
 }
@@ -2073,21 +2146,21 @@ async function handlePaymentFile(file) {
 }
 
 function normalizePhone(value) {
-  return String(value ?? '').replace(/\D/g, '')
+  return normalizeIdentifierText(value).replace(/\D/g, '')
 }
 
-const linePhoneCandidates = ['MSISDN', 'MSIDN', 'Linea celular', 'Telefono', 'Telefono linea', 'Numero de telefono', 'Numero celular', 'Numero', 'Linea', 'DN', 'Celular']
-const lineIccCandidates = ['ICCID', 'ICC', 'ICCID / ICC', 'SIM ICCID', 'SIM', 'Numero SIM', 'No SIM', 'Simcard', 'Chip', 'Numero chip', 'No chip', 'SIM ID', 'ID SIM']
-const lineImeiCandidates = ['IMEI', 'IMEI largo', 'IMEI corto', 'IMEI equipo', 'IMEI dispositivo', 'Equipo IMEI', 'Device IMEI', 'Dispositivo', 'UID', 'Identificador']
+const linePhoneCandidates = ['MSISDN', 'MSIDN', 'MSISDN linea', 'MSISDN number', 'Linea celular', 'Linea telefonica', 'Telefono', 'Telefono linea', 'Numero de telefono', 'Numero celular', 'Numero', 'Linea', 'Line', 'DN', 'Celular', 'Phone', 'Phone number', 'Mobile number']
+const lineIccCandidates = ['ICCID', 'ICC', 'ICCID / ICC', 'ICC ID', 'ICCID Luhn', 'SIM ICCID', 'SIM', 'Numero SIM', 'No SIM', 'Simcard', 'SIM card', 'Chip', 'Numero chip', 'No chip', 'SIM ID', 'ID SIM', 'SIM serial', 'Serial SIM']
+const lineImeiCandidates = ['IMEI', 'IMEI largo', 'IMEI completo', 'IMEI full', 'IMEI corto', 'IMEI equipo', 'IMEI dispositivo', 'Equipo IMEI', 'Device IMEI', 'Terminal IMEI', 'Dispositivo', 'UID', 'Identificador', 'Serial', 'Serial number', 'Device ID', 'Endpoint ID']
 const lineImeiIgnoredHeaders = ['imeisv', 'imei sv', 'imei lock', 'imei locked', 'lock imei']
 
 function normalizeIccid(value) {
-  const clean = textValue(value).replace(/\D/g, '')
-  return /^89\d{16,22}$/.test(clean) ? clean : textValue(value)
+  const clean = normalizeIdentifierText(value).replace(/\D/g, '')
+  return /^89\d{16,22}$/.test(clean) ? clean : normalizeIdentifierText(value)
 }
 
 function extractIccidFromText(value) {
-  const raw = textValue(value)
+  const raw = normalizeIdentifierText(value)
   const compact = raw.replace(/\D/g, '')
   if (/^89\d{16,22}$/.test(compact)) return compact
   const spaced = raw.match(/\b89(?:[\s-]?\d){16,22}\b/)
@@ -2103,7 +2176,7 @@ function rowCandidateValues(row, candidates, loose = false) {
         const cleanKey = normalizeHeader(key)
         return loose ? cleanKey.includes(cleanCandidate) || cleanCandidate.includes(cleanKey) : cleanKey === cleanCandidate
       })
-      .map(([, value]) => textValue(value))
+      .map(([, value]) => importTextValue(value))
       .filter(Boolean)
   })
 }
@@ -2121,7 +2194,7 @@ function extractIccidFromRow(row) {
 }
 
 function normalizePhoneCandidate(value) {
-  const clean = normalizePhone(value)
+  const clean = normalizePhone(normalizeIdentifierText(value))
   if (!clean || clean.startsWith('89')) return ''
 
   // Mexico/Telcel: guardar y comparar el telefono como 10 digitos nacionales.
@@ -2165,7 +2238,7 @@ function extractPhoneFromRow(row) {
 }
 
 function normalizeImeiCandidate(value) {
-  const clean = normalizePhone(value)
+  const clean = normalizePhone(normalizeIdentifierText(value))
   if (!clean || clean.startsWith('89')) return ''
   return clean.length >= 6 && clean.length <= 20 ? clean : ''
 }
@@ -2582,7 +2655,7 @@ function lineFromRow(row, index, label, options = {}) {
   const rowText = Object.values(row).join(' ')
   const renewalSignal = parseLineCustomerText(rowText)
   const type = rowValueLoose(row, ['Tipo', 'Tipo servicio', 'Servicio', 'Modalidad', 'Producto'])
-  const lineType = rowValueLoose(row, ['Proveedor', 'Proveedor linea', 'Tipo linea', 'Tipo de linea', 'Categoria linea', 'Categoria', 'Operador', 'Compania', 'Plan', 'Paquete'])
+  const lineType = rowValueLoose(row, ['Proveedor', 'Proveedora', 'Proveedor linea', 'Tipo linea', 'Tipo de linea', 'Categoria linea', 'Categoria', 'Operador', 'Compania', 'Plan', 'Paquete'])
   const model = rowValueLoose(row, ['Equipo', 'Equipos', 'Modelo', 'Modelo equipo', 'Tipo equipo'])
   const imei = extractImeiFromRow(row)
   const phone = extractPhoneFromRow(row)
@@ -2592,7 +2665,7 @@ function lineFromRow(row, index, label, options = {}) {
   const status = rowValueLoose(row, ['Estado', 'Estatus', 'Status', 'SIM Status', 'Lifecycle status', 'Connectivity status'])
   const notes = rowValueLoose(row, ['Notas', 'Comentario', 'Comentarios', 'Observaciones', 'Tags', 'Etiqueta', 'Etiquetas', 'Name', 'Nombre'])
   const renewalDate = renewalSignal?.renewalDate || rowValueLoose(row, ['Fecha renovacion', 'Renovacion', 'Vencimiento', 'Fecha vencimiento', 'Fecha pago', 'Proximo pago']) || ''
-  const carrier = rowValueLoose(row, ['Compania', 'Operador', 'Carrier', 'Proveedor', 'Red']) || options.defaultCarrier || ''
+  const carrier = rowValueLoose(row, ['Compania', 'Operador', 'Carrier', 'Proveedor', 'Proveedora', 'Red']) || options.defaultCarrier || ''
   const rowCompany = rowValueLoose(row, ['Cliente', 'Empresa', 'Razon social', 'Cuenta', 'Nombre cliente', 'Customer', 'Organization', 'Grupo', 'Grupos', 'Assigned to', 'Workspace'])
 
   return normalizeLine(
@@ -3442,19 +3515,22 @@ function lineFromRelationRecord(record, index) {
 }
 
 function relationRecordFromRow(row) {
+  const phone = rowValueLoose(row, linePhoneCandidates) || extractPhoneFromRow(row)
+  const iccid = rowValueLoose(row, lineIccCandidates) || extractIccidFromRow(row)
+  const imei = rowValueLoose(row, lineImeiCandidates) || extractImeiFromRow(row)
   return {
     relacion_id: rowValue(row, ['Relacion ID', 'Relación ID', 'relation_id', 'relacion_id']),
     linea_id: rowValue(row, ['Linea ID', 'Línea ID', 'linea_id', 'line_id']),
-    proveedor: rowValue(row, ['Proveedor', 'Provider']),
+    proveedor: rowValueLoose(row, ['Proveedor', 'Proveedora', 'Provider', 'Tipo linea', 'Tipo de linea', 'Operador']),
     estatus_servicio: rowValue(row, ['Estatus servicio', 'Status servicio', 'Service status', 'Estatus']),
     estatus_original: rowValue(row, ['Estatus original', 'Original status']),
-    telefono: rowValue(row, ['Telefono', 'Teléfono', 'TelÃ©fono', 'Linea celular', 'Línea celular', 'Linea telefónica', 'Phone', 'Numero telefono', 'Número de teléfono', 'Numero de telefono']),
-    msisdn: rowValue(row, ['MSISDN', 'MSIDN', 'MSISDN linea', 'MSISDN línea', 'MSISDN lÃ­nea', 'Linea MSISDN']),
+    telefono: phone,
+    msisdn: rowValueLoose(row, ['MSISDN', 'MSIDN', 'MSISDN linea', 'MSISDN línea', 'MSISDN lÃ­nea', 'Linea MSISDN', 'MSISDN number']) || phone,
     relacion_2023_msisdn: rowValue(row, ['Relacion 2023 MSISDN', 'Relación 2023 MSISDN', 'RelaciÃ³n 2023 MSISDN', 'relacion_2023_msisdn']),
-    iccid: rowValue(row, ['ICCID', 'ICC']),
-    iccid_luhn: rowValue(row, ['ICCID Luhn', 'ICCID LUHN']),
+    iccid,
+    iccid_luhn: rowValueLoose(row, ['ICCID Luhn', 'ICCID LUHN', 'ICCID / ICC']) || iccid,
     sim_ultimos4: rowValue(row, ['SIM ultimos 4', 'SIM últimos 4']),
-    imei: rowValue(row, ['IMEI']),
+    imei,
     imei_largo: rowValue(row, ['IMEI largo', 'IMEI Largo', 'IMEI completo', 'Long IMEI']),
     imei_corto: rowValue(row, ['IMEI corto', 'IMEI Corto', 'Short IMEI']),
     imei_1: rowValue(row, ['IMEI 1', 'IMEI1', 'imei_1']),
@@ -3494,7 +3570,15 @@ function relationPayloadToLines(payload) {
   if (payload?.version === 1 && payload?.alg === 'aes-256-gcm' && payload?.data) {
     throw new Error('El servidor entrego la base de lineas todavia cifrada; actualiza y reinicia el servidor.')
   }
-  const rows = Array.isArray(payload?.lineas) ? payload.lineas : []
+  const rows = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.lineas)
+      ? payload.lineas
+      : Array.isArray(payload?.lines)
+        ? payload.lines
+        : Array.isArray(payload?.state?.lines)
+          ? payload.state.lines
+          : []
   return rows.map((row, index) => {
     const relationShape = row?.proveedor || row?.provider || row?.relacion_id || row?.linea_id || row?.iccid_luhn || row?.equipo_wialon_cuenta || row?.cliente_fuente
     return relationShape ? lineFromRelationRecord(row, index) : normalizeLine(row, index)
@@ -3737,6 +3821,17 @@ async function handleLineFile(file) {
     return
   }
   const { lines: merged, imported, stats } = mergeLineRows(state.lines, parsed.rows, file.name, { allowImeiOnly: true, markMissing: true })
+  if (imported.length) {
+    try {
+      await savePrivateJson('lineas', {
+        source: file.name,
+        updatedAt: new Date().toISOString(),
+        lines: merged
+      })
+    } catch (error) {
+      console.warn(error)
+    }
+  }
   setState({
     lines: merged,
     lineImport: lineImportState(file.name, parsed.rows.length, imported, stats),
@@ -3755,6 +3850,17 @@ async function handleEmnifyFile(file) {
     forceLineType: 'emnify',
     defaultCarrier: 'Emnify'
   })
+  if (imported.length) {
+    try {
+      await savePrivateJson('lineas', {
+        source: `Emnify - ${file.name}`,
+        updatedAt: new Date().toISOString(),
+        lines: merged
+      })
+    } catch (error) {
+      console.warn(error)
+    }
+  }
   setState({
     lines: merged,
     lineImport: lineImportState(`Emnify - ${file.name}`, parsed.rows.length, imported, stats),
