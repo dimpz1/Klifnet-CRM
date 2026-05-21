@@ -134,14 +134,17 @@ function decryptBuffer(filePath) {
 }
 
 function readMaybeEncryptedBuffer(filePath) {
-  const raw = fs.readFileSync(filePath)
-  try {
-    const payload = JSON.parse(raw.toString('utf8'))
-    if (isEncryptedPayload(payload)) return decryptPayload(payload)
-  } catch {
-    // Plain binary/private files are allowed for local-only deployments.
+  let buffer = fs.readFileSync(filePath)
+  for (let depth = 0; depth < 4; depth += 1) {
+    try {
+      const payload = JSON.parse(buffer.toString('utf8'))
+      if (!isEncryptedPayload(payload)) return buffer
+      buffer = decryptPayload(payload)
+    } catch {
+      return buffer
+    }
   }
-  return raw
+  return buffer
 }
 
 function encryptJson(filePath, payload) {

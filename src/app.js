@@ -22,7 +22,7 @@ const paymentImportVersion = 4
 const lineAutoImportVersion = 14
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
-const lineRelationBaseVersion = 23
+const lineRelationBaseVersion = 24
 const standardMonthlyPriceVersion = 2
 const quoteDefaultsVersion = 8
 const standardMonthlyPrice = 297.36
@@ -3483,6 +3483,9 @@ function relationRecordsFromRows(rows) {
 }
 
 function relationPayloadToLines(payload) {
+  if (payload?.version === 1 && payload?.alg === 'aes-256-gcm' && payload?.data) {
+    throw new Error('El servidor entrego la base de lineas todavia cifrada; actualiza y reinicia el servidor.')
+  }
   const rows = Array.isArray(payload?.lineas) ? payload.lineas : []
   return rows.map(lineFromRelationRecord)
 }
