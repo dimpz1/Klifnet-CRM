@@ -39,6 +39,9 @@ const lineTypeOptions = [
   { value: 'emnify', label: 'Emnify' },
   { value: 'wemobile', label: 'WeMobile' }
 ]
+const quoteAttendantOptions = ['Felipe De Jesus Gomez Tirado', 'Isaac Gomez Estrada']
+const defaultEquipmentSeller = quoteAttendantOptions[0]
+const defaultNewEquipmentSeller = quoteAttendantOptions[1]
 
 const equipmentPageSize = 40
 const linePageSize = 40
@@ -259,11 +262,17 @@ const defaultQuote = {
   query: '',
   newCompanyName: '',
   clientName: '',
+  attendant: quoteAttendantOptions[0],
   equipmentCount: '',
   billingCycle: 'mensual',
   firstMonthFree: true,
   monthlyPricePerDevice: standardMonthlyPrice,
   annualPricePerDevice: 0,
+  lineCount: 0,
+  lineBillingCycle: 'anual',
+  lineMonthlyPrice: 0,
+  lineAnnualPrice: 550,
+  lineDescription: 'Linea celular M2M / datos',
   hardwareModel: 'Ruptela TRACE5',
   hardwareSupplier: 'Syscom',
   hardwareSyscomUrl: 'https://www.syscom.mx/products/197296',
@@ -314,7 +323,8 @@ const defaultNewLine = {
   status: 'activa',
   billingCycle: 'anual',
   renewalDate: '',
-  annualPrice: '',
+  annualPrice: '550',
+  soldBy: defaultNewEquipmentSeller,
   clientOnly: false,
   notes: ''
 }
@@ -344,6 +354,7 @@ const state = {
     imeiShort: '',
     deviceType: '',
     phone: '',
+    soldBy: defaultNewEquipmentSeller,
     agreedPrice: '',
     saleDate: '',
     priceNote: ''
@@ -456,6 +467,16 @@ function unique(values) {
   return Array.from(new Set(values.map((value) => textValue(value)).filter(Boolean)))
 }
 
+function normalizeSeller(value, fallback = defaultEquipmentSeller) {
+  const clean = textValue(value)
+  return quoteAttendantOptions.includes(clean) ? clean : fallback
+}
+
+function sellerSelectOptions(selectedValue) {
+  const selected = normalizeSeller(selectedValue)
+  return quoteAttendantOptions.map((name) => `<option value="${attr(name)}" ${selected === name ? 'selected' : ''}>${esc(name)}</option>`).join('')
+}
+
 function splitGroups(value) {
   return unique(String(value || '').split(/[,;|]/g))
 }
@@ -552,7 +573,8 @@ function normalizeDeviceIdentifiers(device) {
     lineOperator: importTextValue(device.lineOperator),
     lineCarrier: importTextValue(device.lineCarrier),
     linePhone: importTextValue(device.linePhone),
-    lineMatchSource: importTextValue(device.lineMatchSource)
+    lineMatchSource: importTextValue(device.lineMatchSource),
+    soldBy: normalizeSeller(device.soldBy || device.seller || device.vendedor, defaultEquipmentSeller)
   }
 }
 
@@ -579,6 +601,7 @@ function createManualDevice() {
     imeiLong: importTextValue(draft.imeiLong || draft.imei),
     imeiShort: importTextValue(draft.imeiShort) || deriveShortImei(draft.imeiLong || draft.imei),
     phone: importTextValue(draft.phone),
+    soldBy: normalizeSeller(draft.soldBy, defaultNewEquipmentSeller),
     lastMessage: '',
     createdAt: new Date().toISOString().slice(0, 10),
     groups: splitGroups(draft.groups),
@@ -606,7 +629,21 @@ function createManualDevice() {
       ...state.companyMeta,
       [company]: { ...blankMeta(company), ...(state.companyMeta[company] || {}) }
     },
-    newDevice: { company: '', groups: '', unitName: '', uid: '', imei: '', imeiLong: '', imeiShort: '', deviceType: '', phone: '', agreedPrice: '', saleDate: '', priceNote: '' },
+    newDevice: {
+      company: '',
+      groups: '',
+      unitName: '',
+      uid: '',
+      imei: '',
+      imeiLong: '',
+      imeiShort: '',
+      deviceType: '',
+      phone: '',
+      soldBy: defaultNewEquipmentSeller,
+      agreedPrice: '',
+      saleDate: '',
+      priceNote: ''
+    },
     notice: `Equipo agregado: ${unitName}`,
     view: 'equipos'
   })
@@ -957,6 +994,11 @@ function normalizeQuoteDefaults(parsedQuote = {}) {
     accessories,
     firstMonthFree: baseQuote.firstMonthFree !== false,
     monthlyPricePerDevice: Number(baseQuote.monthlyPricePerDevice ?? defaultQuote.monthlyPricePerDevice) || defaultQuote.monthlyPricePerDevice,
+    lineCount: Number(baseQuote.lineCount ?? defaultQuote.lineCount) || 0,
+    lineBillingCycle: normalizeCycle(baseQuote.lineBillingCycle || defaultQuote.lineBillingCycle),
+    lineMonthlyPrice: Number(baseQuote.lineMonthlyPrice ?? defaultQuote.lineMonthlyPrice) || 0,
+    lineAnnualPrice: Number(baseQuote.lineAnnualPrice ?? defaultQuote.lineAnnualPrice) || defaultQuote.lineAnnualPrice,
+    lineDescription: baseQuote.lineDescription || defaultQuote.lineDescription,
     hardwareModel:
       Number(baseQuote.hardwareCostPerDevice || 0) > 0 ? baseQuote.hardwareModel || defaultQuote.hardwareModel : defaultQuote.hardwareModel,
     hardwareSupplier: baseQuote.hardwareSupplier || defaultQuote.hardwareSupplier,
@@ -1484,6 +1526,7 @@ function normalizeRows(rows, mapping, recordState) {
       createdAt: get(row, 'createdAt'),
       groups: mappedGroups.length ? mappedGroups : inferred.groups,
       customFields: get(row, 'customFields'),
+      soldBy: defaultEquipmentSeller,
       billingCycle: 'mensual',
       annualMonth: String(new Date().getMonth() + 1),
       renewalDate: '',
@@ -1539,6 +1582,7 @@ function mergeDevices(previous, incoming) {
       agreedPrice: oldDevice.agreedPrice ?? oldDevice.pricePerDeviceOverride ?? '',
       saleDate: oldDevice.saleDate || '',
       priceNote: oldDevice.priceNote || '',
+      soldBy: normalizeSeller(oldDevice.soldBy || device.soldBy, defaultEquipmentSeller),
       recordState: changed ? 'actualizado' : 'vigente'
     }
   })
@@ -2495,6 +2539,7 @@ function normalizeLine(line, index = 0) {
     billingCycle: normalizeCycle(line.billingCycle || 'anual'),
     renewalDate: renewalSignal?.renewalDate || normalizeLineDate(line.renewalDate),
     annualPrice: line.annualPrice === '' || line.annualPrice === undefined ? '' : String(line.annualPrice),
+    soldBy: normalizeSeller(line.soldBy || line.seller || line.vendedor, defaultEquipmentSeller),
     clientOnly: Boolean(line.clientOnly),
     notes: importTextValue(line.notes),
     source: importTextValue(line.source) || 'manual',
@@ -2889,6 +2934,7 @@ function mergeLineRecord(oldLine, normalizedLine) {
     billingCycle: normalizedLine.billingCycle || oldLine.billingCycle,
     renewalDate: normalizedLine.renewalDate || oldLine.renewalDate,
     annualPrice: normalizedLine.annualPrice || oldLine.annualPrice,
+    soldBy: normalizeSeller(oldLine.soldBy || normalizedLine.soldBy, defaultEquipmentSeller),
     clientOnly: Boolean(oldLine.clientOnly || normalizedLine.clientOnly),
     notes: normalizedLine.notes || oldLine.notes,
     source: normalizedLine.source || oldLine.source,
@@ -2910,6 +2956,7 @@ function mergeLineRecord(oldLine, normalizedLine) {
     'billingCycle',
     'renewalDate',
     'annualPrice',
+    'soldBy',
     'clientOnly',
     'notes',
     'source',
@@ -3023,7 +3070,7 @@ function filteredLines() {
     const queryMatches =
       !query ||
       normalizeHeader(
-        `${line.company} ${line.phone} ${line.iccid} ${line.imei} ${lineTypeLabel(line.lineType)} ${line.carrier} ${line.plan} ${line.notes} ${lineMatchLabel(line)}`
+        `${line.company} ${line.phone} ${line.iccid} ${line.imei} ${lineTypeLabel(line.lineType)} ${line.carrier} ${line.plan} ${line.notes} ${lineSeller(line)} ${lineMatchLabel(line)}`
       ).includes(query)
     const iccMatches = !iccQuery || normalizeIdentifier(line.iccid).includes(iccQuery)
     return statusMatches && matchMatches && typeMatches && queryMatches && iccMatches
@@ -3435,6 +3482,7 @@ function reconcileRelationLine(currentLine, relationLine) {
     billingCycle: current.billingCycle || base.billingCycle,
     renewalDate: current.renewalDate || base.renewalDate,
     annualPrice: current.annualPrice || base.annualPrice,
+    soldBy: current.soldBy || base.soldBy,
     clientOnly: isBernardoLine(base) ? true : current.clientOnly && !current.imei ? true : base.clientOnly,
     notes: current.notes || base.notes,
     plan: base.plan || current.plan,
@@ -3688,6 +3736,7 @@ async function exportLinesXlsx() {
     'IMEI',
     'IMEI largo',
     'IMEI corto',
+    'Vendido por',
     'Operador',
     'Plan',
     'Estatus',
@@ -3708,6 +3757,7 @@ async function exportLinesXlsx() {
     line.imei,
     line.imeiLong || '',
     line.imeiShort || '',
+    lineSeller(line),
     line.carrier,
     line.plan,
     line.status,
@@ -3733,6 +3783,7 @@ async function exportLineMatchReportXlsx() {
     'IMEI',
     'IMEI largo',
     'IMEI corto',
+    'Vendido por',
     'Operador',
     'Plan',
     'Estatus',
@@ -3753,6 +3804,7 @@ async function exportLineMatchReportXlsx() {
       line.imei,
       line.imeiLong || '',
       line.imeiShort || '',
+      lineSeller(line),
       line.carrier,
       line.plan,
       line.status,
@@ -3837,7 +3889,7 @@ function filteredDevices() {
       normalizeHeader(
         `${device.company} ${device.groups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType} ${
           lineIccid || ''
-        } ${lineOperator || ''} ${lineCarrier || ''} ${linePhone || ''}`
+        } ${lineOperator || ''} ${lineCarrier || ''} ${linePhone || ''} ${deviceSeller(device)}`
       ).includes(query)
     return companyMatches && cycleMatches && queryMatches
   })
@@ -3853,7 +3905,7 @@ function filteredCobrosDevices() {
     const queryMatches =
       !query ||
       normalizeHeader(
-        `${device.company} ${deviceGroups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType}`
+        `${device.company} ${deviceGroups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType} ${deviceSeller(device)}`
       ).includes(query)
     return companyMatches && groupMatches && cycleMatches && queryMatches
   })
@@ -3876,7 +3928,7 @@ function billingFilterMatches(device) {
   const queryMatches =
     !query ||
     normalizeHeader(
-      `${device.company} ${deviceGroups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType}`
+      `${device.company} ${deviceGroups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType} ${deviceSeller(device)}`
     ).includes(query)
   return companyMatches && groupMatches && queryMatches
 }
@@ -3971,20 +4023,33 @@ function buildQuote() {
   const quote = state.quote
   const quantity = Number(quote.equipmentCount || 0) > 0 ? Number(quote.equipmentCount) : 0
   const cycle = quote.billingCycle === 'anual' ? 'anual' : quote.billingCycle === 'semestral' ? 'semestral' : 'mensual'
+  const lineQuantity = Number(quote.lineCount || 0) > 0 ? Number(quote.lineCount) : 0
+  const lineCycle = quote.lineBillingCycle === 'mensual' ? 'mensual' : quote.lineBillingCycle === 'semestral' ? 'semestral' : 'anual'
   const recurringUnitPrice =
     cycle === 'anual'
       ? Number(quote.annualPricePerDevice || 0) || Number(state.billing.annualPricePerDevice || 0)
       : cycle === 'semestral'
         ? Number(quote.annualPricePerDevice || 0) / 2 || Number(state.billing.annualPricePerDevice || 0) / 2 || Number(quote.monthlyPricePerDevice || 0) * 6
       : Number(quote.monthlyPricePerDevice || 0) || Number(state.billing.monthlyPricePerDevice || 0)
+  const lineRecurringUnitPrice =
+    lineCycle === 'mensual'
+      ? Number(quote.lineMonthlyPrice || 0)
+      : lineCycle === 'semestral'
+        ? Number(quote.lineAnnualPrice || 0) / 2
+        : Number(quote.lineAnnualPrice || 0)
   const hardwareUnitPrice = hardwareSalePriceFromQuote(quote)
   const installationUnitPrice = Number(quote.installationPricePerDevice || quote.setupPricePerDevice || installationPriceForZone(quote.installationZone))
   const travelFee = Number(quote.travelFee || 0)
   const monthlyUnitPrice = Number(quote.monthlyPricePerDevice || 0) || Number(state.billing.monthlyPricePerDevice || 0)
   const recurringGrossSubtotal = quantity * recurringUnitPrice
+  const lineRecurringGrossSubtotal = lineQuantity * lineRecurringUnitPrice
   const firstMonthDiscountUnit = quote.firstMonthFree === false ? 0 : cycle === 'mensual' ? recurringUnitPrice : monthlyUnitPrice
   const firstMonthDiscount = Math.min(recurringGrossSubtotal, quantity * firstMonthDiscountUnit)
-  const recurringSubtotal = Math.max(0, recurringGrossSubtotal - firstMonthDiscount)
+  const lineFirstMonthDiscountUnit = quote.firstMonthFree === false || lineCycle !== 'mensual' ? 0 : lineRecurringUnitPrice
+  const lineFirstMonthDiscount = Math.min(lineRecurringGrossSubtotal, lineQuantity * lineFirstMonthDiscountUnit)
+  const equipmentRecurringSubtotal = Math.max(0, recurringGrossSubtotal - firstMonthDiscount)
+  const lineRecurringSubtotal = Math.max(0, lineRecurringGrossSubtotal - lineFirstMonthDiscount)
+  const recurringSubtotal = equipmentRecurringSubtotal + lineRecurringSubtotal
   const hardwareSubtotal = quantity * hardwareUnitPrice
   const installationSubtotal = quantity * installationUnitPrice
   const accessoryRows = quoteAccessoryRows(quote)
@@ -4004,14 +4069,24 @@ function buildQuote() {
     clientName,
     company: selectedCompany,
     email: meta.email || '',
+    attendant: quoteAttendantOptions.includes(quote.attendant) ? quote.attendant : quoteAttendantOptions[0],
     cycle,
     quantity,
     description: quote.equipmentDescription || 'Equipos GPS / servicio de rastreo',
     firstMonthFree: quote.firstMonthFree !== false,
     firstMonthDiscountUnit,
     firstMonthDiscount,
+    equipmentRecurringSubtotal,
     recurringUnitPrice,
     recurringGrossSubtotal,
+    lineQuantity,
+    lineCycle,
+    lineDescription: quote.lineDescription || 'Linea celular M2M / datos',
+    lineRecurringUnitPrice,
+    lineRecurringGrossSubtotal,
+    lineFirstMonthDiscountUnit,
+    lineFirstMonthDiscount,
+    lineRecurringSubtotal,
     hardwareModel: quote.hardwareModel || 'GPS vehicular',
     hardwareSupplier: quote.hardwareSupplier || 'Syscom',
     hardwareSyscomUrl: quote.hardwareSyscomUrl || '',
@@ -4090,6 +4165,14 @@ function deviceRenewalLabel(device) {
   return `${day}/${month}/${year}`
 }
 
+function deviceSeller(device) {
+  return normalizeSeller(device?.soldBy || device?.seller || device?.vendedor, defaultEquipmentSeller)
+}
+
+function lineSeller(line) {
+  return normalizeSeller(line?.soldBy || line?.seller || line?.vendedor, defaultEquipmentSeller)
+}
+
 function deviceUnitPrice(device) {
   const agreedPrice = device.agreedPrice ?? device.pricePerDeviceOverride
   if (Number(agreedPrice) > 0) return Number(agreedPrice)
@@ -4127,6 +4210,29 @@ function lineUnitPrice(line) {
   return 0
 }
 
+function emptySellerMonthlyTotals() {
+  return Object.fromEntries(quoteAttendantOptions.map((seller) => [seller, 0]))
+}
+
+function emptySellerMonthlyCounts() {
+  return Object.fromEntries(quoteAttendantOptions.map((seller) => [seller, 0]))
+}
+
+function addSellerMonthly(row, seller, amount) {
+  const cleanSeller = normalizeSeller(seller)
+  row.sellerMonthlyTotals[cleanSeller] = Number(row.sellerMonthlyTotals[cleanSeller] || 0) + Number(amount || 0)
+  row.sellerMonthlyCounts[cleanSeller] = Number(row.sellerMonthlyCounts[cleanSeller] || 0) + 1
+}
+
+function billingSellerMonthlyTotals(rows) {
+  return rows.reduce((totals, row) => {
+    quoteAttendantOptions.forEach((seller) => {
+      totals[seller] = Number(totals[seller] || 0) + Number(row.sellerMonthlyTotals?.[seller] || 0)
+    })
+    return totals
+  }, emptySellerMonthlyTotals())
+}
+
 function billingLineFilterMatches(line) {
   const query = normalizeHeader(state.billingQuery)
   const device = matchLineDevice(line)
@@ -4137,7 +4243,7 @@ function billingLineFilterMatches(line) {
   const queryMatches =
     !query ||
     normalizeHeader(
-      `${companyName} ${line.company} ${line.phone} ${line.iccid} ${line.imei} ${lineTypeLabel(line.lineType)} ${line.carrier} ${line.plan} ${line.notes} ${device?.unitName || ''} ${
+      `${companyName} ${line.company} ${line.phone} ${line.iccid} ${line.imei} ${lineTypeLabel(line.lineType)} ${line.carrier} ${line.plan} ${line.notes} ${lineSeller(line)} ${device?.unitName || ''} ${
         device?.uid || ''
       } ${deviceImeiLong(device || {})} ${deviceImeiShort(device || {})}`
     ).includes(query)
@@ -4162,6 +4268,8 @@ function ensureBillingRow(rows, companyName, period) {
       equipmentCount: 0,
       lineCount: 0,
       billableCount: 0,
+      sellerMonthlyTotals: emptySellerMonthlyTotals(),
+      sellerMonthlyCounts: emptySellerMonthlyCounts(),
       subtotal: 0,
       tax: 0,
       total: 0,
@@ -4188,6 +4296,7 @@ function buildBillingRows() {
     const months = devicePaymentMonths(device)
     const shouldBill = cycle === 'mensual' || months.includes(String(periodMonth))
     const unitPrice = deviceUnitPrice(device)
+    const soldBy = deviceSeller(device)
 
     if (cycle === 'mensual') row.monthlyCount += 1
     if (cycle === 'anual' && shouldBill) row.annualCount += 1
@@ -4198,6 +4307,7 @@ function buildBillingRows() {
       row.equipmentCount += 1
       row.billableCount += 1
       row.subtotal += unitPrice
+      if (cycle === 'mensual') addSellerMonthly(row, soldBy, unitPrice)
       row.details.push({
         sourceType: 'Equipo Wialon',
         unitName: device.unitName,
@@ -4212,6 +4322,7 @@ function buildBillingRows() {
         paymentMonths: months,
         renewalDate: device.renewalDate || '',
         saleDate: device.saleDate || '',
+        soldBy,
         priceNote: device.priceNote || '',
         unitPrice
       })
@@ -4231,6 +4342,7 @@ function buildBillingRows() {
       const months = linePaymentMonths(line)
       const shouldBill = cycle === 'mensual' || months.includes(String(periodMonth))
       const unitPrice = lineUnitPrice(line)
+      const soldBy = lineSeller(line) || (matchedDevice ? deviceSeller(matchedDevice) : '')
 
       if (cycle === 'mensual' && shouldBill && unitPrice > 0) row.monthlyCount += 1
       if (cycle === 'anual' && shouldBill) row.annualCount += 1
@@ -4241,6 +4353,7 @@ function buildBillingRows() {
         row.lineCount += 1
         row.billableCount += 1
         row.subtotal += unitPrice
+        if (cycle === 'mensual') addSellerMonthly(row, soldBy, unitPrice)
         row.details.push({
           sourceType: 'Linea celular',
           unitName: matchedDevice?.unitName ? `${lineTypeLabel(line.lineType)} / ${matchedDevice.unitName}` : lineTypeLabel(line.lineType),
@@ -4255,6 +4368,7 @@ function buildBillingRows() {
           paymentMonths: months,
           renewalDate: line.renewalDate || '',
           saleDate: '',
+          soldBy,
           priceNote: [line.notes, matchedDevice && lineMatchMethod(line) === 'telefono' ? 'Ligada a Wialon por telefono' : ''].filter(Boolean).join(' | '),
           unitPrice
         })
@@ -4585,11 +4699,15 @@ function quoteTemplateProductRows(quote) {
   return compactTemplateRows(rows.filter((row) => Number(row.amount || 0) !== 0), 6)
 }
 
-function quoteTemplateRecurringRows(quote) {
+function quoteRecurringRows(quote) {
   const serviceName =
     quote.cycle === 'anual' ? 'Servicio anual por equipo' : quote.cycle === 'semestral' ? 'Servicio semestral por equipo' : 'Servicio mensual por equipo'
-  const rows = [
-    {
+  const lineServiceName =
+    quote.lineCycle === 'mensual' ? 'Servicio mensual de linea celular' : quote.lineCycle === 'semestral' ? 'Servicio semestral de linea celular' : 'Servicio anual de linea celular'
+  const rows = []
+
+  if (quote.quantity > 0) {
+    rows.push({
       product: 'REC',
       quantity: quote.quantity,
       description: serviceName,
@@ -4597,8 +4715,8 @@ function quoteTemplateRecurringRows(quote) {
       discount: '',
       unitPrice: quote.recurringUnitPrice,
       amount: quote.recurringGrossSubtotal
-    }
-  ]
+    })
+  }
 
   if (quote.firstMonthDiscount > 0) {
     rows.push({
@@ -4612,7 +4730,35 @@ function quoteTemplateRecurringRows(quote) {
     })
   }
 
-  return compactTemplateRows(rows.filter((row) => Number(row.amount || 0) !== 0), 3)
+  if (quote.lineQuantity > 0) {
+    rows.push({
+      product: 'LIN',
+      quantity: quote.lineQuantity,
+      description: quote.lineDescription || lineServiceName,
+      listPrice: quote.lineRecurringUnitPrice,
+      discount: '',
+      unitPrice: quote.lineRecurringUnitPrice,
+      amount: quote.lineRecurringGrossSubtotal
+    })
+  }
+
+  if (quote.lineFirstMonthDiscount > 0) {
+    rows.push({
+      product: 'PROMO',
+      quantity: quote.lineQuantity,
+      description: 'Primer mes gratis linea celular',
+      listPrice: -quote.lineFirstMonthDiscountUnit,
+      discount: '',
+      unitPrice: -quote.lineFirstMonthDiscountUnit,
+      amount: -quote.lineFirstMonthDiscount
+    })
+  }
+
+  return rows.filter((row) => Number(row.amount || 0) !== 0)
+}
+
+function quoteTemplateRecurringRows(quote) {
+  return compactTemplateRows(quoteRecurringRows(quote), 3)
 }
 
 function pdfClean(value) {
@@ -4715,7 +4861,7 @@ function buildQuotePdfBlob(quote, logo = null) {
   const pageWidth = 612
   const margin = 36
   const productRows = quoteTemplateProductRows(quote)
-  const recurringRows = quoteTemplateRecurringRows(quote)
+  const recurringRows = quoteRecurringRows(quote)
   const productSubtotal = quote.hardwareSubtotal + quote.accessorySubtotal + quote.installationSubtotal + quote.travelFee
 
   const color = (rgb) => rgb.map((part) => Number(part).toFixed(3)).join(' ')
@@ -4758,8 +4904,8 @@ function buildQuotePdfBlob(quote, logo = null) {
   line(margin, 670, pageWidth - margin, 670, border)
   text('EMPRESA:', 42, 650, 10)
   text(pdfTrim(quote.clientName, 32), 102, 650, 11, true)
-  text('ATENCION:', 42, 632, 10)
-  text('', 104, 632, 10)
+  text('ATIENDE:', 42, 632, 10)
+  text(pdfTrim(quote.attendant || '', 42), 104, 632, 10)
   text('PUESTO:', 42, 614, 10)
   text('EMAIL:', 352, 614, 10)
   text(pdfTrim(quote.email || '', 34), 400, 614, 10)
@@ -4891,7 +5037,8 @@ async function exportQuoteTemplateXlsx(quote) {
     ['H5', 'KLIFNET'],
     ['H11', ''],
     ['C6', quote.clientName],
-    ['C7', ''],
+    ['A7', 'ATIENDE:'],
+    ['C7', quote.attendant || ''],
     ['C8', ''],
     ['H7', ''],
     ['H8', quote.email || ''],
@@ -4955,6 +5102,7 @@ async function exportBillingXlsx() {
       'Equipos a facturar',
       'Lineas a facturar',
       'Total partidas',
+      ...quoteAttendantOptions.map((seller) => `Mensualidad ${seller}`),
       'Subtotal',
       'IVA',
       'Total',
@@ -4974,6 +5122,7 @@ async function exportBillingXlsx() {
       row.equipmentCount,
       row.lineCount || 0,
       row.billableCount || row.equipmentCount,
+      ...quoteAttendantOptions.map((seller) => row.sellerMonthlyTotals?.[seller] || 0),
       row.subtotal,
       row.tax,
       row.total,
@@ -4998,12 +5147,13 @@ async function exportBillingXlsx() {
       detail.renewalDate,
       detail.unitPrice,
       detail.saleDate,
+      detail.soldBy || '',
       detail.priceNote,
       row.periodLabel
     ])
   )
   const details = [
-    ['Empresa', 'Tipo partida', 'Equipo / Linea', 'UID', 'Telefono', 'ICCID', 'IMEI', 'IMEI largo', 'IMEI corto', 'Proveedora linea', 'Cobro', 'Meses pago', 'Fecha renovacion', 'Precio pactado/aplicado', 'Fecha venta', 'Nota precio', 'Periodo'],
+    ['Empresa', 'Tipo partida', 'Equipo / Linea', 'UID', 'Telefono', 'ICCID', 'IMEI', 'IMEI largo', 'IMEI corto', 'Proveedora linea', 'Cobro', 'Meses pago', 'Fecha renovacion', 'Precio pactado/aplicado', 'Fecha venta', 'Vendido por', 'Nota precio', 'Periodo'],
     ...detailRows
   ]
   await exportWorkbookXlsx(`prefacturacion-${getBillingPeriod().key}.xlsx`, [
@@ -5014,7 +5164,8 @@ async function exportBillingXlsx() {
 
 async function exportQuoteXlsx() {
   const quote = buildQuote()
-  if (!quote.quantity || (!quote.recurringUnitPrice && !quote.setupUnitPrice)) {
+  const quoteHasAmount = quote.quantity > 0 || quote.lineQuantity > 0 || quote.accessoryRows.length > 0 || quote.travelFee > 0
+  if (!quoteHasAmount || quote.total <= 0) {
     setState({ notice: 'Captura cantidad y precio para generar la cotizacion.', view: 'cotizaciones' })
     return
   }
@@ -5038,12 +5189,16 @@ async function exportQuoteXlsx() {
     ['Fecha', quote.date],
     ['Vigencia hasta', quote.expires],
     ['Cliente', quote.clientName],
+    ['Atiende', quote.attendant],
     ['Empresa registrada', quote.company || 'Prospecto'],
     ['Descripcion', quote.description],
     ['Email', quote.email],
     ['Moneda', quote.currency],
     ['Primer mes gratis', quote.firstMonthFree ? 'Si' : 'No'],
-    ['Descuento primer mes', quote.firstMonthDiscount],
+    ['Descuento primer mes', quote.firstMonthDiscount + quote.lineFirstMonthDiscount],
+    ['Lineas celulares', quote.lineQuantity],
+    ['Cobro linea', quote.lineCycle],
+    ['Precio linea aplicado', quote.lineRecurringUnitPrice],
     ['Modelo GPS', quote.hardwareModel],
     ['Proveedor GPS', quote.hardwareSupplier],
     ['URL proveedor GPS', quote.hardwareSyscomUrl],
@@ -5063,13 +5218,7 @@ async function exportQuoteXlsx() {
     ['Instalacion por equipo', quote.quantity, quote.installationUnitPrice, quote.installationSubtotal],
     ['Viaticos traslado tecnico', 1, quote.travelFee, quote.travelFee],
     ['Mensualidades'],
-    [
-      quote.cycle === 'anual' ? 'Servicio anual por equipo' : quote.cycle === 'semestral' ? 'Servicio semestral por equipo' : 'Servicio mensual por equipo',
-      quote.quantity,
-      quote.recurringUnitPrice,
-      quote.recurringGrossSubtotal
-    ],
-    ...(quote.firstMonthDiscount > 0 ? [['Primer mes gratis', quote.quantity, -quote.firstMonthDiscountUnit, -quote.firstMonthDiscount]] : []),
+    ...quoteRecurringRows(quote).map((row) => [row.description, row.quantity, row.unitPrice, row.amount]),
     [],
     ['Subtotal', '', '', quote.subtotal],
     ['IVA', '', '', quote.tax],
@@ -5114,6 +5263,10 @@ function metric(label, value, tone = 'default') {
   return `<div class="metric-card ${tone}"><span>${esc(label)}</span><strong>${Number(value).toLocaleString('es-MX')}</strong></div>`
 }
 
+function metricMoney(label, value, currency = state.billing.currency, tone = 'default') {
+  return `<div class="metric-card ${tone}"><span>${esc(label)}</span><strong>${money(value, currency)}</strong></div>`
+}
+
 function companyTable(companies) {
   const pagination = tablePaginationState(companies.length, state.companyPage)
   const pageCompanies = companies.slice(pagination.start, pagination.end)
@@ -5154,7 +5307,7 @@ function deviceTable(devices) {
       <table>
         <thead>
           <tr>
-            <th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>ICCID</th><th>Operadora</th><th>Linea / MSISDN</th><th>Telefono Wialon</th><th>Tipo</th><th>Cobro</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Origen</th><th>Ultimo mensaje</th><th>Estado</th>
+            <th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>ICCID</th><th>Operadora</th><th>Linea / MSISDN</th><th>Telefono Wialon</th><th>Tipo</th><th>Vendido por</th><th>Cobro</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Origen</th><th>Ultimo mensaje</th><th>Estado</th>
           </tr>
         </thead>
         <tbody>
@@ -5181,6 +5334,7 @@ function deviceTable(devices) {
                   <td>${linePhone ? `${esc(linePhone)}<small>${lineOperator ? esc(lineOperator) : 'Linea'}</small>` : '-'}</td>
                   <td><input value="${attr(device.phone || '')}" data-device="${attr(device.id)}" data-field="phone"></td>
                   <td><input value="${attr(device.deviceType || '')}" data-device="${attr(device.id)}" data-field="deviceType"></td>
+                  <td><select data-device="${attr(device.id)}" data-field="soldBy">${sellerSelectOptions(device.soldBy)}</select></td>
                   <td>
                     <select data-device="${attr(device.id)}" data-field="billingCycle">
                       <option value="mensual" ${deviceBillingCycle(device) === 'mensual' ? 'selected' : ''}>Mensual</option>
@@ -5213,7 +5367,7 @@ function billingTable() {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Empresa</th><th>Periodo</th><th>Mensuales</th><th>Anuales</th><th>Semestrales</th><th>Equipos</th><th>Lineas</th><th>Total partidas</th><th>Subtotal</th><th>IVA</th><th>Total</th><th>Estado</th></tr>
+          <tr><th>Empresa</th><th>Periodo</th><th>Mensuales</th><th>Anuales</th><th>Semestrales</th><th>Equipos</th><th>Lineas</th><th>Total partidas</th><th>Mensualidad Felipe</th><th>Mensualidad Isaac</th><th>Subtotal</th><th>IVA</th><th>Total</th><th>Estado</th></tr>
         </thead>
         <tbody>
           ${pageRows
@@ -5228,6 +5382,8 @@ function billingTable() {
                   <td>${row.equipmentCount}</td>
                   <td>${row.lineCount || 0}</td>
                   <td>${row.billableCount || row.equipmentCount}</td>
+                  <td>${money(row.sellerMonthlyTotals?.[quoteAttendantOptions[0]] || 0, state.billing.currency)}</td>
+                  <td>${money(row.sellerMonthlyTotals?.[quoteAttendantOptions[1]] || 0, state.billing.currency)}</td>
                   <td>${money(row.subtotal, state.billing.currency)}</td>
                   <td>${money(row.tax, state.billing.currency)}</td>
                   <td>${money(row.total, state.billing.currency)}</td>
@@ -5338,6 +5494,10 @@ function renderEquipos() {
         <label><span>IMEI corto</span><input value="${attr(d.imeiShort)}" data-new-device="imeiShort"></label>
         <label><span>Tipo</span><input value="${attr(d.deviceType)}" data-new-device="deviceType"></label>
         <label><span>Telefono Wialon</span><input value="${attr(d.phone)}" data-new-device="phone"></label>
+        <label>
+          <span>Vendido por</span>
+          <select data-new-device="soldBy">${sellerSelectOptions(d.soldBy || defaultNewEquipmentSeller)}</select>
+        </label>
         <label><span>Precio pactado</span><input type="number" min="0" step="0.01" value="${attr(d.agreedPrice)}" data-new-device="agreedPrice"></label>
         <label><span>Fecha venta</span><input type="date" value="${attr(d.saleDate)}" data-new-device="saleDate"></label>
         <label class="wide"><span>Nota precio</span><input value="${attr(d.priceNote)}" data-new-device="priceNote"></label>
@@ -5365,7 +5525,7 @@ function renderEquipos() {
 }
 
 function renderLineRows(lines) {
-  if (!lines.length) return '<tr><td colspan="17">Sin lineas en esta seccion.</td></tr>'
+  if (!lines.length) return '<tr><td colspan="18">Sin lineas en esta seccion.</td></tr>'
   return lines
     .map((line) => {
       const matchType = lineMatchType(line)
@@ -5383,6 +5543,7 @@ function renderLineRows(lines) {
           <td><input value="${attr(line.imei)}" data-line="${attr(line.id)}" data-line-field="imei"></td>
           <td><input value="${attr(line.imeiLong)}" data-line="${attr(line.id)}" data-line-field="imeiLong"></td>
           <td><input value="${attr(line.imeiShort)}" data-line="${attr(line.id)}" data-line-field="imeiShort"></td>
+          <td><select data-line="${attr(line.id)}" data-line-field="soldBy">${sellerSelectOptions(line.soldBy)}</select></td>
           <td><span class="pill ${pillClass}">${esc(lineMatchLabel(line))}</span></td>
           <td><span class="pill">${esc(providerDetectionLabel(line.providerDetectedBy))}</span></td>
           <td>
@@ -5427,7 +5588,7 @@ function renderLineTable(title, lines, tone = '') {
         <table>
           <thead>
             <tr>
-              <th>Empresa</th><th>Linea</th><th>Tipo linea</th><th>ICCID / ICC</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Match</th><th>Detectado por</th><th>Tipo</th><th>Estatus</th><th>Cobro</th><th>Renovacion</th><th>Precio anual</th><th>Operador</th><th>Plan</th><th>Notas</th>
+              <th>Empresa</th><th>Linea</th><th>Tipo linea</th><th>ICCID / ICC</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Vendido por</th><th>Match</th><th>Detectado por</th><th>Tipo</th><th>Estatus</th><th>Cobro</th><th>Renovacion</th><th>Precio pactado</th><th>Operador</th><th>Plan</th><th>Notas</th>
             </tr>
           </thead>
           <tbody>${renderLineRows(lines)}</tbody>
@@ -5491,6 +5652,10 @@ function renderLineas(companies) {
         </label>
         <label><span>ICCID / ICC</span><input value="${attr(d.iccid)}" data-new-line="iccid" placeholder="SIM"></label>
         <label><span>IMEI equipo</span><input value="${attr(d.imei)}" data-new-line="imei" placeholder="IMEI si aplica"></label>
+        <label>
+          <span>Vendido por</span>
+          <select data-new-line="soldBy">${sellerSelectOptions(d.soldBy || defaultNewEquipmentSeller)}</select>
+        </label>
         <label><span>Operador</span><input value="${attr(d.carrier)}" data-new-line="carrier" placeholder="Telcel, AT&T, etc."></label>
         <label><span>Plan</span><input value="${attr(d.plan)}" data-new-line="plan" placeholder="Plan / paquete"></label>
         <label>
@@ -5509,7 +5674,7 @@ function renderLineas(companies) {
           </select>
         </label>
         <label><span>Renovacion</span><input type="date" value="${attr(d.renewalDate)}" data-new-line="renewalDate"></label>
-        <label><span>Precio anual pactado</span><input type="number" min="0" step="0.01" value="${attr(d.annualPrice)}" data-new-line="annualPrice"></label>
+        <label><span>Precio pactado</span><input type="number" min="0" step="0.01" value="${attr(d.annualPrice)}" data-new-line="annualPrice"></label>
         <label class="check-field"><input type="checkbox" data-new-line="clientOnly" ${d.clientOnly ? 'checked' : ''}><span>Solo linea celular</span></label>
         <label class="wide"><span>Notas</span><input value="${attr(d.notes)}" data-new-line="notes" placeholder='Ej. bernardo 15 mayo 2026'></label>
         <button class="button primary" id="addManualLine">${icon('plus')}Agregar linea</button>
@@ -5571,6 +5736,7 @@ function renderFacturacion(stats, companies) {
   const period = getBillingPeriod()
   const previewRows = buildBillingRows()
   const periodStats = billingFilterStats(previewRows)
+  const sellerMonthlyTotals = billingSellerMonthlyTotals(previewRows)
   const projectedTotal = previewRows.reduce((sum, row) => sum + row.total, 0)
   const groups = billingGroups()
   const options = companyOptions(companies)
@@ -5613,6 +5779,8 @@ function renderFacturacion(stats, companies) {
         ${metric('Lineas periodo', periodStats.lines, 'amber')}
         ${metric('Anualidades fuera', periodStats.outsideAnnual, 'red')}
         ${metric('Empresas en lista', previewRows.length)}
+        ${metricMoney('Mensualidad Felipe', sellerMonthlyTotals[quoteAttendantOptions[0]] || 0, state.billing.currency)}
+        ${metricMoney('Mensualidad Isaac', sellerMonthlyTotals[quoteAttendantOptions[1]] || 0, state.billing.currency)}
       </section>
       <div class="billing-settings">
         <label><span>Precio mensual por equipo</span><input type="number" min="0" step="0.01" value="${attr(state.billing.monthlyPricePerDevice)}" data-billing="monthlyPricePerDevice"></label>
@@ -5735,6 +5903,12 @@ function renderCotizaciones(companies) {
             </select>
           </label>
           <label><span>Cliente / razon social</span><input value="${attr(q.clientName)}" data-quote="clientName" placeholder="${attr(quote.clientName)}"></label>
+          <label>
+            <span>Atiende</span>
+            <select data-quote="attendant">
+              ${quoteAttendantOptions.map((name) => `<option value="${attr(name)}" ${(q.attendant || defaultQuote.attendant) === name ? 'selected' : ''}>${esc(name)}</option>`).join('')}
+            </select>
+          </label>
           <label><span>Cantidad cotizada</span><input type="number" min="0" step="1" value="${attr(q.equipmentCount)}" data-quote="equipmentCount" placeholder="0"></label>
           <label>
             <span>Moneda</span>
@@ -5768,6 +5942,29 @@ function renderCotizaciones(companies) {
           <label class="check-field"><input type="checkbox" data-quote="firstMonthFree" ${q.firstMonthFree !== false ? 'checked' : ''}><span>Primer mes gratis</span></label>
           <div class="quote-total-chip"><span>Precio aplicado</span><strong>${money(quote.recurringUnitPrice, quote.currency)}</strong></div>
           <div class="quote-total-chip"><span>Descuento primer mes</span><strong>-${money(quote.firstMonthDiscount, quote.currency)}</strong></div>
+        </div>
+      </div>
+
+      <div class="quote-section">
+        <div class="quote-section-head">
+          <div><span>Lineas celulares</span><h2>Venta de lineas</h2></div>
+          <div class="quote-total-chip"><span>Subtotal</span><strong>${money(quote.lineRecurringSubtotal, quote.currency)}</strong></div>
+        </div>
+        <div class="quote-section-grid">
+          <label><span>Cantidad lineas</span><input type="number" min="0" step="1" value="${attr(q.lineCount)}" data-quote="lineCount" placeholder="0"></label>
+          <label>
+            <span>Cobro linea</span>
+            <select data-quote="lineBillingCycle">
+              <option value="anual" ${q.lineBillingCycle === 'anual' ? 'selected' : ''}>Anual</option>
+              <option value="semestral" ${q.lineBillingCycle === 'semestral' ? 'selected' : ''}>Semestral</option>
+              <option value="mensual" ${q.lineBillingCycle === 'mensual' ? 'selected' : ''}>Mensual</option>
+            </select>
+          </label>
+          <label><span>Precio mensual linea</span><input type="number" min="0" step="0.01" value="${attr(q.lineMonthlyPrice)}" data-quote="lineMonthlyPrice"></label>
+          <label><span>Precio anual linea</span><input type="number" min="0" step="0.01" value="${attr(q.lineAnnualPrice)}" data-quote="lineAnnualPrice"></label>
+          <label class="wide"><span>Descripcion linea</span><input value="${attr(q.lineDescription)}" data-quote="lineDescription"></label>
+          <div class="quote-total-chip"><span>Precio aplicado</span><strong>${money(quote.lineRecurringUnitPrice, quote.currency)}</strong></div>
+          <div class="quote-total-chip"><span>Descuento linea</span><strong>-${money(quote.lineFirstMonthDiscount, quote.currency)}</strong></div>
         </div>
       </div>
 
@@ -5850,7 +6047,7 @@ function renderCotizaciones(companies) {
       </div>
 
       <div class="billing-summary">
-        <div>${icon('file-text')}<span>${esc(quote.clientName)} - ${quote.quantity || 0} equipos - ${quote.cycle}</span></div>
+        <div>${icon('file-text')}<span>${esc(quote.clientName)} - ${quote.quantity || 0} equipos / ${quote.lineQuantity || 0} lineas</span></div>
         <strong>${money(quote.total, quote.currency)}</strong>
       </div>
 
@@ -5893,22 +6090,17 @@ function renderCotizaciones(companies) {
               <td>${money(quote.travelFee, quote.currency)}</td>
             </tr>
             <tr class="section-row"><td colspan="4">Mensualidades</td></tr>
-            <tr>
-              <td>${quote.cycle === 'anual' ? 'Servicio anual por equipo' : quote.cycle === 'semestral' ? 'Servicio semestral por equipo' : 'Servicio mensual por equipo'}</td>
-              <td>${quote.quantity}</td>
-              <td>${money(quote.recurringUnitPrice, quote.currency)}</td>
-              <td>${money(quote.recurringGrossSubtotal, quote.currency)}</td>
-            </tr>
-            ${
-              quote.firstMonthDiscount > 0
-                ? `<tr>
-                    <td>Primer mes gratis</td>
-                    <td>${quote.quantity}</td>
-                    <td>-${money(quote.firstMonthDiscountUnit, quote.currency)}</td>
-                    <td>-${money(quote.firstMonthDiscount, quote.currency)}</td>
+            ${quoteRecurringRows(quote)
+              .map(
+                (row) => `
+                  <tr>
+                    <td>${esc(row.description)}</td>
+                    <td>${row.quantity}</td>
+                    <td>${money(row.unitPrice, quote.currency)}</td>
+                    <td>${money(row.amount, quote.currency)}</td>
                   </tr>`
-                : ''
-            }
+              )
+              .join('')}
             <tr>
               <td colspan="3"><strong>IVA</strong></td>
               <td>${money(quote.tax, quote.currency)}</td>
@@ -5962,7 +6154,7 @@ function renderCobros(companies) {
       <div class="table-wrap devices-table">
         <table>
           <thead>
-            <tr><th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Origen</th><th>Cobro</th><th>Fecha renovacion</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Estado</th></tr>
+            <tr><th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Origen</th><th>Vendido por</th><th>Cobro</th><th>Fecha renovacion</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Estado</th></tr>
           </thead>
           <tbody>
             ${pageDevices
@@ -5977,6 +6169,7 @@ function renderCobros(companies) {
                     <td>${esc(deviceImeiLong(device) || '-')}</td>
                     <td>${esc(deviceImeiShort(device) || '-')}</td>
                     <td><span class="pill ${isImportedWialonDevice(device) ? 'ok' : 'warn'}">${isImportedWialonDevice(device) ? 'Wialon' : 'Manual'}</span></td>
+                    <td><select data-device-billing="${attr(device.id)}" data-billing-field="soldBy">${sellerSelectOptions(device.soldBy)}</select></td>
                     <td>
                       <select data-device-billing="${attr(device.id)}" data-billing-field="billingCycle">
                         <option value="mensual" ${deviceBillingCycle(device) === 'mensual' ? 'selected' : ''}>Mensual</option>
@@ -6421,10 +6614,12 @@ function bindEvents() {
   })
 
   document.querySelectorAll('[data-new-device]').forEach((input) => {
-    input.addEventListener('input', () => {
+    const saveNewDeviceDraft = () => {
       state.newDevice = { ...state.newDevice, [input.dataset.newDevice]: input.value }
       persistState()
-    })
+    }
+    input.addEventListener('input', saveNewDeviceDraft)
+    input.addEventListener('change', saveNewDeviceDraft)
   })
 
   document.getElementById('addManualDevice')?.addEventListener('click', createManualDevice)
@@ -6641,6 +6836,9 @@ function bindEvents() {
       'equipmentCount',
       'monthlyPricePerDevice',
       'annualPricePerDevice',
+      'lineCount',
+      'lineMonthlyPrice',
+      'lineAnnualPrice',
       'hardwareCostPerDevice',
       'hardwareDiscountPercent',
       'hardwareMarginPercent',
@@ -6848,6 +7046,7 @@ function applySavedState(parsed = {}) {
         agreedPrice: '',
         saleDate: '',
         priceNote: '',
+        soldBy: defaultNewEquipmentSeller,
         ...(parsed.newDevice || {})
       },
       newLine: {

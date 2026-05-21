@@ -16,6 +16,7 @@ yarn-error.log*
 Thumbs.db
 *.tmp
 *.temp
+Codex/
 
 # Configuracion local / secretos
 .env
