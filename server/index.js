@@ -135,7 +135,8 @@ function decryptBuffer(filePath) {
 
 function readMaybeEncryptedBuffer(filePath, options = {}) {
   let buffer = fs.readFileSync(filePath)
-  for (let depth = 0; depth < 4; depth += 1) {
+  const maxDepth = 50
+  for (let depth = 0; depth < maxDepth; depth += 1) {
     try {
       const payload = JSON.parse(buffer.toString('utf8'))
       if (!isEncryptedPayload(payload)) return buffer
@@ -149,6 +150,7 @@ function readMaybeEncryptedBuffer(filePath, options = {}) {
       return buffer
     }
   }
+  if (options.strict) throw new Error(`${path.basename(filePath)} sigue cifrada despues de ${maxDepth} capas; vuelve a cargar la base de lineas desde el CRM.`)
   return buffer
 }
 
