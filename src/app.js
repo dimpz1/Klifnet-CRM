@@ -1167,7 +1167,15 @@ function setState(patch, shouldRender = true) {
 
 async function fetchPrivateFile(kind) {
   const response = await fetch(`${privateFileUrl}?kind=${encodeURIComponent(kind)}`, { cache: 'no-store' })
-  if (!response.ok) throw new Error(`No se pudo abrir la base privada: ${kind}.`)
+  if (!response.ok) {
+    let detail = ''
+    try {
+      detail = (await response.json()).error || ''
+    } catch {
+      detail = ''
+    }
+    throw new Error(detail || `No se pudo abrir la base privada: ${kind}.`)
+  }
   return response.arrayBuffer()
 }
 

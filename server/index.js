@@ -133,13 +133,18 @@ function decryptBuffer(filePath) {
   return decryptPayload(payload)
 }
 
-function readMaybeEncryptedBuffer(filePath) {
+function readMaybeEncryptedBuffer(filePath, options = {}) {
   let buffer = fs.readFileSync(filePath)
   for (let depth = 0; depth < 4; depth += 1) {
     try {
       const payload = JSON.parse(buffer.toString('utf8'))
       if (!isEncryptedPayload(payload)) return buffer
-      buffer = decryptPayload(payload)
+      try {
+        buffer = decryptPayload(payload)
+      } catch (error) {
+        if (options.strict) throw new Error(`No se pudo descifrar ${path.basename(filePath)} con la llave local.`)
+        return buffer
+      }
     } catch {
       return buffer
     }
@@ -680,6 +685,35 @@ function privateFilePath(kind, options = {}) {
   return path.join(privateFilesDir, existing || mapped[0])
 }
 
+function privateFileCandidates(kind) {
+  const mapped = privateFileMap[kind]
+  if (!mapped) return []
+  return (Array.isArray(mapped) ? mapped : [mapped]).map((fileName) => path.join(privateFilesDir, fileName))
+}
+
+function readPrivateFile(kind) {
+  const candidates = privateFileCandidates(kind).filter((filePath) => fs.existsSync(filePath))
+  let lastError = ''
+  for (const filePath of candidates) {
+    try {
+      const buffer = readMaybeEncryptedBuffer(filePath, { strict: true })
+      if (kind === 'lineas') {
+        const payload = JSON.parse(buffer.toString('utf8'))
+        if (!Array.isArray(payload?.lineas)) {
+          lastError = `${path.basename(filePath)} no trae lineas[].`
+          continue
+        }
+      }
+      return { buffer, filePath }
+    } catch (error) {
+      lastError = error.message || String(error)
+    }
+  }
+  const error = new Error(lastError || 'Base privada no encontrada.')
+  error.statusCode = candidates.length ? 409 : 404
+  throw error
+}
+
 function writeEncryptedUpload(category, fileName, data) {
   const extension = path.extname(fileName)
   const baseName = path.basename(fileName, extension)
@@ -953,12 +987,13 @@ async function handleApi(req, res, url) {
 
     if (url.pathname === '/api/private-file' && req.method === 'GET') {
       const kind = url.searchParams.get('kind')
-      const filePath = privateFilePath(kind)
-      if (!filePath || !fs.existsSync(filePath)) {
-        sendJson(res, 404, { ok: false, error: 'Base privada no encontrada.' })
+      try {
+        const file = readPrivateFile(kind)
+        sendBuffer(res, 200, file.buffer, binaryTypes[kind] || 'application/octet-stream')
+      } catch (error) {
+        sendJson(res, error.statusCode || 500, { ok: false, error: error.message || 'No se pudo abrir la base privada.' })
         return
       }
-      sendBuffer(res, 200, readMaybeEncryptedBuffer(filePath), binaryTypes[kind] || 'application/octet-stream')
       return
     }
 
