@@ -39,6 +39,11 @@ body.has-floating-table-scrollbar .app-shell {
   padding-bottom: 76px;
 }
 
+.app-shell.view-lineas,
+body.has-floating-table-scrollbar .app-shell.view-lineas {
+  padding-bottom: 0;
+}
+
 button,
 input,
 select {
@@ -245,6 +250,11 @@ h2 {
   border-radius: 8px;
   background: var(--surface);
   box-shadow: 0 8px 18px rgba(16, 16, 16, 0.07);
+}
+
+.app-shell.view-lineas .topbar,
+.app-shell.view-lineas .tabs {
+  position: static;
 }
 
 .tabs button {
@@ -729,6 +739,162 @@ tbody tr:focus-within {
   gap: 8px;
 }
 
+.screen-fit-view {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  overflow: visible;
+}
+
+.screen-fit-view > *,
+.workspace-head,
+.lineas-fit > .line-section {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.workspace-head {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 6px;
+  display: grid;
+  gap: 6px;
+}
+
+.compact-metrics {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(112px, 1fr));
+  gap: 6px;
+}
+
+.compact-metric {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--black);
+  border-radius: 7px;
+  background: var(--surface);
+  padding: 5px 7px;
+}
+
+.compact-metric.amber {
+  border-left-color: var(--amber);
+  background: #fff8e8;
+}
+
+.compact-metric.red {
+  border-left-color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.compact-metric span,
+.provider-chip span,
+.workspace-filters span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 850;
+  line-height: 1.1;
+  margin-bottom: 2px;
+  text-transform: uppercase;
+}
+
+.compact-metric strong {
+  display: block;
+  color: var(--black);
+  font-size: 1.12rem;
+  line-height: 1;
+}
+
+.provider-chip-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(176px, 1fr));
+  gap: 6px;
+}
+
+.provider-chip {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--black);
+  border-radius: 7px;
+  background: var(--surface);
+  padding: 5px 7px;
+}
+
+.provider-chip strong {
+  display: inline-block;
+  color: var(--black);
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.provider-chip small {
+  margin-top: 2px;
+  max-width: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.7rem;
+}
+
+.workspace-actions {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(142px, 1fr));
+  gap: 6px;
+}
+
+.workspace-actions .button {
+  min-height: 30px;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.workspace-filters {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.7fr) minmax(150px, 0.82fr) minmax(130px, 0.72fr) minmax(260px, 1.1fr) minmax(220px, 0.95fr) minmax(96px, 0.42fr);
+  gap: 6px;
+  align-items: end;
+}
+
+.workspace-filters label {
+  min-width: 0;
+}
+
+.workspace-filters input,
+.workspace-filters select {
+  min-height: 30px;
+  padding: 5px 8px;
+}
+
+.workspace-filters .search-box {
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+}
+
+.workspace-filters .filter-count {
+  min-width: 0;
+  min-height: 42px;
+  padding: 6px 8px;
+}
+
+.lineas-fit .compact-panel summary {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 0.88rem;
+}
+
+.lineas-fit .compact-panel[open] {
+  overflow: auto;
+  max-height: min(52vh, 430px);
+}
+
+.lineas-fit > .line-section {
+  min-height: 0;
+  overflow: visible;
+}
+
 .line-profile-card,
 .line-section {
   border: 1px solid var(--line);
@@ -796,6 +962,40 @@ tbody tr:focus-within {
   border-radius: 0 0 8px 8px;
 }
 
+.lineas-fit .line-section-head {
+  position: sticky;
+  top: 64px;
+  z-index: 39;
+  min-height: 36px;
+  padding: 6px 9px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: 0 7px 18px rgba(16, 16, 16, 0.08);
+}
+
+.lineas-fit .line-section-head strong {
+  min-width: 44px;
+  min-height: 26px;
+  font-size: 0.9rem;
+}
+
+.lineas-fit .line-section .table-wrap {
+  min-height: 0;
+  max-height: none;
+}
+
+.lineas-fit .devices-table input,
+.lineas-fit .devices-table select {
+  min-width: 128px;
+  min-height: 30px;
+  padding: 5px 7px;
+}
+
+.lineas-fit th {
+  top: 102px;
+  z-index: 2;
+}
+
 .compact-panel {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -835,6 +1035,33 @@ tbody tr:focus-within {
   z-index: 40;
   border-left: 5px solid var(--brand);
   box-shadow: 0 8px 20px rgba(16, 16, 16, 0.1);
+}
+
+.app-shell.view-lineas .sticky-pager {
+  top: 8px;
+}
+
+.lineas-fit .pager {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: center;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.lineas-fit .pager-controls {
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.lineas-fit .pager-page,
+.lineas-fit .pager-gap,
+.lineas-fit .pager .icon-button {
+  min-width: 30px;
+  min-height: 30px;
 }
 
 .pager-summary {
@@ -1006,6 +1233,41 @@ small {
 }
 
 @media (max-width: 1080px) {
+  .compact-metrics,
+  .provider-chip-row,
+  .workspace-actions,
+  .workspace-filters {
+    display: flex;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: thin;
+  }
+
+  .compact-metric {
+    flex: 0 0 118px;
+  }
+
+  .provider-chip {
+    flex: 0 0 156px;
+  }
+
+  .workspace-actions .button {
+    flex: 0 0 156px;
+  }
+
+  .workspace-filters label {
+    flex: 0 0 150px;
+  }
+
+  .workspace-filters .search-box {
+    flex: 0 0 260px;
+    width: 260px;
+  }
+
+  .workspace-filters .filter-count {
+    flex: 0 0 96px;
+  }
+
   .status-strip,
   .metric-grid,
   .mapping-grid,

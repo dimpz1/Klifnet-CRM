@@ -5479,6 +5479,14 @@ function metricMoney(label, value, currency = state.billing.currency, tone = 'de
   return `<div class="metric-card ${tone}"><span>${esc(label)}</span><strong>${money(value, currency)}</strong></div>`
 }
 
+function compactMetric(label, value, tone = '') {
+  return `<div class="compact-metric ${tone}"><span>${esc(label)}</span><strong>${Number(value || 0).toLocaleString('es-MX')}</strong></div>`
+}
+
+function compactProviderChip(group) {
+  return `<div class="provider-chip"><span>${esc(group.label)}</span><strong>${group.lines.length.toLocaleString('es-MX')}</strong><small>${esc(lineProviderStatusSummary(group))}</small></div>`
+}
+
 function companyTable(companies) {
   const pagination = tablePaginationState(companies.length, state.companyPage)
   const pageCompanies = companies.slice(pagination.start, pagination.end)
@@ -5830,70 +5838,83 @@ function renderLineas(companies) {
   const d = { ...state.newLine, status: normalizeLineStatus(state.newLine.status) }
   const options = lineCompanyOptions(companies)
   return `
-    <section class="billing-layout">
+    <section class="screen-fit-view lineas-fit">
       ${renderPagination(lines.length, pagination, { sticky: true })}
-      <details class="compact-panel">
-        <summary>${icon('bar-chart-3')}Resumen de lineas y proveedoras</summary>
-        <section class="metric-grid billing-metrics">
-          ${metric('Lineas', stats.total)}
-          ${metric('Activas', stats.active)}
-          ${metric('Desactivadas', stats.inactive, 'red')}
-          ${metric('Con equipo', stats.matched)}
-          ${metric('Solo lineas', stats.clientOnly, 'amber')}
-          ${metric('No asignables', stats.exempt, 'amber')}
-          ${metric('Sin match', stats.unmatched, 'red')}
-        </section>
-        <section class="line-profile-grid">
-          ${providerGroups
-            .map(
-              (group) => `
-                <div class="line-profile-card">
-                  <span>Proveedora</span>
-                  <strong>${esc(group.label)}</strong>
-                  <div><b>${group.lines.length}</b> lineas</div>
-                  <small>${esc(lineProviderStatusSummary(group))}</small>
-                </div>`
-            )
-            .join('')}
-        </section>
-      </details>
-      <details class="compact-panel">
-        <summary>${icon('plus')}Alta manual de linea</summary>
-        <div class="billing-settings">
-          <label>
-            <span>Empresa / Cliente</span>
-            <input list="lineCompanyList" value="${attr(d.company)}" data-new-line="company" placeholder="Cliente">
-          </label>
-          <label><span>Linea celular</span><input value="${attr(d.phone)}" data-new-line="phone" placeholder="Numero"></label>
-          <label>
-            <span>Tipo linea</span>
-            <select data-new-line="lineType">
-              ${lineTypeOptions.map((option) => `<option value="${attr(option.value)}" ${normalizeLineType(d.lineType) === option.value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}
-            </select>
-          </label>
-          <label><span>ICCID / ICC</span><input value="${attr(d.iccid)}" data-new-line="iccid" placeholder="SIM"></label>
-          <label><span>IMEI equipo</span><input value="${attr(d.imei)}" data-new-line="imei" placeholder="IMEI si aplica"></label>
-          <label>
-            <span>Vendido por</span>
-            <select data-new-line="soldBy">${sellerSelectOptions(d.soldBy || defaultNewEquipmentSeller)}</select>
-          </label>
-          <label><span>Operador</span><input value="${attr(d.carrier)}" data-new-line="carrier" placeholder="Telcel, AT&T, etc."></label>
-          <label><span>Plan</span><input value="${attr(d.plan)}" data-new-line="plan" placeholder="Plan / paquete"></label>
+      <section class="workspace-head">
+        <div class="compact-metrics">
+          ${compactMetric('Lineas', stats.total)}
+          ${compactMetric('Activas', stats.active)}
+          ${compactMetric('Desactivadas', stats.inactive, 'red')}
+          ${compactMetric('Con equipo', stats.matched)}
+          ${compactMetric('Solo lineas', stats.clientOnly, 'amber')}
+          ${compactMetric('No asignables', stats.exempt, 'amber')}
+          ${compactMetric('Sin match', stats.unmatched, 'red')}
+        </div>
+        <div class="provider-chip-row">
+          ${providerGroups.map(compactProviderChip).join('')}
+        </div>
+        <div class="workspace-actions">
+          <button class="button primary" id="uploadLineFile">${icon('upload')}Importar lineas XLSX</button>
+          <button class="button" id="uploadEmnifyFile">${icon('cloud-upload')}Importar Emnify</button>
+          <button class="button" id="loadRelationLines">${icon('database')}Base cifrada</button>
+          <button class="button" id="exportLinesXlsx">${icon('download')}Exportar</button>
+          <button class="button" id="exportLineMatchReportXlsx">${icon('file-text')}Reporte match</button>
+        </div>
+        <div class="workspace-filters">
           <label>
             <span>Estatus</span>
-            <select data-new-line="status">
-              <option value="activa" ${d.status === 'activa' ? 'selected' : ''}>Activa</option>
-              <option value="desactivada" ${d.status === 'desactivada' ? 'selected' : ''}>Desactivada</option>
+            <select id="lineStatusFilter">
+              <option value="">Todos</option>
+              <option value="activa" ${state.lineStatusFilter === 'activa' ? 'selected' : ''}>Activas</option>
+              <option value="desactivada" ${state.lineStatusFilter === 'desactivada' ? 'selected' : ''}>Desactivadas</option>
+              <option value="suspendida" ${state.lineStatusFilter === 'suspendida' ? 'selected' : ''}>Suspendidas</option>
+              <option value="emitida" ${state.lineStatusFilter === 'emitida' ? 'selected' : ''}>Emitidas</option>
             </select>
           </label>
           <label>
-            <span>Cobro</span>
-            <select data-new-line="billingCycle">
-              <option value="anual" ${d.billingCycle === 'anual' ? 'selected' : ''}>Anual</option>
-              <option value="semestral" ${d.billingCycle === 'semestral' ? 'selected' : ''}>Semestral</option>
-              <option value="mensual" ${d.billingCycle === 'mensual' ? 'selected' : ''}>Mensual</option>
+            <span>Proveedora</span>
+            <select id="lineTypeFilter">
+              <option value="">Todas</option>
+              ${lineTypeOptions.map((option) => `<option value="${attr(option.value)}" ${state.lineTypeFilter === option.value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}
             </select>
           </label>
+          <label>
+            <span>Match</span>
+            <select id="lineMatchFilter">
+              <option value="">Todos</option>
+              <option value="equipo" ${state.lineMatchFilter === 'equipo' ? 'selected' : ''}>Con equipo GPS</option>
+              <option value="solo_linea" ${state.lineMatchFilter === 'solo_linea' ? 'selected' : ''}>Solo linea celular</option>
+              <option value="no_asignada" ${state.lineMatchFilter === 'no_asignada' ? 'selected' : ''}>No asignables Wialon</option>
+              <option value="sin_match" ${state.lineMatchFilter === 'sin_match' ? 'selected' : ''}>Sin match</option>
+            </select>
+          </label>
+          <label class="search-box billing-search">${icon('search')}<input id="lineSearchInput" value="${attr(state.lineQuery)}" placeholder="Buscar ICC, IMEI o linea"></label>
+          <label class="search-box billing-search">${icon('scan-search')}<input id="lineIccSearchInput" value="${attr(state.lineIccQuery)}" placeholder="Solo ICCID"></label>
+          <div class="filter-count"><span>Filtradas</span><strong>${lines.length}</strong></div>
+        </div>
+      </section>
+      <datalist id="lineCompanyList">
+        ${options.map((company) => `<option value="${attr(company)}"></option>`).join('')}
+      </datalist>
+      <details class="compact-panel line-meta-panel">
+        <summary>${icon('info')}Detalles, reglas y alta manual</summary>
+        ${
+          state.lineImport
+            ? `<div class="notice">Ultima base de lineas: ${esc(state.lineImport.source)} (${state.lineImport.imported} lineas, ${state.lineImport.iccDetected || 0} con ICC), ${state.lineImport.matched} con equipo, ${state.lineImport.clientOnly} solo linea, ${state.lineImport.exempt || 0} no asignables, ${state.lineImport.unmatched} sin match accionable.</div>`
+            : '<div class="notice">Importa la base de lineas activas para cruzarlas contra IMEI o contra el telefono Wialon. Para Bernardo tambien lee renovaciones escritas como: bernardo 15 mayo 2026.</div>'
+        }
+        <div class="notice">Clasificacion automatica: archivo/base con proveedor explicito manda; si no hay proveedor, 8934 y 8949 = Emnify, 8952 sin telefono = Emprenet y 8952 con telefono = Telcel. El cruce con Wialon usa IMEI, UID y telefono; Bernardo/Berna se conserva como solo linea, y las Emnify desactivadas/deleted/disponibles sin asignar no cuentan como sin match.</div>
+        <div class="billing-settings">
+          <label><span>Empresa / Cliente</span><input list="lineCompanyList" value="${attr(d.company)}" data-new-line="company" placeholder="Cliente"></label>
+          <label><span>Linea celular</span><input value="${attr(d.phone)}" data-new-line="phone" placeholder="Numero"></label>
+          <label><span>Tipo linea</span><select data-new-line="lineType">${lineTypeOptions.map((option) => `<option value="${attr(option.value)}" ${normalizeLineType(d.lineType) === option.value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}</select></label>
+          <label><span>ICCID / ICC</span><input value="${attr(d.iccid)}" data-new-line="iccid" placeholder="SIM"></label>
+          <label><span>IMEI equipo</span><input value="${attr(d.imei)}" data-new-line="imei" placeholder="IMEI si aplica"></label>
+          <label><span>Vendido por</span><select data-new-line="soldBy">${sellerSelectOptions(d.soldBy || defaultNewEquipmentSeller)}</select></label>
+          <label><span>Operador</span><input value="${attr(d.carrier)}" data-new-line="carrier" placeholder="Telcel, AT&T, etc."></label>
+          <label><span>Plan</span><input value="${attr(d.plan)}" data-new-line="plan" placeholder="Plan / paquete"></label>
+          <label><span>Estatus</span><select data-new-line="status"><option value="activa" ${d.status === 'activa' ? 'selected' : ''}>Activa</option><option value="desactivada" ${d.status === 'desactivada' ? 'selected' : ''}>Desactivada</option></select></label>
+          <label><span>Cobro</span><select data-new-line="billingCycle"><option value="anual" ${d.billingCycle === 'anual' ? 'selected' : ''}>Anual</option><option value="semestral" ${d.billingCycle === 'semestral' ? 'selected' : ''}>Semestral</option><option value="mensual" ${d.billingCycle === 'mensual' ? 'selected' : ''}>Mensual</option></select></label>
           <label><span>Renovacion</span><input type="date" value="${attr(d.renewalDate)}" data-new-line="renewalDate"></label>
           <label><span>Precio pactado</span><input type="number" min="0" step="0.01" value="${attr(d.annualPrice)}" data-new-line="annualPrice"></label>
           <label class="check-field"><input type="checkbox" data-new-line="clientOnly" ${d.clientOnly ? 'checked' : ''}><span>Solo linea celular</span></label>
@@ -5901,54 +5922,7 @@ function renderLineas(companies) {
           <button class="button primary" id="addManualLine">${icon('plus')}Agregar linea</button>
         </div>
       </details>
-      <datalist id="lineCompanyList">
-        ${options.map((company) => `<option value="${attr(company)}"></option>`).join('')}
-      </datalist>
-      <div class="billing-settings line-actions">
-        <button class="button primary" id="uploadLineFile">${icon('upload')}Importar lineas XLSX</button>
-        <button class="button" id="uploadEmnifyFile">${icon('cloud-upload')}Importar Emnify</button>
-        <button class="button" id="loadRelationLines">${icon('database')}Cargar base cifrada</button>
-        <button class="button" id="exportLinesXlsx">${icon('download')}Exportar lineas</button>
-        <button class="button" id="exportLineMatchReportXlsx">${icon('file-text')}Reporte match lineas</button>
-        <label>
-          <span>Estatus</span>
-          <select id="lineStatusFilter">
-            <option value="">Todos</option>
-            <option value="activa" ${state.lineStatusFilter === 'activa' ? 'selected' : ''}>Activas</option>
-            <option value="desactivada" ${state.lineStatusFilter === 'desactivada' ? 'selected' : ''}>Desactivadas</option>
-            <option value="suspendida" ${state.lineStatusFilter === 'suspendida' ? 'selected' : ''}>Suspendidas</option>
-            <option value="emitida" ${state.lineStatusFilter === 'emitida' ? 'selected' : ''}>Emitidas</option>
-          </select>
-        </label>
-        <label>
-          <span>Proveedora</span>
-          <select id="lineTypeFilter">
-            <option value="">Todas</option>
-            ${lineTypeOptions.map((option) => `<option value="${attr(option.value)}" ${state.lineTypeFilter === option.value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}
-          </select>
-        </label>
-        <label>
-          <span>Match</span>
-          <select id="lineMatchFilter">
-            <option value="">Todos</option>
-            <option value="equipo" ${state.lineMatchFilter === 'equipo' ? 'selected' : ''}>Con equipo GPS</option>
-            <option value="solo_linea" ${state.lineMatchFilter === 'solo_linea' ? 'selected' : ''}>Solo linea celular</option>
-            <option value="no_asignada" ${state.lineMatchFilter === 'no_asignada' ? 'selected' : ''}>No asignables Wialon</option>
-            <option value="sin_match" ${state.lineMatchFilter === 'sin_match' ? 'selected' : ''}>Sin match</option>
-          </select>
-        </label>
-        <label class="search-box billing-search">${icon('search')}<input id="lineSearchInput" value="${attr(state.lineQuery)}" placeholder="Buscar ICC/ICCID, IMEI o linea"></label>
-        <label class="search-box billing-search">${icon('scan-search')}<input id="lineIccSearchInput" value="${attr(state.lineIccQuery)}" placeholder="Filtrar solo por ICCID"></label>
-        <div class="filter-count"><span>Filtradas</span><strong>${lines.length}</strong></div>
-      </div>
-      ${
-        state.lineImport
-          ? `<div class="notice">Ultima base de lineas: ${esc(state.lineImport.source)} (${state.lineImport.imported} lineas, ${state.lineImport.iccDetected || 0} con ICC), ${state.lineImport.matched} con equipo, ${state.lineImport.clientOnly} solo linea, ${state.lineImport.exempt || 0} no asignables, ${state.lineImport.unmatched} sin match accionable.</div>`
-          : '<div class="notice">Importa la base de lineas activas para cruzarlas contra IMEI o contra el telefono Wialon. Para Bernardo tambien lee renovaciones escritas como: bernardo 15 mayo 2026.</div>'
-      }
-      <div class="notice">Clasificacion automatica: archivo/base con proveedor explicito manda; si no hay proveedor, 8934 y 8949 = Emnify, 8952 sin telefono = Emprenet y 8952 con telefono = Telcel. El cruce con Wialon usa IMEI, UID y telefono; Bernardo/Berna se conserva como solo linea, y las Emnify desactivadas/deleted/disponibles sin asignar no cuentan como sin match.</div>
-      ${renderLineProviderSections(pageLines)}
-      ${renderPagination(lines.length, pagination)}
+      ${renderLineTable(`Lineas filtradas - ${lines.length} registros`, pageLines)}
     </section>
   `
 }
@@ -6600,7 +6574,7 @@ function render() {
                 : renderCobros(companies)
 
   root.innerHTML = `
-    <div class="app-shell">
+    <div class="app-shell view-${attr(state.view)}">
       <input class="hidden-input" id="fileInput" type="file" accept=".xlsx,.csv">
       <input class="hidden-input" id="paymentFileInput" type="file" accept=".xlsx,.csv">
       <input class="hidden-input" id="lineFileInput" type="file" accept=".xlsx,.csv">
@@ -6791,6 +6765,7 @@ function bindAuthEvents() {
 function bindEvents() {
   document.querySelectorAll('[data-view]').forEach((button) => {
     button.addEventListener('click', async () => {
+      if (button.dataset.view !== state.view) window.scrollTo({ top: 0, left: 0 })
       if (button.dataset.view === 'lineas') {
         await revalidateLineasPage({ notice: true })
         return
