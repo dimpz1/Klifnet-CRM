@@ -23,8 +23,9 @@ const lineAutoImportVersion = 14
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
 const lineRelationBaseVersion = 23
+const standardMonthlyPriceVersion = 2
 const quoteDefaultsVersion = 8
-const standardMonthlyPrice = 297.5
+const standardMonthlyPrice = 297.36
 const standardHardwarePrice = 1152.66
 const cityInstallationPrice = 350
 const outsideInstallationPrice = 600
@@ -337,6 +338,7 @@ const state = {
   mapping: {},
   devices: [],
   lines: [],
+  standardMonthlyPriceVersion: 0,
   companyMeta: {},
   billing: { ...defaultBilling },
   billingRows: [],
@@ -760,6 +762,15 @@ function standardMonthlyPriceText() {
   return standardMonthlyPrice.toFixed(2)
 }
 
+function isLegacyStandardMonthlyPrice(value) {
+  const price = Number(value)
+  return Number.isFinite(price) && (Math.abs(price - 297) < 0.005 || Math.abs(price - 297.5) < 0.005)
+}
+
+function normalizeStandardMonthlyPriceValue(value) {
+  return isLegacyStandardMonthlyPrice(value) ? standardMonthlyPriceText() : value
+}
+
 function installationPriceForZone(zone) {
   return zone === 'outside' ? outsideInstallationPrice : cityInstallationPrice
 }
@@ -1062,7 +1073,7 @@ function quoteAccessoryRows(quote) {
 
 function deviceAgreedPriceValue(device) {
   const agreedPrice = device.agreedPrice ?? device.pricePerDeviceOverride
-  if (Number(agreedPrice) > 0) return String(agreedPrice)
+  if (Number(agreedPrice) > 0) return String(normalizeStandardMonthlyPriceValue(agreedPrice))
   return deviceBillingCycle(device) === 'mensual' ? standardMonthlyPriceText() : ''
 }
 
@@ -1079,6 +1090,7 @@ function stateSnapshot() {
     mapping: state.mapping,
     devices: state.devices,
     lines: state.lines,
+    standardMonthlyPriceVersion: state.standardMonthlyPriceVersion,
     companyMeta: state.companyMeta,
     billing: state.billing,
     billingRows: state.billingRows,
@@ -3385,6 +3397,7 @@ function lineFromRelationRecord(record, index) {
   const imei = preferredLineImeiFromRecord(record)
   const imeiLong = preferredLineImeiLongFromRecord(record)
   const imeiShort = preferredLineImeiShortFromRecord(record, imeiLong || imei)
+  const price = parseAmount(record.precio_mensual || record.precio_pactado || record.precio || record.annualPrice || record.precio_anual || '')
   return normalizeLine(
     {
       id: `${normalizeHeader(provider) || 'linea'}-${record.linea_id || record.relacion_id || index}`,
@@ -3406,9 +3419,10 @@ function lineFromRelationRecord(record, index) {
       alias: record.alias,
       unitName: record.equipo_wialon_nombre,
       status: record.estatus_servicio || record.estatus_original || 'activa',
-      billingCycle: isBernardo ? 'anual' : 'anual',
+      billingCycle: normalizeCycle(record.cobro || record.periodicidad || record.billingCycle || (isBernardo ? 'anual' : 'anual')),
       renewalDate: record.fecha_renovacion || '',
-      annualPrice: isBernardo ? '550' : '',
+      annualPrice: price > 0 ? normalizeStandardMonthlyPriceValue(String(price)) : isBernardo ? '550' : '',
+      soldBy: record.vendido_por || record.vendedor || record.soldBy || record.seller || defaultEquipmentSeller,
       clientOnly: isBernardo || !imei,
       notes: [record.alias, record.estatus_original, record.renovacion_fuente, record.match_fuente, record.equipo_wialon_nombre, record.equipo_wialon_tipo, record.notas].filter(Boolean).join(' | '),
       source: record.fuente || 'base_relacion_lineas',
@@ -3446,6 +3460,10 @@ function relationRecordFromRow(row) {
     imsi: rowValue(row, ['IMSI']),
     plan: rowValue(row, ['Plan']),
     operador: rowValue(row, ['Operador', 'Carrier']),
+    cobro: rowValue(row, ['Cobro', 'Periodicidad', 'Forma de pago', 'Billing cycle']),
+    precio_mensual: rowValue(row, ['Precio mensual', 'Mensualidad', 'Precio pactado mensual']),
+    precio_pactado: rowValue(row, ['Precio pactado', 'Precio', 'Importe', 'Monto']),
+    vendido_por: rowValue(row, ['Vendido por', 'Vendedor', 'Asesor']),
     alias: rowValue(row, ['Alias']),
     cliente_fuente: rowValue(row, ['Cliente fuente', 'Cliente']),
     subcuenta: rowValue(row, ['Subcuenta']),
@@ -4201,7 +4219,7 @@ function lineSeller(line) {
 
 function deviceUnitPrice(device) {
   const agreedPrice = device.agreedPrice ?? device.pricePerDeviceOverride
-  if (Number(agreedPrice) > 0) return Number(agreedPrice)
+  if (Number(agreedPrice) > 0) return Number(normalizeStandardMonthlyPriceValue(agreedPrice))
   if (deviceBillingCycle(device) === 'anual') {
     return Number(state.billing.annualPricePerDevice || 0) || Number(state.billing.monthlyPricePerDevice || 0) * 12
   }
@@ -4230,7 +4248,7 @@ function linePaymentMonths(line) {
 }
 
 function lineUnitPrice(line) {
-  const annualPrice = Number(line.annualPrice || 0)
+  const annualPrice = Number(normalizeStandardMonthlyPriceValue(line.annualPrice) || 0)
   if (annualPrice > 0 && lineBillingCycle(line) === 'semestral') return annualPrice / 2
   if (annualPrice > 0) return annualPrice
   return 0
@@ -7039,11 +7057,14 @@ function applySavedState(parsed = {}) {
       mapping: parsed.mapping || {},
       devices: (parsed.devices || []).map(normalizeDeviceIdentifiers),
       lines: (parsed.lines || []).map((line, index) => normalizeLine(line, index)),
+      standardMonthlyPriceVersion: parsed.standardMonthlyPriceVersion || 0,
       companyMeta: parsed.companyMeta || {},
       billing: {
         ...defaultBilling,
         ...(parsed.billing || {}),
-        monthlyPricePerDevice: Number(parsed.billing?.monthlyPricePerDevice ?? parsed.billing?.pricePerDevice ?? defaultBilling.monthlyPricePerDevice) || defaultBilling.monthlyPricePerDevice,
+        monthlyPricePerDevice:
+          Number(normalizeStandardMonthlyPriceValue(parsed.billing?.monthlyPricePerDevice ?? parsed.billing?.pricePerDevice ?? defaultBilling.monthlyPricePerDevice)) ||
+          defaultBilling.monthlyPricePerDevice,
         annualPricePerDevice: parsed.billing?.annualPricePerDevice ?? 0
       },
       billingRows: parsed.billingRows || parsed.invoices || [],
@@ -7145,6 +7166,37 @@ function startServerStatePolling() {
   serverPollTimer = setInterval(refreshStateFromServer, 15000)
 }
 
+function migrateStandardMonthlyPrices() {
+  let changed = false
+
+  if (isLegacyStandardMonthlyPrice(state.billing.monthlyPricePerDevice)) {
+    state.billing = { ...state.billing, monthlyPricePerDevice: standardMonthlyPrice }
+    changed = true
+  }
+
+  if (isLegacyStandardMonthlyPrice(state.quote.monthlyPricePerDevice)) {
+    state.quote = { ...state.quote, monthlyPricePerDevice: standardMonthlyPrice }
+    changed = true
+  }
+
+  state.devices = state.devices.map((device) => {
+    const agreedPrice = device.agreedPrice ?? device.pricePerDeviceOverride
+    if (deviceBillingCycle(device) !== 'mensual' || !isLegacyStandardMonthlyPrice(agreedPrice)) return device
+    changed = true
+    return { ...device, agreedPrice: standardMonthlyPriceText() }
+  })
+
+  state.lines = state.lines.map((line, index) => {
+    const normalized = normalizeLine(line, index)
+    if (lineBillingCycle(normalized) !== 'mensual' || !isLegacyStandardMonthlyPrice(normalized.annualPrice)) return normalized
+    changed = true
+    return normalizeLine({ ...normalized, annualPrice: standardMonthlyPriceText() }, index)
+  })
+
+  state.standardMonthlyPriceVersion = standardMonthlyPriceVersion
+  return changed
+}
+
 async function initDataAfterAuth() {
   try {
     const loadedFromServer = await loadStateFromServer()
@@ -7158,6 +7210,12 @@ async function initDataAfterAuth() {
 
     if (state.lineResetVersion !== lineResetVersion) {
       clearLineState()
+      persistState()
+    }
+
+    if (state.standardMonthlyPriceVersion !== standardMonthlyPriceVersion) {
+      const changed = migrateStandardMonthlyPrices()
+      state.notice = changed ? 'Precio mensual estandar actualizado a $297.36.' : state.notice
       persistState()
     }
 
