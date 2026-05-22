@@ -4728,34 +4728,116 @@ function columnName(index) {
   return name
 }
 
-function sheetXml(rows) {
-  const sheetData = rows
-    .map((row, rowIndex) => {
-      const cells = row
+function reportIdentifierValue(value) {
+  const clean = importTextValue(value)
+  return clean ? `'${clean}` : ''
+}
+
+function isReportIdentifierColumn(header) {
+  const clean = normalizeHeader(header)
+  return (
+    clean.includes('imei') ||
+    clean.includes('uid') ||
+    clean.includes('icc') ||
+    clean.includes('iccid') ||
+    clean.includes('linea') ||
+    clean.includes('telefono') ||
+    clean.includes('msisdn') ||
+    clean.includes('sim')
+  )
+}
+
+function reportCellValue(value, header = '', isBody = false) {
+  if (isBody && isReportIdentifierColumn(header)) return reportIdentifierValue(value)
+  return value
+}
+
+function reportCellXml(ref, value, style = '') {
+  const styleAttr = style ? ` s="${style}"` : ''
+  if (value === null || value === undefined || value === '') return `<c r="${ref}"${styleAttr}/>`
+  if (typeof value === 'number' && Number.isFinite(value)) return `<c r="${ref}"${styleAttr}><v>${value}</v></c>`
+  return `<c r="${ref}"${styleAttr} t="inlineStr"><is><t>${xmlEscape(value)}</t></is></c>`
+}
+
+function reportColumnWidth(header) {
+  const clean = normalizeHeader(header)
+  if (clean.includes('notas') || clean.includes('motivo') || clean.includes('match')) return 34
+  if (clean.includes('empresa') || clean.includes('cliente') || clean.includes('grupo') || clean.includes('equipo')) return 24
+  if (isReportIdentifierColumn(header)) return 19
+  if (clean.includes('fecha') || clean.includes('renovacion')) return 15
+  return 16
+}
+
+function sheetXml(sheet, hasLogo = true) {
+  const rows = sheet.rows || []
+  const tableStartRow = 6
+  const title = sheet.title || sheet.name || 'Reporte KLIFNET CRM'
+  const subtitle = sheet.subtitle || `Generado ${new Date().toLocaleDateString('es-MX')}`
+  const headers = rows[0] || []
+  const columnCount = Math.max(headers.length, 6)
+  const outputRows = [
+    { index: 1, values: ['', '', title], style: '1' },
+    { index: 2, values: ['', '', subtitle], style: '4' },
+    { index: 4, values: Array(columnCount).fill(''), style: '2' },
+    ...rows.map((row, rowIndex) => ({
+      index: tableStartRow + rowIndex,
+      values: row.map((value, columnIndexValue) => reportCellValue(value, headers[columnIndexValue], rowIndex > 0)),
+      style: rowIndex === 0 ? '2' : '3'
+    }))
+  ]
+  const cols = headers.length
+    ? `<cols>${headers
+        .map((header, index) => `<col min="${index + 1}" max="${index + 1}" width="${reportColumnWidth(header)}" customWidth="1"/>`)
+        .join('')}</cols>`
+    : ''
+  const sheetData = outputRows
+    .map((row) => {
+      const cells = row.values
         .map((value, columnIndexValue) => {
-          const ref = `${columnName(columnIndexValue)}${rowIndex + 1}`
-          if (typeof value === 'number' && Number.isFinite(value)) {
-            return `<c r="${ref}"><v>${value}</v></c>`
-          }
-          return `<c r="${ref}" t="inlineStr"><is><t>${xmlEscape(value)}</t></is></c>`
+          const ref = `${columnName(columnIndexValue)}${row.index}`
+          return reportCellXml(ref, value, row.style)
         })
         .join('')
-      return `<row r="${rowIndex + 1}">${cells}</row>`
+      return `<row r="${row.index}">${cells}</row>`
     })
     .join('')
 
+  const drawing = hasLogo ? '<drawing r:id="rId1"/>' : ''
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${sheetData}</sheetData></worksheet>`
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${cols}<sheetViews><sheetView workbookViewId="0"><pane ySplit="${tableStartRow}" topLeftCell="A${tableStartRow + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetData>${sheetData}</sheetData>${drawing}</worksheet>`
+}
+
+function drawingXml(imageIndex) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><xdr:oneCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="1800000" cy="520000"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${imageIndex}" name="KLIFNET logo"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:oneCellAnchor></xdr:wsDr>`
+}
+
+function drawingRelsXml(imageIndex) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${imageIndex}.jpg"/></Relationships>`
+}
+
+function sheetRelsXml(sheetIndex) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing${sheetIndex}.xml"/></Relationships>`
 }
 
 async function exportWorkbookXlsx(filename, sheets) {
   const zip = new JSZip()
+  let logoBuffer = null
+  try {
+    const logoResponse = await fetch('/public/assets/klifnet-logo.jpg')
+    if (logoResponse.ok) logoBuffer = await logoResponse.arrayBuffer()
+  } catch (error) {
+    console.warn('No se pudo cargar logo para XLSX.', error)
+  }
   zip.file(
     '[Content_Types].xml',
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
 <Default Extension="xml" ContentType="application/xml"/>
+${logoBuffer ? '<Default Extension="jpg" ContentType="image/jpeg"/>' : ''}
 <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
 <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
 ${sheets
@@ -4764,6 +4846,14 @@ ${sheets
       `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`
   )
   .join('')}
+${logoBuffer
+  ? sheets
+      .map(
+        (_sheet, index) =>
+          `<Override PartName="/xl/drawings/drawing${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>`
+      )
+      .join('')
+  : ''}
 </Types>`
   )
   zip.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`)
@@ -4782,8 +4872,17 @@ ${sheets
       )
       .join('')}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`
   )
-  zip.file('xl/styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="0"/><tableStyles count="0" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleLight16"/></styleSheet>`)
-  sheets.forEach((sheet, index) => zip.file(`xl/worksheets/sheet${index + 1}.xml`, sheetXml(sheet.rows)))
+  zip.file('xl/styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="5"><font><sz val="11"/><color rgb="FF111111"/><name val="Calibri"/><family val="2"/></font><font><b/><sz val="18"/><color rgb="FF111111"/><name val="Calibri"/><family val="2"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/><family val="2"/></font><font><sz val="10"/><color rgb="FF2A2A2A"/><name val="Calibri"/><family val="2"/></font><font><sz val="10"/><color rgb="FF6B5B5B"/><name val="Calibri"/><family val="2"/></font></fonts><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFCF202B"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF1F2"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFE1D5D3"/></left><right style="thin"><color rgb="FFE1D5D3"/></right><top style="thin"><color rgb="FFE1D5D3"/></top><bottom style="thin"><color rgb="FFE1D5D3"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="49" fontId="3" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="0"/><tableStyles count="0" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleLight16"/></styleSheet>`)
+  sheets.forEach((sheet, index) => {
+    const sheetIndex = index + 1
+    zip.file(`xl/worksheets/sheet${sheetIndex}.xml`, sheetXml(sheet, Boolean(logoBuffer)))
+    if (logoBuffer) {
+      zip.file(`xl/worksheets/_rels/sheet${sheetIndex}.xml.rels`, sheetRelsXml(sheetIndex))
+      zip.file(`xl/drawings/drawing${sheetIndex}.xml`, drawingXml(sheetIndex))
+      zip.file(`xl/drawings/_rels/drawing${sheetIndex}.xml.rels`, drawingRelsXml(sheetIndex))
+      zip.file(`xl/media/image${sheetIndex}.jpg`, logoBuffer)
+    }
+  })
   const blob = await zip.generateAsync({
     type: 'blob',
     mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -5833,71 +5932,46 @@ function renderLineas(companies) {
   const lines = filteredLines()
   const pagination = linePaginationState(lines.length)
   const pageLines = lines.slice(pagination.start, pagination.end)
-  const stats = lineStats(state.lines)
-  const providerGroups = lineProviderGroups(state.lines)
   const d = { ...state.newLine, status: normalizeLineStatus(state.newLine.status) }
   const options = lineCompanyOptions(companies)
   return `
     <section class="screen-fit-view lineas-fit">
       ${renderPagination(lines.length, pagination, { sticky: true })}
-      <section class="workspace-head">
-        <div class="compact-metrics">
-          ${compactMetric('Lineas', stats.total)}
-          ${compactMetric('Activas', stats.active)}
-          ${compactMetric('Desactivadas', stats.inactive, 'red')}
-          ${compactMetric('Con equipo', stats.matched)}
-          ${compactMetric('Solo lineas', stats.clientOnly, 'amber')}
-          ${compactMetric('No asignables', stats.exempt, 'amber')}
-          ${compactMetric('Sin match', stats.unmatched, 'red')}
-        </div>
-        <div class="provider-chip-row">
-          ${providerGroups.map(compactProviderChip).join('')}
-        </div>
-        <div class="workspace-actions">
+      <datalist id="lineCompanyList">
+        ${options.map((company) => `<option value="${attr(company)}"></option>`).join('')}
+      </datalist>
+      <div class="table-toolbar line-table-toolbar">
+        <label class="search-box">${icon('search')}<input id="lineSearchInput" value="${attr(state.lineQuery)}" placeholder="Buscar ICC, IMEI o linea"></label>
+        <label class="search-box">${icon('scan-search')}<input id="lineIccSearchInput" value="${attr(state.lineIccQuery)}" placeholder="Solo ICCID"></label>
+        <select id="lineStatusFilter" class="compact-select" aria-label="Filtrar por estatus">
+          <option value="">Todos los estatus</option>
+          <option value="activa" ${state.lineStatusFilter === 'activa' ? 'selected' : ''}>Activas</option>
+          <option value="desactivada" ${state.lineStatusFilter === 'desactivada' ? 'selected' : ''}>Desactivadas</option>
+          <option value="suspendida" ${state.lineStatusFilter === 'suspendida' ? 'selected' : ''}>Suspendidas</option>
+          <option value="emitida" ${state.lineStatusFilter === 'emitida' ? 'selected' : ''}>Emitidas</option>
+        </select>
+        <select id="lineTypeFilter" class="compact-select" aria-label="Filtrar por proveedora">
+          <option value="">Todas las proveedoras</option>
+          ${lineTypeOptions.map((option) => `<option value="${attr(option.value)}" ${state.lineTypeFilter === option.value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}
+        </select>
+        <select id="lineMatchFilter" class="compact-select" aria-label="Filtrar por match">
+          <option value="">Todos los match</option>
+          <option value="equipo" ${state.lineMatchFilter === 'equipo' ? 'selected' : ''}>Con equipo GPS</option>
+          <option value="solo_linea" ${state.lineMatchFilter === 'solo_linea' ? 'selected' : ''}>Solo linea celular</option>
+          <option value="no_asignada" ${state.lineMatchFilter === 'no_asignada' ? 'selected' : ''}>No asignables Wialon</option>
+          <option value="sin_match" ${state.lineMatchFilter === 'sin_match' ? 'selected' : ''}>Sin match</option>
+        </select>
+        <span>${lines.length} lineas</span>
+      </div>
+      <details class="compact-panel line-meta-panel">
+        <summary>${icon('plus')}Alta manual, importacion y reportes</summary>
+        <div class="line-action-grid">
           <button class="button primary" id="uploadLineFile">${icon('upload')}Importar lineas XLSX</button>
           <button class="button" id="uploadEmnifyFile">${icon('cloud-upload')}Importar Emnify</button>
           <button class="button" id="loadRelationLines">${icon('database')}Base cifrada</button>
           <button class="button" id="exportLinesXlsx">${icon('download')}Exportar</button>
           <button class="button" id="exportLineMatchReportXlsx">${icon('file-text')}Reporte match</button>
         </div>
-        <div class="workspace-filters">
-          <label>
-            <span>Estatus</span>
-            <select id="lineStatusFilter">
-              <option value="">Todos</option>
-              <option value="activa" ${state.lineStatusFilter === 'activa' ? 'selected' : ''}>Activas</option>
-              <option value="desactivada" ${state.lineStatusFilter === 'desactivada' ? 'selected' : ''}>Desactivadas</option>
-              <option value="suspendida" ${state.lineStatusFilter === 'suspendida' ? 'selected' : ''}>Suspendidas</option>
-              <option value="emitida" ${state.lineStatusFilter === 'emitida' ? 'selected' : ''}>Emitidas</option>
-            </select>
-          </label>
-          <label>
-            <span>Proveedora</span>
-            <select id="lineTypeFilter">
-              <option value="">Todas</option>
-              ${lineTypeOptions.map((option) => `<option value="${attr(option.value)}" ${state.lineTypeFilter === option.value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}
-            </select>
-          </label>
-          <label>
-            <span>Match</span>
-            <select id="lineMatchFilter">
-              <option value="">Todos</option>
-              <option value="equipo" ${state.lineMatchFilter === 'equipo' ? 'selected' : ''}>Con equipo GPS</option>
-              <option value="solo_linea" ${state.lineMatchFilter === 'solo_linea' ? 'selected' : ''}>Solo linea celular</option>
-              <option value="no_asignada" ${state.lineMatchFilter === 'no_asignada' ? 'selected' : ''}>No asignables Wialon</option>
-              <option value="sin_match" ${state.lineMatchFilter === 'sin_match' ? 'selected' : ''}>Sin match</option>
-            </select>
-          </label>
-          <label class="search-box billing-search">${icon('search')}<input id="lineSearchInput" value="${attr(state.lineQuery)}" placeholder="Buscar ICC, IMEI o linea"></label>
-          <label class="search-box billing-search">${icon('scan-search')}<input id="lineIccSearchInput" value="${attr(state.lineIccQuery)}" placeholder="Solo ICCID"></label>
-          <div class="filter-count"><span>Filtradas</span><strong>${lines.length}</strong></div>
-        </div>
-      </section>
-      <datalist id="lineCompanyList">
-        ${options.map((company) => `<option value="${attr(company)}"></option>`).join('')}
-      </datalist>
-      <details class="compact-panel line-meta-panel">
-        <summary>${icon('info')}Detalles, reglas y alta manual</summary>
         ${
           state.lineImport
             ? `<div class="notice">Ultima base de lineas: ${esc(state.lineImport.source)} (${state.lineImport.imported} lineas, ${state.lineImport.iccDetected || 0} con ICC), ${state.lineImport.matched} con equipo, ${state.lineImport.clientOnly} solo linea, ${state.lineImport.exempt || 0} no asignables, ${state.lineImport.unmatched} sin match accionable.</div>`
