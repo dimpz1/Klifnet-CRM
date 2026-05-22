@@ -661,6 +661,24 @@ tbody tr:focus-within {
   gap: 10px;
 }
 
+.invoice-profile-panel {
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.invoice-profile-panel .table-toolbar,
+.invoice-profile-panel .notice {
+  margin: 0 10px 10px;
+}
+
+.invoice-profile-panel .table-wrap {
+  border-width: 1px 0 0;
+  border-radius: 0;
+}
+
 .company-row {
   border: 1px solid var(--line);
   border-radius: 8px;

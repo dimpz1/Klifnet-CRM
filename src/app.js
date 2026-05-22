@@ -341,6 +341,10 @@ const state = {
   lines: [],
   standardMonthlyPriceVersion: 0,
   companyMeta: {},
+  invoiceProfiles: [],
+  invoiceImport: null,
+  invoiceProfileQuery: '',
+  invoiceProfilePage: 1,
   billing: { ...defaultBilling },
   billingRows: [],
   paymentImport: null,
@@ -764,6 +768,8 @@ function blankMeta(company) {
     legalName: company,
     rfc: '',
     email: '',
+    linkedCompanies: [],
+    lastInvoice: null,
     billingCycle: 'mensual',
     annualMonth: String(new Date().getMonth() + 1),
     contact: '',
@@ -773,6 +779,120 @@ function blankMeta(company) {
 
 function getCompanyMeta(company) {
   return { ...blankMeta(company), ...(state.companyMeta[company] || {}) }
+}
+
+function normalizeInvoiceProfile(profile = {}, index = 0) {
+  const razonSocial = textValue(profile.razonSocial || profile.razon_social || profile.legalName || profile.company || profile.name)
+  const rfc = textValue(profile.rfc || profile.rfc_receptor)
+  const id = textValue(profile.id) || slug(`${rfc || razonSocial}-${razonSocial}`) || `factura-${index + 1}`
+  const linkedCompanies = unique(
+    [
+      ...(Array.isArray(profile.linkedCompanies) ? profile.linkedCompanies : []),
+      ...(Array.isArray(profile.empresasCrm) ? profile.empresasCrm : []),
+      ...(Array.isArray(profile.crmCompanies) ? profile.crmCompanies : []),
+      ...String(profile.linkedCompany || profile.crmCompany || profile.empresaCrm || '')
+        .split(/[,;|]/g)
+        .map(textValue)
+    ].filter(Boolean)
+  )
+  return {
+    id,
+    razonSocial,
+    rfc,
+    fechaEmision: textValue(profile.fechaEmision || profile.fecha_emision),
+    fechaEmisionIso: textValue(profile.fechaEmisionIso || profile.fecha_emision_iso),
+    serie: textValue(profile.serie),
+    folio: textValue(profile.folio),
+    uuid: textValue(profile.uuid),
+    subtotal: Number(profile.subtotal || 0),
+    ivaTrasladado: Number(profile.ivaTrasladado ?? profile.iva_trasladado ?? 0),
+    total: Number(profile.total || 0),
+    moneda: textValue(profile.moneda || 'MXN'),
+    estadoFiscal: textValue(profile.estadoFiscal || profile.estado_fiscal),
+    linkedCompanies,
+    sourceRow: profile.sourceRow || profile.source_row || ''
+  }
+}
+
+function invoiceProfilesFromPayload(payload = {}) {
+  const rows = Array.isArray(payload.latest_invoices)
+    ? payload.latest_invoices
+    : Array.isArray(payload.invoiceProfiles)
+      ? payload.invoiceProfiles
+      : Array.isArray(payload.facturas)
+        ? payload.facturas
+        : []
+  return rows.map(normalizeInvoiceProfile).filter((profile) => profile.razonSocial)
+}
+
+function mergeInvoiceProfiles(existingProfiles = [], importedProfiles = []) {
+  const existingById = new Map(existingProfiles.map((profile, index) => [normalizeInvoiceProfile(profile, index).id, normalizeInvoiceProfile(profile, index)]))
+  return importedProfiles.map((profile, index) => {
+    const normalized = normalizeInvoiceProfile(profile, index)
+    const existing = existingById.get(normalized.id)
+    return {
+      ...normalized,
+      linkedCompanies: unique([...(existing?.linkedCompanies || []), ...normalized.linkedCompanies])
+    }
+  })
+}
+
+function syncInvoiceProfilesToCompanyMeta(profiles = state.invoiceProfiles) {
+  const nextMeta = { ...state.companyMeta }
+  profiles.forEach((rawProfile, index) => {
+    const profile = normalizeInvoiceProfile(rawProfile, index)
+    if (!profile.razonSocial) return
+    const existing = { ...blankMeta(profile.razonSocial), ...(nextMeta[profile.razonSocial] || {}) }
+    nextMeta[profile.razonSocial] = {
+      ...existing,
+      legalName: profile.razonSocial,
+      rfc: profile.rfc || existing.rfc,
+      linkedCompanies: unique([...(existing.linkedCompanies || []), ...profile.linkedCompanies]),
+      lastInvoice: {
+        folio: profile.folio,
+        uuid: profile.uuid,
+        fechaEmision: profile.fechaEmision,
+        fechaEmisionIso: profile.fechaEmisionIso,
+        total: profile.total,
+        moneda: profile.moneda,
+        estadoFiscal: profile.estadoFiscal
+      }
+    }
+  })
+  state.companyMeta = nextMeta
+}
+
+function invoiceProfileSearchText(profile) {
+  return normalizeHeader(`${profile.razonSocial} ${profile.rfc} ${profile.folio} ${profile.uuid} ${profile.linkedCompanies.join(' ')}`)
+}
+
+function filteredInvoiceProfiles() {
+  const query = normalizeHeader(state.invoiceProfileQuery)
+  return state.invoiceProfiles.filter((profile) => !query || invoiceProfileSearchText(profile).includes(query))
+}
+
+async function loadInvoiceProfilesFromPrivate() {
+  try {
+    const payload = await fetchPrivateJson('facturas')
+    const imported = invoiceProfilesFromPayload(payload)
+    state.invoiceProfiles = mergeInvoiceProfiles(state.invoiceProfiles, imported)
+    state.invoiceImport = {
+      source: payload.source_file || 'ultimas_facturas_emitidas.json cifrada',
+      imported: imported.length,
+      minFechaEmision: payload.min_fecha_emision || '',
+      appliedAt: new Date().toISOString(),
+      summary: payload.summary || {}
+    }
+    state.invoiceProfilePage = 1
+    syncInvoiceProfilesToCompanyMeta()
+    persistState()
+    render()
+    return true
+  } catch (error) {
+    console.warn(error)
+    setState({ notice: `No se pudo cargar la base de ultimas facturas: ${error.message || error}` })
+    return false
+  }
 }
 
 function money(value, currency = 'MXN') {
@@ -1122,6 +1242,10 @@ function stateSnapshot() {
     lines: state.lines,
     standardMonthlyPriceVersion: state.standardMonthlyPriceVersion,
     companyMeta: state.companyMeta,
+    invoiceProfiles: state.invoiceProfiles,
+    invoiceImport: state.invoiceImport,
+    invoiceProfileQuery: state.invoiceProfileQuery,
+    invoiceProfilePage: state.invoiceProfilePage,
     billing: state.billing,
     billingRows: state.billingRows,
     paymentImport: state.paymentImport,
@@ -5759,8 +5883,60 @@ function renderResumen(companies, stats) {
 function renderEmpresas(companies) {
   const pagination = tablePaginationState(companies.length, state.companyPage)
   const pageCompanies = companies.slice(pagination.start, pagination.end)
+  const invoiceProfiles = filteredInvoiceProfiles()
+  const invoicePagination = tablePaginationState(invoiceProfiles.length, state.invoiceProfilePage)
+  const pageInvoiceProfiles = invoiceProfiles.slice(invoicePagination.start, invoicePagination.end)
+  const crmCompanyOptions = unique([...companies.filter((company) => company.devices.length).map((company) => company.name), ...state.devices.map((device) => device.company)]).sort((a, b) =>
+    a.localeCompare(b)
+  )
   return `
+    <datalist id="crmCompanyList">
+      ${crmCompanyOptions.map((company) => `<option value="${attr(company)}"></option>`).join('')}
+    </datalist>
     ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas', sticky: true })}
+    <section class="invoice-profile-panel">
+      <div class="line-section-head">
+        <div><span>Razones sociales fiscales</span><h2>Ultima factura emitida desde enero 2025</h2></div>
+        <strong>${invoiceProfiles.length}</strong>
+      </div>
+      <div class="table-toolbar">
+        <button class="button primary" id="loadInvoiceProfiles">${icon('file-spreadsheet')}Cargar facturas 2025</button>
+        <label class="search-box">${icon('search')}<input id="invoiceProfileSearchInput" value="${attr(state.invoiceProfileQuery)}" placeholder="Buscar razon social, RFC o empresa CRM"></label>
+        <span>${state.invoiceImport ? `${state.invoiceImport.imported || 0} perfiles cargados` : 'Sin base cargada'}</span>
+      </div>
+      ${
+        state.invoiceImport
+          ? `<div class="notice">Base fiscal: ${esc(state.invoiceImport.imported || 0)} razones sociales, desde ${esc(state.invoiceImport.minFechaEmision || '2025-01-01')}. Excluye pagos, notas de credito y canceladas.</div>`
+          : '<div class="notice">Carga la base para crear perfiles por razon social y ligarlos a una o varias empresas operativas del CRM.</div>'
+      }
+      ${renderTablePagination(invoiceProfiles.length, invoicePagination, { label: 'razones sociales', dataAttr: 'data-invoice-profile-page', ariaLabel: 'Paginacion de razones sociales' })}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Razon social</th><th>RFC</th><th>Ultima factura</th><th>Total</th><th>Empresas CRM ligadas</th><th>Estado</th></tr>
+          </thead>
+          <tbody>
+            ${
+              pageInvoiceProfiles.length
+                ? pageInvoiceProfiles
+                    .map(
+                      (profile) => `
+                        <tr>
+                          <td><strong>${esc(profile.razonSocial)}</strong><small>${esc(profile.uuid || '-')}</small></td>
+                          <td>${esc(profile.rfc || '-')}</td>
+                          <td>${esc(profile.folio || '-')}<small>${esc(profile.fechaEmision || '-')}</small></td>
+                          <td>${money(profile.total, profile.moneda || 'MXN')}</td>
+                          <td><input list="crmCompanyList" value="${attr(profile.linkedCompanies.join(', '))}" data-invoice-profile="${attr(profile.id)}" data-invoice-field="linkedCompanies" placeholder="Empresa 1, Empresa 2"></td>
+                          <td><span class="pill ok">${esc(profile.estadoFiscal || 'VIGENTE')}</span></td>
+                        </tr>`
+                    )
+                    .join('')
+                : '<tr><td colspan="6">Sin razones sociales para los filtros.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
     <section class="company-list">
       ${pageCompanies
         .map(
@@ -6912,6 +7088,42 @@ function bindEvents() {
     })
   })
 
+  document.getElementById('loadInvoiceProfiles')?.addEventListener('click', loadInvoiceProfilesFromPrivate)
+
+  document.getElementById('invoiceProfileSearchInput')?.addEventListener('input', (event) => {
+    state.invoiceProfileQuery = event.target.value
+    state.invoiceProfilePage = 1
+    persistState()
+    renderPreservingInput('#invoiceProfileSearchInput')
+  })
+
+  document.querySelectorAll('[data-invoice-profile-page]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setState({ invoiceProfilePage: Math.max(1, Number(button.dataset.invoiceProfilePage || 1)) })
+    })
+  })
+
+  document.querySelectorAll('[data-invoice-profile]').forEach((input) => {
+    input.addEventListener('change', () => {
+      const id = input.dataset.invoiceProfile
+      const field = input.dataset.invoiceField
+      state.invoiceProfiles = state.invoiceProfiles.map((profile, index) =>
+        profile.id === id
+          ? normalizeInvoiceProfile(
+              {
+                ...profile,
+                [field]: field === 'linkedCompanies' ? splitGroups(input.value) : input.value
+              },
+              index
+            )
+          : profile
+      )
+      syncInvoiceProfilesToCompanyMeta()
+      persistState()
+      render()
+    })
+  })
+
   document.querySelectorAll('[data-new-device]').forEach((input) => {
     const saveNewDeviceDraft = () => {
       state.newDevice = { ...state.newDevice, [input.dataset.newDevice]: input.value }
@@ -7314,6 +7526,10 @@ function applySavedState(parsed = {}) {
       lines: (parsed.lines || []).map((line, index) => normalizeLine(line, index)),
       standardMonthlyPriceVersion: parsed.standardMonthlyPriceVersion || 0,
       companyMeta: parsed.companyMeta || {},
+      invoiceProfiles: (parsed.invoiceProfiles || []).map(normalizeInvoiceProfile),
+      invoiceImport: parsed.invoiceImport || null,
+      invoiceProfileQuery: parsed.invoiceProfileQuery || '',
+      invoiceProfilePage: Math.max(1, Number(parsed.invoiceProfilePage || 1)),
       billing: {
         ...defaultBilling,
         ...(parsed.billing || {}),
@@ -7364,6 +7580,7 @@ function applySavedState(parsed = {}) {
       cobrosPage: Math.max(1, Number(parsed.cobrosPage || 1)),
       billingPage: Math.max(1, Number(parsed.billingPage || 1))
     })
+    if (state.invoiceProfiles.length) syncInvoiceProfilesToCompanyMeta()
     const previousLineCount = state.lines.length
     state.lines = dedupeLines(state.lines, state.devices)
     return Math.max(0, previousLineCount - state.lines.length)

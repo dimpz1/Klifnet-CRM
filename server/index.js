@@ -52,6 +52,7 @@ const privateFileMap = {
   wialon: 'DispositivosWialon_Abril2026.xlsx.enc',
   pagos: 'Klifnet_Admon_Mensual_Pagos.xlsx.enc',
   cotizacion: 'cotizacion_CalidadSP.xlsx.enc',
+  facturas: 'ultimas_facturas_emitidas.json.enc',
   lineas: ['base_relacion_lineas.json', 'base_relacion_lineas.json.enc']
 }
 
@@ -73,6 +74,7 @@ const binaryTypes = {
   wialon: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   pagos: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   cotizacion: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  facturas: 'application/json; charset=utf-8',
   lineas: 'application/json; charset=utf-8'
 }
 
