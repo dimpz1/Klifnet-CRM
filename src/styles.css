@@ -207,6 +207,13 @@ h2 {
   padding: 0 10px;
 }
 
+.button.small-button {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
 .icon-button {
   width: 34px;
   padding: 0;
@@ -679,6 +686,146 @@ tbody tr:focus-within {
   border-radius: 0;
 }
 
+.invoice-profile-table th,
+.invoice-profile-table td {
+  vertical-align: middle;
+}
+
+.invoice-profile-table td:first-child {
+  min-width: 260px;
+}
+
+.invoice-profile-table td:first-child strong,
+.invoice-profile-table td:first-child small {
+  display: block;
+}
+
+.invoice-profile-table td:first-child small {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.invoice-profile-table input {
+  min-width: 190px;
+}
+
+.combo-field {
+  position: relative;
+  display: block;
+  min-width: 220px;
+}
+
+.combo-field input {
+  width: 100%;
+  padding-right: 38px;
+}
+
+.combo-field i {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  width: 18px;
+  height: 18px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--black);
+}
+
+.linked-company-list {
+  display: grid;
+  gap: 6px;
+  min-width: 260px;
+}
+
+.linked-company-card {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--brand);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.linked-company-card.missing {
+  border-left-color: var(--amber);
+  background: #fffaf0;
+}
+
+.linked-company-card strong,
+.linked-company-card small {
+  display: block;
+}
+
+.linked-company-card small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.company-profile-line {
+  margin-top: 0;
+  min-width: 0;
+}
+
+.fiscal-chip {
+  display: inline-grid;
+  max-width: min(420px, 42vw);
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--brand);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  line-height: 1.15;
+  vertical-align: middle;
+}
+
+.fiscal-chip span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.fiscal-chip strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.86rem;
+}
+
+.fiscal-chip.missing {
+  border-left-color: var(--amber);
+  color: var(--muted);
+}
+
+.quote-fiscal-preview {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--brand);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.quote-fiscal-preview span,
+.quote-fiscal-preview strong,
+.quote-fiscal-preview small {
+  display: block;
+}
+
+.quote-fiscal-preview span {
+  color: var(--muted);
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+}
+
+.quote-fiscal-preview small {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
 .company-row {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -693,6 +840,26 @@ tbody tr:focus-within {
   justify-content: space-between;
 }
 
+.company-row summary > div:first-child {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.company-row summary > div:first-child > strong,
+.company-row summary > div:first-child > span {
+  grid-column: 1;
+}
+
+.company-row summary > div:first-child > .company-profile-line {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  justify-self: start;
+}
+
 .company-row summary strong,
 .company-row summary span {
   display: block;
@@ -702,6 +869,12 @@ tbody tr:focus-within {
   margin-top: 4px;
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.company-row summary .fiscal-chip span {
+  margin-top: 0;
+  color: var(--muted);
+  font-size: 0.68rem;
 }
 
 .group-list {
@@ -1046,6 +1219,26 @@ tbody tr:focus-within {
   min-width: 128px;
   min-height: 30px;
   padding: 5px 7px;
+}
+
+.line-deactivation-cell {
+  display: grid;
+  gap: 4px;
+  min-width: 140px;
+}
+
+.line-deactivation-cell input {
+  min-width: 130px;
+}
+
+.line-deactivation-cell small {
+  color: var(--muted);
+  font-weight: 700;
+  line-height: 1.2;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .lineas-fit .table-wrap th {

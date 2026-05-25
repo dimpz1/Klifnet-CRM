@@ -52,6 +52,7 @@ let floatingScrollbarSyncing = false
 let stickyLayoutWindowBound = false
 let deviceMatchIndexCache = { devices: null, index: null }
 let lineForDeviceIndexCache = { lines: null, devices: null, index: null }
+let invoiceProfileCompanyIndexCache = { profiles: null, companyMeta: null, devices: null, lines: null, index: null }
 
 const hardwarePresets = [
   {
@@ -264,6 +265,8 @@ const defaultQuote = {
   query: '',
   newCompanyName: '',
   clientName: '',
+  rfc: '',
+  contactEmail: '',
   attendant: quoteAttendantOptions[0],
   equipmentCount: '',
   billingCycle: 'mensual',
@@ -329,6 +332,9 @@ const defaultNewLine = {
   annualPrice: '550',
   soldBy: defaultNewEquipmentSeller,
   clientOnly: false,
+  previousImei: '',
+  deactivatedImei: '',
+  deactivatedAt: '',
   notes: ''
 }
 
@@ -781,11 +787,50 @@ function getCompanyMeta(company) {
   return { ...blankMeta(company), ...(state.companyMeta[company] || {}) }
 }
 
+function invoiceProfileNameSet(profiles = state.invoiceProfiles) {
+  return new Set(profiles.map((profile, index) => normalizeHeader(normalizeInvoiceProfile(profile, index).razonSocial)).filter(Boolean))
+}
+
+function cleanInvoiceLinkedCompanies(values = []) {
+  return unique(values.map(textValue).filter((company) => normalizeHeader(company).length > 1))
+}
+
+function crmCompanyNamesForFiscalLinks(companies = buildCompanies()) {
+  return unique(companies.map((company) => company.name).filter(Boolean)).sort((a, b) => a.localeCompare(b))
+}
+
+function sanitizeInvoiceLinkedCompanies(values = [], companies = buildCompanies()) {
+  const cleanValues = cleanInvoiceLinkedCompanies(values)
+  const companyNames = crmCompanyNamesForFiscalLinks(companies)
+  if (!companyNames.length) return cleanValues
+  const validCompanies = new Map(companyNames.map((company) => [normalizeHeader(company), company]))
+  return unique(cleanValues.map((company) => validCompanies.get(normalizeHeader(company))).filter(Boolean))
+}
+
+function isMultiCompanyInvoiceProfile(profile) {
+  return normalizeHeader(normalizeInvoiceProfile(profile).razonSocial) === 'gq global reliable services'
+}
+
+function invoiceProfileLinkedLimit(profile) {
+  return isMultiCompanyInvoiceProfile(profile) ? 2 : 1
+}
+
+function invoiceProfileAllowedLinkedCompanies(profile, values, companies = buildCompanies()) {
+  const sanitized = sanitizeInvoiceLinkedCompanies(values, companies)
+  if (isMultiCompanyInvoiceProfile(profile)) {
+    const preferred = ['GQGLOBAL', 'GQGdl']
+    const selected = preferred.filter((company) => sanitized.some((value) => normalizeHeader(value) === normalizeHeader(company)))
+    return selected.length ? selected : sanitized.slice(0, invoiceProfileLinkedLimit(profile))
+  }
+  return sanitized.slice(0, invoiceProfileLinkedLimit(profile))
+}
+
 function normalizeInvoiceProfile(profile = {}, index = 0) {
   const razonSocial = textValue(profile.razonSocial || profile.razon_social || profile.legalName || profile.company || profile.name)
   const rfc = textValue(profile.rfc || profile.rfc_receptor)
   const id = textValue(profile.id) || slug(`${rfc || razonSocial}-${razonSocial}`) || `factura-${index + 1}`
-  const linkedCompanies = unique(
+  const contactEmail = textValue(profile.contactEmail || profile.contact_email || profile.email || profile.correo || profile.correoContacto || profile.correo_contacto)
+  const linkedCompanies = cleanInvoiceLinkedCompanies(
     [
       ...(Array.isArray(profile.linkedCompanies) ? profile.linkedCompanies : []),
       ...(Array.isArray(profile.empresasCrm) ? profile.empresasCrm : []),
@@ -804,6 +849,7 @@ function normalizeInvoiceProfile(profile = {}, index = 0) {
     serie: textValue(profile.serie),
     folio: textValue(profile.folio),
     uuid: textValue(profile.uuid),
+    contactEmail,
     subtotal: Number(profile.subtotal || 0),
     ivaTrasladado: Number(profile.ivaTrasladado ?? profile.iva_trasladado ?? 0),
     total: Number(profile.total || 0),
@@ -832,6 +878,7 @@ function mergeInvoiceProfiles(existingProfiles = [], importedProfiles = []) {
     const existing = existingById.get(normalized.id)
     return {
       ...normalized,
+      contactEmail: normalized.contactEmail || existing?.contactEmail || '',
       linkedCompanies: unique([...(existing?.linkedCompanies || []), ...normalized.linkedCompanies])
     }
   })
@@ -842,12 +889,14 @@ function syncInvoiceProfilesToCompanyMeta(profiles = state.invoiceProfiles) {
   profiles.forEach((rawProfile, index) => {
     const profile = normalizeInvoiceProfile(rawProfile, index)
     if (!profile.razonSocial) return
+    const linkedCompanies = invoiceProfileAllowedLinkedCompanies(profile, profile.linkedCompanies)
     const existing = { ...blankMeta(profile.razonSocial), ...(nextMeta[profile.razonSocial] || {}) }
     nextMeta[profile.razonSocial] = {
       ...existing,
       legalName: profile.razonSocial,
       rfc: profile.rfc || existing.rfc,
-      linkedCompanies: unique([...(existing.linkedCompanies || []), ...profile.linkedCompanies]),
+      email: profile.contactEmail || existing.email || '',
+      linkedCompanies,
       lastInvoice: {
         folio: profile.folio,
         uuid: profile.uuid,
@@ -858,17 +907,218 @@ function syncInvoiceProfilesToCompanyMeta(profiles = state.invoiceProfiles) {
         estadoFiscal: profile.estadoFiscal
       }
     }
+    linkedCompanies.forEach((companyName) => {
+      const existingCompanyMeta = { ...blankMeta(companyName), ...(nextMeta[companyName] || {}) }
+      nextMeta[companyName] = {
+        ...existingCompanyMeta,
+        legalName: profile.razonSocial,
+        rfc: profile.rfc || existingCompanyMeta.rfc || '',
+        fiscalProfileId: profile.id
+      }
+    })
   })
   state.companyMeta = nextMeta
+  invoiceProfileCompanyIndexCache = { profiles: null, companyMeta: null, devices: null, lines: null, index: null }
 }
 
 function invoiceProfileSearchText(profile) {
-  return normalizeHeader(`${profile.razonSocial} ${profile.rfc} ${profile.folio} ${profile.uuid} ${profile.linkedCompanies.join(' ')}`)
+  const normalized = normalizeInvoiceProfile(profile)
+  const meta = getCompanyMeta(normalized.razonSocial)
+  return normalizeHeader(
+    `${normalized.razonSocial} ${normalized.rfc} ${normalized.folio} ${normalized.uuid} ${normalized.contactEmail} ${meta.email} ${invoiceProfileLinkedCompanies(normalized).join(' ')}`
+  )
 }
 
 function filteredInvoiceProfiles() {
   const query = normalizeHeader(state.invoiceProfileQuery)
-  return state.invoiceProfiles.filter((profile) => !query || invoiceProfileSearchText(profile).includes(query))
+  return state.invoiceProfiles.map(normalizeInvoiceProfile).filter((profile) => !query || invoiceProfileSearchText(profile).includes(query))
+}
+
+function invoiceProfileLinkedCompanies(profile) {
+  const normalized = normalizeInvoiceProfile(profile)
+  const meta = state.companyMeta[normalized.razonSocial] || {}
+  return invoiceProfileAllowedLinkedCompanies(normalized, [...(normalized.linkedCompanies || []), ...(Array.isArray(meta.linkedCompanies) ? meta.linkedCompanies : [])])
+}
+
+function invoiceProfileCompanyIndex() {
+  const operationalCompanyKeys = new Set(
+    unique([...state.devices.map((device) => device.company), ...state.lines.map((line) => line.company)])
+      .map((companyName) => normalizeHeader(companyName))
+      .filter(Boolean)
+  )
+  const profiles = state.invoiceProfiles.map(normalizeInvoiceProfile)
+  const profileByRazon = new Map(profiles.map((profile) => [normalizeHeader(profile.razonSocial), profile]))
+  const index = new Map()
+  const add = (companyName, profile) => {
+    const key = normalizeHeader(companyName)
+    if (!key) return
+    if (operationalCompanyKeys.size && !operationalCompanyKeys.has(key)) return
+    const list = index.get(key) || []
+    if (!list.some((item) => item.id === profile.id)) list.push(profile)
+    index.set(key, list)
+  }
+  profiles.forEach((profile) => {
+    invoiceProfileLinkedCompanies(profile).forEach((companyName) => add(companyName, profile))
+  })
+  Object.entries(state.companyMeta || {}).forEach(([companyName, meta]) => {
+    const profile = profileByRazon.get(normalizeHeader(meta?.legalName || meta?.razonSocial || meta?.razon_social || ''))
+    if (profile) add(companyName, profile)
+  })
+  invoiceProfileCompanyIndexCache = { profiles: state.invoiceProfiles, companyMeta: state.companyMeta, devices: state.devices, lines: state.lines, index }
+  return index
+}
+
+function invoiceProfileForCompany(companyName) {
+  const companyKey = normalizeHeader(companyName)
+  if (!companyKey) return null
+  return invoiceProfileCompanyIndex().get(companyKey)?.[0] || null
+}
+
+function invoiceProfilesForCompany(companyName) {
+  const companyKey = normalizeHeader(companyName)
+  if (!companyKey) return []
+  const indexedProfiles = invoiceProfileCompanyIndex().get(companyKey) || []
+  if (indexedProfiles.length) return indexedProfiles
+  return state.invoiceProfiles
+    .map(normalizeInvoiceProfile)
+    .filter((profile) => invoiceProfileLinkedCompanies(profile).some((linkedCompany) => normalizeHeader(linkedCompany) === companyKey))
+}
+
+function companyFiscalProfileLabel(companyName) {
+  const profiles = invoiceProfilesForCompany(companyName).map((profile) => profile.razonSocial).filter(Boolean)
+  return profiles.length ? profiles.join(', ') : ''
+}
+
+function companyFiscalProfileHtml(companyName) {
+  const label = companyFiscalProfileLabel(companyName)
+  return label ? `<span class="fiscal-chip" title="${attr(label)}"><span>Razon social</span><strong>${esc(label)}</strong></span>` : '<span class="fiscal-chip missing">Sin razon social</span>'
+}
+
+function lineCountsByCompany() {
+  const counts = new Map()
+  state.lines
+    .map((line, index) => normalizeLine(line, index))
+    .forEach((line) => {
+      const matchedDevice = matchLineDevice(line)
+      unique([line.company, matchedDevice?.company].map((company) => normalizeHeader(company)).filter(Boolean)).forEach((companyKey) => {
+        counts.set(companyKey, Number(counts.get(companyKey) || 0) + 1)
+      })
+    })
+  return counts
+}
+
+function invoiceProfileLinkedCompanySummaries(profile, companies = buildCompanies(), lineCounts = lineCountsByCompany()) {
+  const companyMap = new Map(companies.map((company) => [normalizeHeader(company.name), company]))
+  return invoiceProfileLinkedCompanies(profile).map((companyName) => {
+    const company = companyMap.get(normalizeHeader(companyName))
+    const cleanName = company?.name || companyName
+    const companyKey = normalizeHeader(cleanName)
+    const groupNames = company ? Array.from(company.groups.keys()).sort((a, b) => a.localeCompare(b)) : []
+    return {
+      name: cleanName,
+      exists: Boolean(company),
+      devices: company?.devices.length || 0,
+      billableCount: company?.billableCount || 0,
+      groups: groupNames.length,
+      groupNames,
+      lines: Number(lineCounts.get(companyKey) || 0),
+      email: getCompanyMeta(cleanName).email || ''
+    }
+  })
+}
+
+function billingEntityForCompany(companyName) {
+  const cleanCompany = textValue(companyName) || 'Sin empresa'
+  const profile = invoiceProfileForCompany(cleanCompany)
+  if (!profile) {
+    const meta = getCompanyMeta(cleanCompany)
+    return {
+      name: cleanCompany,
+      legalName: meta.legalName || cleanCompany,
+      rfc: meta.rfc || '',
+      email: meta.email || '',
+      isFiscalProfile: false,
+      profile: null
+    }
+  }
+  const meta = getCompanyMeta(profile.razonSocial)
+  return {
+    name: profile.razonSocial,
+    legalName: profile.razonSocial,
+    rfc: profile.rfc || meta.rfc || '',
+    email: meta.email || '',
+    isFiscalProfile: true,
+    profile
+  }
+}
+
+function billingEntityNameForCompany(companyName) {
+  return billingEntityForCompany(companyName).name
+}
+
+function billingCompanyFilterKey() {
+  if (!state.billingCompany) return ''
+  return normalizeHeader(billingEntityNameForCompany(state.billingCompany) || state.billingCompany)
+}
+
+function invoiceProfileByRazonSocial(name) {
+  const key = normalizeHeader(name)
+  if (!key) return null
+  return state.invoiceProfiles.map(normalizeInvoiceProfile).find((profile) => normalizeHeader(profile.razonSocial) === key) || null
+}
+
+function quoteFiscalDataForSelection(selection) {
+  const cleanSelection = textValue(selection)
+  if (!cleanSelection) return { clientName: '', rfc: '', contactEmail: '', sourceLabel: 'Prospecto' }
+  const directProfile = invoiceProfileByRazonSocial(cleanSelection)
+  if (directProfile) {
+    const meta = getCompanyMeta(directProfile.razonSocial)
+    return {
+      clientName: directProfile.razonSocial,
+      rfc: directProfile.rfc || meta.rfc || '',
+      contactEmail: directProfile.contactEmail || meta.email || '',
+      sourceLabel: 'Razon social'
+    }
+  }
+  const entity = billingEntityForCompany(cleanSelection)
+  return {
+    clientName: entity.legalName || entity.name || cleanSelection,
+    rfc: entity.rfc || '',
+    contactEmail: entity.email || '',
+    sourceLabel: entity.isFiscalProfile ? 'Razon social ligada' : 'Empresa CRM'
+  }
+}
+
+function applyQuoteCompanySelection(selection) {
+  const fiscalData = quoteFiscalDataForSelection(selection)
+  setState({
+    quote: {
+      ...state.quote,
+      company: selection,
+      group: '',
+      clientName: fiscalData.clientName,
+      rfc: fiscalData.rfc,
+      contactEmail: fiscalData.contactEmail
+    },
+    notice: selection ? `Cotizacion precargada desde ${fiscalData.sourceLabel}: ${fiscalData.clientName || selection}` : '',
+    view: 'cotizaciones'
+  })
+}
+
+function billingEntityOptions() {
+  const linkedCompanyKeys = new Set()
+  const linkedProfiles = []
+  state.invoiceProfiles.map(normalizeInvoiceProfile).forEach((profile) => {
+    const linkedCompanies = invoiceProfileLinkedCompanies(profile)
+    if (!linkedCompanies.length) return
+    linkedProfiles.push(profile.razonSocial)
+    linkedCompanies.forEach((company) => linkedCompanyKeys.add(normalizeHeader(company)))
+  })
+  const operationalCompanies = unique([
+    ...state.devices.map((device) => device.company),
+    ...state.lines.map((line) => line.company)
+  ]).filter((company) => !linkedCompanyKeys.has(normalizeHeader(company)))
+  return unique([...linkedProfiles, ...operationalCompanies]).sort((a, b) => a.localeCompare(b))
 }
 
 async function loadInvoiceProfilesFromPrivate() {
@@ -2416,6 +2666,32 @@ function lineImeiValues(line) {
   return unique([line.imei, line.imeiLong, line.imeiShort, line.imei_largo, line.imei_corto, line.imei_1, line.imei_2, line.imei1, line.imei2, line.equipo_wialon_uid, line.linkedDeviceUid])
 }
 
+function lineCurrentImei(line) {
+  return importTextValue(
+    line?.imei ||
+      line?.imeiLong ||
+      line?.imeiShort ||
+      line?.imei_1 ||
+      line?.imei1 ||
+      line?.imei_2 ||
+      line?.imei2 ||
+      line?.linkedDeviceUid ||
+      line?.equipo_wialon_uid
+  )
+}
+
+function lineReferenceImei(line) {
+  return importTextValue(line?.previousImei || line?.deactivatedImei || lineCurrentImei(line))
+}
+
+function linePreviousImeiValue(line) {
+  return importTextValue(line?.previousImei || line?.deactivatedImei || (!isActiveLine(line) ? lineCurrentImei(line) : ''))
+}
+
+function lineHasInactiveImeiReference(line) {
+  return Boolean(line && !isActiveLine(line) && lineReferenceImei(line))
+}
+
 function lineTextIdentifierValues(line) {
   return unique(
     [line.notes, line.providerHint, line.alias, line.model]
@@ -2461,7 +2737,12 @@ function lineIdentifierKeys(line) {
 
 function linesShareIdentifier(firstLine, secondLine) {
   const firstKeys = new Set(lineIdentifierKeys(firstLine))
-  return lineIdentifierKeys(secondLine).some((key) => firstKeys.has(key))
+  const bothActive = isActiveLine(firstLine) && isActiveLine(secondLine)
+  return lineIdentifierKeys(secondLine).some((key) => {
+    if (!firstKeys.has(key)) return false
+    if (key.startsWith('imei:') && !bothActive) return false
+    return true
+  })
 }
 
 function normalizeLineDate(value) {
@@ -2563,7 +2844,7 @@ function isBernardoLine(line) {
 }
 
 function lineCanMatchWialon(line) {
-  return Boolean(line && !isBernardoLine(line))
+  return Boolean(line && isActiveLine(line) && !isBernardoLine(line))
 }
 
 function parseLineCustomerText(value) {
@@ -2747,6 +3028,10 @@ function isActiveLine(line) {
   return normalizeLineStatus(line.status) === 'activa'
 }
 
+function todayIsoDate() {
+  return new Date().toISOString().slice(0, 10)
+}
+
 function lineRenewalLabel(line) {
   const date = normalizeLineDate(line.renewalDate)
   const match = date.match(/^(\d{4})-(\d{2})-(\d{2})$/)
@@ -2784,6 +3069,10 @@ function normalizeLine(line, index = 0) {
     annualPrice: line.annualPrice === '' || line.annualPrice === undefined ? '' : String(line.annualPrice),
     soldBy: normalizeSeller(line.soldBy || line.seller || line.vendedor, defaultEquipmentSeller),
     clientOnly: Boolean(line.clientOnly),
+    previousImei: importTextValue(line.previousImei || line.deactivatedImei || line.imei_anterior || line.imeiAnterior),
+    deactivatedImei: importTextValue(line.deactivatedImei || line.previousImei || line.imei_baja || line.imei_referencia_baja),
+    deactivatedAt: normalizeLineDate(line.deactivatedAt || line.fecha_baja || line.deactivationDate),
+    statusManual: Boolean(line.statusManual),
     notes: importTextValue(line.notes),
     source: importTextValue(line.source) || 'manual',
     providerManual: Boolean(line.providerManual),
@@ -2791,6 +3080,10 @@ function normalizeLine(line, index = 0) {
     recordState: textValue(line.recordState) || 'vigente'
   }
   clean.imei = clean.imei || clean.imeiLong || clean.imeiShort || clean.imei1 || clean.imei2 || clean.linkedDeviceUid
+  if (!isActiveLine(clean)) {
+    clean.deactivatedImei = clean.deactivatedImei || clean.previousImei || lineCurrentImei(clean)
+    clean.previousImei = clean.previousImei || clean.deactivatedImei
+  }
   const bernardoLine = isBernardoLine({ ...line, ...clean })
   clean.clientOnly = clean.clientOnly || bernardoLine || !clean.imei
   if (bernardoLine && lineBillingCycle(clean) === 'anual' && (clean.annualPrice === '' || Number(clean.annualPrice) <= 0)) {
@@ -2877,8 +3170,8 @@ function lineMatchesDeviceByName(line, device) {
 function lineIsWialonMatchExempt(line, devices = state.devices, match = null) {
   const type = normalizeLineType(line.lineType || line.providerOverride || line.carrier)
   const text = normalizeHeader(`${line.company || ''} ${line.status || ''} ${line.notes || ''} ${line.plan || ''} ${line.source || ''}`)
+  if (!isActiveLine(line)) return true
   if (type === 'emnify') {
-    if (!isActiveLine(line)) return true
     if (
       text.includes('deleted') ||
       text.includes('disabled') ||
@@ -2898,8 +3191,10 @@ function lineIsWialonMatchExempt(line, devices = state.devices, match = null) {
 function lineWialonExemptLabel(line) {
   const type = normalizeLineType(line.lineType || line.providerOverride || line.carrier)
   const text = normalizeHeader(`${line.company || ''} ${line.status || ''} ${line.notes || ''} ${line.plan || ''} ${line.source || ''}`)
+  if (lineHasInactiveImeiReference(line)) return `Linea baja / ref. IMEI ${lineReferenceImei(line)}`
+  if (!isActiveLine(line)) return 'Linea baja / sin asignar'
   if (type === 'emnify') {
-    if (!isActiveLine(line) || text.includes('deleted') || text.includes('disabled')) return 'Emnify baja / sin activar'
+    if (text.includes('deleted') || text.includes('disabled')) return 'Emnify baja / sin activar'
     if (text.includes('available') || text.includes('disponible') || text.includes('sin asign') || text.includes('unassigned')) {
       return 'Emnify disponible / sin asignar'
     }
@@ -3165,9 +3460,17 @@ function sameLineIccid(firstLine, secondLine) {
 }
 
 function mergeLineRecord(oldLine, normalizedLine) {
-  const preserveImeiByExistingIcc = sameLineIccid(oldLine, normalizedLine) && Boolean(oldLine.imei || oldLine.imeiLong || oldLine.imeiShort)
+  const oldActive = isActiveLine(oldLine)
+  const incomingActive = isActiveLine(normalizedLine)
+  const incomingHasImei = Boolean(normalizedLine.imei || normalizedLine.imeiLong || normalizedLine.imeiShort)
+  const preserveImeiByExistingIcc = sameLineIccid(oldLine, normalizedLine) && oldActive && incomingActive && Boolean(oldLine.imei || oldLine.imeiLong || oldLine.imeiShort)
   const preserveSuntechImei = isSuntechDevice(matchLineDevice(oldLine))
   const preserveExistingImei = preserveImeiByExistingIcc || preserveSuntechImei
+  const oldReferenceImei = importTextValue(oldLine.previousImei || oldLine.deactivatedImei)
+  const changedImeiReference = oldActive && incomingActive && incomingHasImei && normalizeIdentifier(normalizedLine.imei || normalizedLine.imeiLong || normalizedLine.imeiShort) !== normalizeIdentifier(oldLine.imei || oldLine.imeiLong || oldLine.imeiShort)
+  const inactiveReference = !incomingActive && (lineCurrentImei(oldLine) || lineReferenceImei(oldLine))
+  const nextStatus = oldLine.statusManual ? oldLine.status : normalizedLine.status || oldLine.status
+  const nextActive = normalizeLineStatus(nextStatus) === 'activa'
   const providerIsManual = Boolean(oldLine.providerManual)
   const incomingProviderIsDefault = normalizedLine.providerDetectedBy === 'default'
   const oldLineType = normalizeLineType(oldLine.lineType)
@@ -3190,12 +3493,16 @@ function mergeLineRecord(oldLine, normalizedLine) {
     imeiShort: preserveExistingImei ? oldLine.imeiShort || normalizedLine.imeiShort : normalizedLine.imeiShort || oldLine.imeiShort,
     carrier: nextCarrier,
     plan: normalizedLine.plan || oldLine.plan,
-    status: normalizedLine.status || oldLine.status,
+    status: nextStatus,
     billingCycle: normalizedLine.billingCycle || oldLine.billingCycle,
     renewalDate: normalizedLine.renewalDate || oldLine.renewalDate,
     annualPrice: normalizedLine.annualPrice || oldLine.annualPrice,
     soldBy: normalizeSeller(oldLine.soldBy || normalizedLine.soldBy, defaultEquipmentSeller),
     clientOnly: Boolean(oldLine.clientOnly || normalizedLine.clientOnly),
+    previousImei: oldReferenceImei || (changedImeiReference ? lineReferenceImei(oldLine) : '') || normalizedLine.previousImei || normalizedLine.deactivatedImei || '',
+    deactivatedImei: oldLine.deactivatedImei || (!nextActive ? inactiveReference : '') || normalizedLine.deactivatedImei || '',
+    deactivatedAt: oldLine.deactivatedAt || (!nextActive ? todayIsoDate() : '') || normalizedLine.deactivatedAt || '',
+    statusManual: Boolean(oldLine.statusManual || normalizedLine.statusManual),
     notes: normalizedLine.notes || oldLine.notes,
     source: normalizedLine.source || oldLine.source,
     providerManual: providerIsManual,
@@ -3218,6 +3525,10 @@ function mergeLineRecord(oldLine, normalizedLine) {
     'annualPrice',
     'soldBy',
     'clientOnly',
+    'previousImei',
+    'deactivatedImei',
+    'deactivatedAt',
+    'statusManual',
     'notes',
     'source',
     'providerManual',
@@ -3656,6 +3967,9 @@ function lineFromRelationRecord(record, index) {
       imeiShort,
       imei1: record.imei_1 || record.imei1,
       imei2: record.imei_2 || record.imei2,
+      previousImei: record.imei_anterior || record.imei_referencia_baja || record.previousImei,
+      deactivatedImei: record.imei_baja || record.imei_referencia_baja || record.deactivatedImei,
+      deactivatedAt: record.fecha_baja || record.deactivatedAt,
       linkedDeviceUid: record.equipo_wialon_uid,
       carrier: record.operador || provider,
       plan: record.plan,
@@ -3695,6 +4009,8 @@ function relationRecordFromRow(row) {
     imei,
     imei_largo: rowValue(row, ['IMEI largo', 'IMEI Largo', 'IMEI completo', 'Long IMEI']),
     imei_corto: rowValue(row, ['IMEI corto', 'IMEI Corto', 'Short IMEI']),
+    imei_anterior: rowValue(row, ['IMEI anterior', 'IMEI anterior / referencia', 'IMEI referencia', 'Previous IMEI']),
+    imei_baja: rowValue(row, ['IMEI baja', 'IMEI referencia baja', 'IMEI baja / referencia']),
     imei_1: rowValue(row, ['IMEI 1', 'IMEI1', 'imei_1']),
     imei_2: rowValue(row, ['IMEI 2', 'IMEI2', 'imei_2']),
     equipo_wialon_uid: rowValue(row, ['Equipo Wialon UID', 'Wialon UID', 'UID Wialon', 'equipo_wialon_uid']),
@@ -3715,6 +4031,7 @@ function relationRecordFromRow(row) {
     subcuenta: rowValue(row, ['Subcuenta']),
     fuente: rowValue(row, ['Fuente']),
     fila_fuente: rowValue(row, ['Fila fuente']),
+    fecha_baja: rowValue(row, ['Fecha baja', 'Baja', 'Desactivacion linea', 'DesactivaciÃ³n linea']),
     fecha_activacion: rowValue(row, ['Fecha activacion', 'Fecha activación']),
     fecha_ultimo_cambio: rowValue(row, ['Fecha ultimo cambio', 'Fecha último cambio']),
     notas: rowValue(row, ['Notas'])
@@ -3782,12 +4099,16 @@ function reconcileRelationLine(currentLine, relationLine) {
     imei: base.imei || current.imei,
     imeiLong: base.imeiLong || current.imeiLong,
     imeiShort: base.imeiShort || current.imeiShort,
-    status: base.status || current.status,
+    status: current.statusManual ? current.status : base.status || current.status,
     billingCycle: current.billingCycle || base.billingCycle,
     renewalDate: current.renewalDate || base.renewalDate,
     annualPrice: current.annualPrice || base.annualPrice,
     soldBy: current.soldBy || base.soldBy,
     clientOnly: isBernardoLine(base) ? true : current.clientOnly && !current.imei ? true : base.clientOnly,
+    previousImei: current.previousImei || base.previousImei || current.deactivatedImei || base.deactivatedImei,
+    deactivatedImei: current.deactivatedImei || base.deactivatedImei,
+    deactivatedAt: current.deactivatedAt || base.deactivatedAt,
+    statusManual: Boolean(current.statusManual || base.statusManual),
     notes: current.notes || base.notes,
     plan: base.plan || current.plan,
     lineType: base.lineType,
@@ -4062,6 +4383,8 @@ async function exportLinesXlsx() {
     'IMEI',
     'IMEI largo',
     'IMEI corto',
+    'IMEI anterior / referencia',
+    'Fecha baja',
     'Vendido por',
     'Operador',
     'Plan',
@@ -4083,6 +4406,8 @@ async function exportLinesXlsx() {
     line.imei,
     line.imeiLong || '',
     line.imeiShort || '',
+    linePreviousImeiValue(line),
+    line.deactivatedAt || '',
     lineSeller(line),
     line.carrier,
     line.plan,
@@ -4109,6 +4434,8 @@ async function exportLineMatchReportXlsx() {
     'IMEI',
     'IMEI largo',
     'IMEI corto',
+    'IMEI anterior / referencia',
+    'Fecha baja',
     'Vendido por',
     'Operador',
     'Plan',
@@ -4130,6 +4457,8 @@ async function exportLineMatchReportXlsx() {
       line.imei,
       line.imeiLong || '',
       line.imeiShort || '',
+      linePreviousImeiValue(line),
+      line.deactivatedAt || '',
       lineSeller(line),
       line.carrier,
       line.plan,
@@ -4175,6 +4504,7 @@ function applyMapping(nextMapping) {
 
 function buildCompanies() {
   const map = new Map()
+  const fiscalProfileNames = invoiceProfileNameSet()
   state.devices.forEach((device) => {
     const companyName = device.company || 'Sin empresa'
     if (!map.has(companyName)) {
@@ -4192,6 +4522,7 @@ function buildCompanies() {
     })
   })
   Object.keys(state.companyMeta).forEach((companyName) => {
+    if (fiscalProfileNames.has(normalizeHeader(companyName))) return
     if (companyName && !map.has(companyName)) {
       map.set(companyName, { name: companyName, devices: [], billableCount: 0, groups: new Map() })
     }
@@ -4249,20 +4580,22 @@ function cobrosGroups(companies) {
 function billingFilterMatches(device) {
   const query = normalizeHeader(state.billingQuery)
   const deviceGroups = device.groups.length ? device.groups : ['Sin grupo']
-  const companyMatches = !state.billingCompany || device.company === state.billingCompany
+  const billingEntityName = billingEntityNameForCompany(device.company)
+  const companyMatches = !state.billingCompany || normalizeHeader(billingEntityName) === billingCompanyFilterKey()
   const groupMatches = !state.billingGroup || deviceGroups.includes(state.billingGroup)
   const queryMatches =
     !query ||
     normalizeHeader(
-      `${device.company} ${deviceGroups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType} ${deviceSeller(device)}`
+      `${billingEntityName} ${device.company} ${deviceGroups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType} ${deviceSeller(device)}`
     ).includes(query)
   return companyMatches && groupMatches && queryMatches
 }
 
 function billingGroups() {
   const groups = new Set()
+  const companyFilterKey = billingCompanyFilterKey()
   state.devices.forEach((device) => {
-    if (state.billingCompany && device.company !== state.billingCompany) return
+    if (state.billingCompany && normalizeHeader(billingEntityNameForCompany(device.company)) !== companyFilterKey) return
     ;(device.groups.length ? device.groups : ['Sin grupo']).forEach((group) => groups.add(group))
   })
   return Array.from(groups).sort((a, b) => a.localeCompare(b))
@@ -4391,15 +4724,17 @@ function buildQuote() {
   const tax = subtotal * Number(quote.ivaRate || 0)
   const total = subtotal + tax
   const selectedCompany = quote.company || ''
+  const fiscalData = selectedCompany ? quoteFiscalDataForSelection(selectedCompany) : { clientName: '', rfc: '', contactEmail: '' }
   const meta = selectedCompany ? getCompanyMeta(selectedCompany) : blankMeta('')
-  const clientName = quote.clientName || meta.legalName || selectedCompany || textValue(quote.newCompanyName) || 'Cliente'
+  const clientName = quote.clientName || fiscalData.clientName || meta.legalName || selectedCompany || textValue(quote.newCompanyName) || 'Cliente'
   const today = new Date()
   const expires = new Date(today.getFullYear(), today.getMonth(), today.getDate() + Number(quote.validityDays || 0))
 
   return {
     clientName,
     company: selectedCompany,
-    email: meta.email || '',
+    rfc: quote.rfc || fiscalData.rfc || meta.rfc || '',
+    email: quote.contactEmail || fiscalData.contactEmail || meta.email || '',
     attendant: quoteAttendantOptions.includes(quote.attendant) ? quote.attendant : quoteAttendantOptions[0],
     cycle,
     quantity,
@@ -4572,13 +4907,14 @@ function billingLineFilterMatches(line) {
   const query = normalizeHeader(state.billingQuery)
   const device = matchLineDevice(line)
   const companyName = device?.company || line.company
+  const billingEntityName = billingEntityNameForCompany(companyName)
   const groups = Array.isArray(device?.groups) ? device.groups : []
-  const companyMatches = !state.billingCompany || normalizeHeader(companyName) === normalizeHeader(state.billingCompany)
+  const companyMatches = !state.billingCompany || normalizeHeader(billingEntityName) === billingCompanyFilterKey()
   const groupMatches = !state.billingGroup || groups.some((group) => normalizeHeader(group) === normalizeHeader(state.billingGroup))
   const queryMatches =
     !query ||
     normalizeHeader(
-      `${companyName} ${line.company} ${line.phone} ${line.iccid} ${line.imei} ${lineTypeLabel(line.lineType)} ${line.carrier} ${line.plan} ${line.notes} ${lineSeller(line)} ${device?.unitName || ''} ${
+      `${billingEntityName} ${companyName} ${line.company} ${line.phone} ${line.iccid} ${line.imei} ${lineTypeLabel(line.lineType)} ${line.carrier} ${line.plan} ${line.notes} ${lineSeller(line)} ${device?.unitName || ''} ${
         device?.uid || ''
       } ${deviceImeiLong(device || {})} ${deviceImeiShort(device || {})}`
     ).includes(query)
@@ -4587,14 +4923,16 @@ function billingLineFilterMatches(line) {
 
 function ensureBillingRow(rows, companyName, period) {
   if (!companyName || companyName === 'Sin empresa') return null
-  const meta = getCompanyMeta(companyName)
-  if (!rows.has(companyName)) {
-    rows.set(companyName, {
-      id: `${slug(companyName)}-${period.key}`,
-      company: companyName,
-      legalName: meta.legalName || companyName,
-      rfc: meta.rfc,
-      email: meta.email,
+  const entity = billingEntityForCompany(companyName)
+  if (!rows.has(entity.name)) {
+    rows.set(entity.name, {
+      id: `${slug(entity.name)}-${period.key}`,
+      company: entity.name,
+      legalName: entity.legalName || entity.name,
+      rfc: entity.rfc,
+      email: entity.email,
+      billingType: entity.isFiscalProfile ? 'razon_social' : 'empresa',
+      sourceCompanies: new Set(),
       periodLabel: period.label,
       monthlyCount: 0,
       annualCount: 0,
@@ -4613,7 +4951,9 @@ function ensureBillingRow(rows, companyName, period) {
       details: []
     })
   }
-  return rows.get(companyName)
+  const row = rows.get(entity.name)
+  row.sourceCompanies.add(companyName)
+  return row
 }
 
 function buildBillingRows() {
@@ -4645,6 +4985,7 @@ function buildBillingRows() {
       if (cycle === 'mensual') addSellerMonthly(row, soldBy, unitPrice)
       row.details.push({
         sourceType: 'Equipo Wialon',
+        sourceCompany: companyName,
         unitName: device.unitName,
         uid: device.uid,
         imei: device.imei,
@@ -4691,6 +5032,7 @@ function buildBillingRows() {
         if (cycle === 'mensual') addSellerMonthly(row, soldBy, unitPrice)
         row.details.push({
           sourceType: 'Linea celular',
+          sourceCompany: companyName,
           unitName: matchedDevice?.unitName ? `${lineTypeLabel(line.lineType)} / ${matchedDevice.unitName}` : lineTypeLabel(line.lineType),
           uid: matchedDevice?.uid || '',
           imei: line.imei || line.imeiLong || matchedDeviceImei || '',
@@ -4712,6 +5054,7 @@ function buildBillingRows() {
 
   return Array.from(rows.values())
     .map((row) => {
+      row.sourceCompanies = Array.from(row.sourceCompanies || []).sort((a, b) => a.localeCompare(b))
       row.tax = row.subtotal * Number(state.billing.ivaRate || 0)
       row.total = row.subtotal + row.tax
       row.status = row.billableCount > 0 ? 'facturar' : 'fuera_periodo'
@@ -5340,7 +5683,8 @@ function buildQuotePdfBlob(quote, logo = null) {
   text(pdfTrim(quote.clientName, 32), 102, 650, 11, true)
   text('ATIENDE:', 42, 632, 10)
   text(pdfTrim(quote.attendant || '', 42), 104, 632, 10)
-  text('PUESTO:', 42, 614, 10)
+  text('RFC:', 42, 614, 10)
+  text(pdfTrim(quote.rfc || '', 20), 82, 614, 10)
   text('EMAIL:', 352, 614, 10)
   text(pdfTrim(quote.email || '', 34), 400, 614, 10)
 
@@ -5473,7 +5817,8 @@ async function exportQuoteTemplateXlsx(quote) {
     ['C6', quote.clientName],
     ['A7', 'ATIENDE:'],
     ['C7', quote.attendant || ''],
-    ['C8', ''],
+    ['A8', 'RFC:'],
+    ['C8', quote.rfc || ''],
     ['H7', ''],
     ['H8', quote.email || ''],
     ['I18', productSubtotal],
@@ -5521,10 +5866,12 @@ async function exportQuoteTemplateXlsx(quote) {
 }
 
 async function exportBillingXlsx() {
-  const rows = state.billingRows.length ? state.billingRows : buildBillingRows()
+  const rows = buildBillingRows()
   const summary = [
     [
-      'Empresa',
+      'Razon social / Empresa',
+      'Tipo facturacion',
+      'Empresas CRM ligadas',
       'Razon social',
       'RFC',
       'Email',
@@ -5545,6 +5892,8 @@ async function exportBillingXlsx() {
     ],
     ...rows.map((row) => [
       row.company,
+      row.billingType === 'razon_social' ? 'Razon social' : 'Empresa sin razon social',
+      (row.sourceCompanies || []).join(', '),
       row.legalName,
       row.rfc,
       row.email,
@@ -5567,6 +5916,7 @@ async function exportBillingXlsx() {
   const detailRows = rows.flatMap((row) =>
     row.details.map((detail) => [
       row.company,
+      detail.sourceCompany || (row.sourceCompanies || []).join(', '),
       detail.sourceType || 'Equipo Wialon',
       detail.unitName,
       detail.uid,
@@ -5587,7 +5937,27 @@ async function exportBillingXlsx() {
     ])
   )
   const details = [
-    ['Empresa', 'Tipo partida', 'Equipo / Linea', 'UID', 'Telefono', 'ICCID', 'IMEI', 'IMEI largo', 'IMEI corto', 'Proveedora linea', 'Cobro', 'Meses pago', 'Fecha renovacion', 'Precio pactado/aplicado', 'Fecha venta', 'Vendido por', 'Nota precio', 'Periodo'],
+    [
+      'Razon social / Empresa',
+      'Empresa CRM origen',
+      'Tipo partida',
+      'Equipo / Linea',
+      'UID',
+      'Telefono',
+      'ICCID',
+      'IMEI',
+      'IMEI largo',
+      'IMEI corto',
+      'Proveedora linea',
+      'Cobro',
+      'Meses pago',
+      'Fecha renovacion',
+      'Precio pactado/aplicado',
+      'Fecha venta',
+      'Vendido por',
+      'Nota precio',
+      'Periodo'
+    ],
     ...detailRows
   ]
   await exportWorkbookXlsx(`prefacturacion-${getBillingPeriod().key}.xlsx`, [
@@ -5623,6 +5993,7 @@ async function exportQuoteXlsx() {
     ['Fecha', quote.date],
     ['Vigencia hasta', quote.expires],
     ['Cliente', quote.clientName],
+    ['RFC', quote.rfc],
     ['Atiende', quote.attendant],
     ['Empresa registrada', quote.company || 'Prospecto'],
     ['Descripcion', quote.description],
@@ -5718,7 +6089,7 @@ function companyTable(companies) {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Empresa</th><th>Grupos</th><th>Equipos</th><th>Facturables</th><th>Cobro</th><th></th></tr>
+          <tr><th>Empresa</th><th>Razon social</th><th>Grupos</th><th>Equipos</th><th>Facturables</th><th>Cobro</th><th></th></tr>
         </thead>
         <tbody>
           ${pageCompanies
@@ -5728,6 +6099,7 @@ function companyTable(companies) {
               return `
                 <tr>
                   <td>${esc(company.name)}</td>
+                  <td>${companyFiscalProfileHtml(company.name)}</td>
                   <td>${company.groups.size}</td>
                   <td>${company.devices.length}</td>
                   <td>${company.billableCount}</td>
@@ -5801,23 +6173,24 @@ function deviceTable(devices) {
   `
 }
 
-function billingTable() {
-  if (!state.billingRows.length) return '<div class="empty-state">Sin lista generada.</div>'
-  const pagination = tablePaginationState(state.billingRows.length, state.billingPage)
-  const pageRows = state.billingRows.slice(pagination.start, pagination.end)
+function billingTable(rows = state.billingRows) {
+  if (!rows.length) return '<div class="empty-state">Sin lista generada.</div>'
+  const pagination = tablePaginationState(rows.length, state.billingPage)
+  const pageRows = rows.slice(pagination.start, pagination.end)
   return `
-    ${renderTablePagination(state.billingRows.length, pagination, { label: 'prefacturas', dataAttr: 'data-billing-page', ariaLabel: 'Paginacion de prefacturas', sticky: true })}
+    ${renderTablePagination(rows.length, pagination, { label: 'prefacturas', dataAttr: 'data-billing-page', ariaLabel: 'Paginacion de prefacturas', sticky: true })}
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Empresa</th><th>Periodo</th><th>Mensuales</th><th>Anuales</th><th>Semestrales</th><th>Equipos</th><th>Lineas</th><th>Total partidas</th><th>Mensualidad Felipe</th><th>Mensualidad Isaac</th><th>Subtotal</th><th>IVA</th><th>Total</th><th>Estado</th></tr>
+          <tr><th>Razon social / Empresa</th><th>Empresas CRM</th><th>Periodo</th><th>Mensuales</th><th>Anuales</th><th>Semestrales</th><th>Equipos</th><th>Lineas</th><th>Total partidas</th><th>Mensualidad Felipe</th><th>Mensualidad Isaac</th><th>Subtotal</th><th>IVA</th><th>Total</th><th>Estado</th></tr>
         </thead>
         <tbody>
           ${pageRows
             .map(
               (row) => `
                 <tr>
-                  <td>${esc(row.company)}</td>
+                  <td><strong>${esc(row.company)}</strong><small>${row.billingType === 'razon_social' ? 'Razon social' : 'Empresa sin razon social'}</small></td>
+                  <td>${esc((row.sourceCompanies || []).join(', ') || '-')}</td>
                   <td>${esc(row.periodLabel)}</td>
                   <td>${row.monthlyCount}</td>
                   <td>${row.annualCount}</td>
@@ -5837,7 +6210,7 @@ function billingTable() {
         </tbody>
       </table>
     </div>
-    ${renderTablePagination(state.billingRows.length, pagination, { label: 'prefacturas', dataAttr: 'data-billing-page', ariaLabel: 'Paginacion de prefacturas' })}
+    ${renderTablePagination(rows.length, pagination, { label: 'prefacturas', dataAttr: 'data-billing-page', ariaLabel: 'Paginacion de prefacturas' })}
   `
 }
 
@@ -5880,20 +6253,15 @@ function renderResumen(companies, stats) {
   `
 }
 
-function renderEmpresas(companies) {
-  const pagination = tablePaginationState(companies.length, state.companyPage)
-  const pageCompanies = companies.slice(pagination.start, pagination.end)
+function renderRazonesSociales(companies) {
   const invoiceProfiles = filteredInvoiceProfiles()
   const invoicePagination = tablePaginationState(invoiceProfiles.length, state.invoiceProfilePage)
   const pageInvoiceProfiles = invoiceProfiles.slice(invoicePagination.start, invoicePagination.end)
-  const crmCompanyOptions = unique([...companies.filter((company) => company.devices.length).map((company) => company.name), ...state.devices.map((device) => device.company)]).sort((a, b) =>
-    a.localeCompare(b)
-  )
+  const crmCompanyOptions = crmCompanyNamesForFiscalLinks(companies)
   return `
     <datalist id="crmCompanyList">
       ${crmCompanyOptions.map((company) => `<option value="${attr(company)}"></option>`).join('')}
     </datalist>
-    ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas', sticky: true })}
     <section class="invoice-profile-panel">
       <div class="line-section-head">
         <div><span>Razones sociales fiscales</span><h2>Ultima factura emitida desde enero 2025</h2></div>
@@ -5909,41 +6277,60 @@ function renderEmpresas(companies) {
           ? `<div class="notice">Base fiscal: ${esc(state.invoiceImport.imported || 0)} razones sociales, desde ${esc(state.invoiceImport.minFechaEmision || '2025-01-01')}. Excluye pagos, notas de credito y canceladas.</div>`
           : '<div class="notice">Carga la base para crear perfiles por razon social y ligarlos a una o varias empresas operativas del CRM.</div>'
       }
-      ${renderTablePagination(invoiceProfiles.length, invoicePagination, { label: 'razones sociales', dataAttr: 'data-invoice-profile-page', ariaLabel: 'Paginacion de razones sociales' })}
+      ${renderTablePagination(invoiceProfiles.length, invoicePagination, { label: 'razones sociales', dataAttr: 'data-invoice-profile-page', ariaLabel: 'Paginacion de razones sociales', sticky: true })}
       <div class="table-wrap">
-        <table>
+        <table class="invoice-profile-table">
           <thead>
-            <tr><th>Razon social</th><th>RFC</th><th>Ultima factura</th><th>Total</th><th>Empresas CRM ligadas</th><th>Estado</th></tr>
+            <tr><th>Razon social</th><th>RFC</th><th>Correo facturas</th><th>Ultima factura</th><th>Total</th><th>Empresas CRM ligadas</th></tr>
           </thead>
           <tbody>
             ${
               pageInvoiceProfiles.length
                 ? pageInvoiceProfiles
-                    .map(
-                      (profile) => `
+                    .map((profile) => {
+                      const contactEmail = profile.contactEmail || getCompanyMeta(profile.razonSocial).email || ''
+                      return `
                         <tr>
                           <td><strong>${esc(profile.razonSocial)}</strong><small>${esc(profile.uuid || '-')}</small></td>
                           <td>${esc(profile.rfc || '-')}</td>
+                          <td><input type="email" value="${attr(contactEmail)}" data-invoice-profile="${attr(profile.id)}" data-invoice-field="contactEmail" placeholder="facturas@cliente.com"></td>
                           <td>${esc(profile.folio || '-')}<small>${esc(profile.fechaEmision || '-')}</small></td>
                           <td>${money(profile.total, profile.moneda || 'MXN')}</td>
-                          <td><input list="crmCompanyList" value="${attr(profile.linkedCompanies.join(', '))}" data-invoice-profile="${attr(profile.id)}" data-invoice-field="linkedCompanies" placeholder="Empresa 1, Empresa 2"></td>
-                          <td><span class="pill ok">${esc(profile.estadoFiscal || 'VIGENTE')}</span></td>
+                          <td>
+                            <label class="combo-field">
+                              <input list="crmCompanyList" value="${attr(invoiceProfileLinkedCompanies(profile).join(', '))}" data-invoice-profile="${attr(profile.id)}" data-invoice-field="linkedCompanies" placeholder="Empresa CRM" spellcheck="false" autocomplete="off">
+                              ${icon('chevron-down')}
+                            </label>
+                          </td>
                         </tr>`
-                    )
+                    })
                     .join('')
                 : '<tr><td colspan="6">Sin razones sociales para los filtros.</td></tr>'
             }
           </tbody>
         </table>
       </div>
+      ${renderTablePagination(invoiceProfiles.length, invoicePagination, { label: 'razones sociales', dataAttr: 'data-invoice-profile-page', ariaLabel: 'Paginacion de razones sociales' })}
     </section>
+  `
+}
+
+function renderEmpresas(companies) {
+  const pagination = tablePaginationState(companies.length, state.companyPage)
+  const pageCompanies = companies.slice(pagination.start, pagination.end)
+  return `
+    ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas', sticky: true })}
     <section class="company-list">
       ${pageCompanies
         .map(
           (company) => `
             <details class="company-row">
               <summary>
-                <div><strong>${esc(company.name)}</strong><span>${company.billableCount} facturables / ${company.devices.length} equipos</span></div>
+                <div>
+                  <strong>${esc(company.name)}</strong>
+                  <span>${company.billableCount} facturables / ${company.devices.length} equipos</span>
+                  <div class="company-profile-line">${companyFiscalProfileHtml(company.name)}</div>
+                </div>
                 ${icon('chevron-right')}
               </summary>
               <div class="company-settings">
@@ -6023,11 +6410,13 @@ function renderEquipos() {
 }
 
 function renderLineRows(lines) {
-  if (!lines.length) return '<tr><td colspan="18">Sin lineas en esta seccion.</td></tr>'
+  if (!lines.length) return '<tr><td colspan="20">Sin lineas en esta seccion.</td></tr>'
   return lines
     .map((line) => {
       const matchType = lineMatchType(line)
       const pillClass = matchType === 'equipo' ? 'ok' : matchType === 'no_asignada' || matchType === 'solo_linea' ? 'warn' : 'red'
+      const inactive = !isActiveLine(line)
+      const previousImei = linePreviousImeiValue(line)
       return `
         <tr>
           <td><input value="${attr(line.company)}" data-line="${attr(line.id)}" data-line-field="company"></td>
@@ -6041,6 +6430,7 @@ function renderLineRows(lines) {
           <td><input value="${attr(line.imei)}" data-line="${attr(line.id)}" data-line-field="imei"></td>
           <td><input value="${attr(line.imeiLong)}" data-line="${attr(line.id)}" data-line-field="imeiLong"></td>
           <td><input value="${attr(line.imeiShort)}" data-line="${attr(line.id)}" data-line-field="imeiShort"></td>
+          <td><input value="${attr(previousImei)}" data-line="${attr(line.id)}" data-line-field="previousImei" placeholder="IMEI anterior"></td>
           <td><select data-line="${attr(line.id)}" data-line-field="soldBy">${sellerSelectOptions(line.soldBy)}</select></td>
           <td><span class="pill ${pillClass}">${esc(lineMatchLabel(line))}</span></td>
           <td><span class="pill">${esc(providerDetectionLabel(line.providerDetectedBy))}</span></td>
@@ -6057,6 +6447,16 @@ function renderLineRows(lines) {
               <option value="suspendida" ${normalizeLineStatus(line.status) === 'suspendida' ? 'selected' : ''}>Suspendida</option>
               <option value="emitida" ${normalizeLineStatus(line.status) === 'emitida' ? 'selected' : ''}>Emitida</option>
             </select>
+          </td>
+          <td>
+            <div class="line-deactivation-cell">
+              <input type="date" value="${attr(line.deactivatedAt)}" data-line="${attr(line.id)}" data-line-field="deactivatedAt">
+              ${
+                inactive
+                  ? `<small>Ref. ${esc(lineReferenceImei(line) || '-')}</small>`
+                  : `<button class="button small-button" data-deactivate-line="${attr(line.id)}" type="button">Dar baja</button>`
+              }
+            </div>
           </td>
           <td>
             <select data-line="${attr(line.id)}" data-line-field="billingCycle">
@@ -6086,7 +6486,7 @@ function renderLineTable(title, lines, tone = '') {
         <table>
           <thead>
             <tr>
-              <th>Empresa</th><th>Linea</th><th>Tipo linea</th><th>ICCID / ICC</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Vendido por</th><th>Match</th><th>Detectado por</th><th>Tipo</th><th>Estatus</th><th>Cobro</th><th>Renovacion</th><th>Precio pactado</th><th>Operador</th><th>Plan</th><th>Notas</th>
+              <th>Empresa</th><th>Linea</th><th>Tipo linea</th><th>ICCID / ICC</th><th>IMEI actual</th><th>IMEI largo</th><th>IMEI corto</th><th>IMEI anterior</th><th>Vendido por</th><th>Match</th><th>Detectado por</th><th>Tipo</th><th>Estatus</th><th>Baja</th><th>Cobro</th><th>Renovacion</th><th>Precio pactado</th><th>Operador</th><th>Plan</th><th>Notas</th>
             </tr>
           </thead>
           <tbody>${renderLineRows(lines)}</tbody>
@@ -6160,6 +6560,7 @@ function renderLineas(companies) {
           <label><span>Tipo linea</span><select data-new-line="lineType">${lineTypeOptions.map((option) => `<option value="${attr(option.value)}" ${normalizeLineType(d.lineType) === option.value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}</select></label>
           <label><span>ICCID / ICC</span><input value="${attr(d.iccid)}" data-new-line="iccid" placeholder="SIM"></label>
           <label><span>IMEI equipo</span><input value="${attr(d.imei)}" data-new-line="imei" placeholder="IMEI si aplica"></label>
+          <label><span>IMEI anterior</span><input value="${attr(d.previousImei)}" data-new-line="previousImei" placeholder="Si viene de otro equipo"></label>
           <label><span>Vendido por</span><select data-new-line="soldBy">${sellerSelectOptions(d.soldBy || defaultNewEquipmentSeller)}</select></label>
           <label><span>Operador</span><input value="${attr(d.carrier)}" data-new-line="carrier" placeholder="Telcel, AT&T, etc."></label>
           <label><span>Plan</span><input value="${attr(d.plan)}" data-new-line="plan" placeholder="Plan / paquete"></label>
@@ -6184,7 +6585,8 @@ function renderFacturacion(stats, companies) {
   const sellerMonthlyTotals = billingSellerMonthlyTotals(previewRows)
   const projectedTotal = previewRows.reduce((sum, row) => sum + row.total, 0)
   const groups = billingGroups()
-  const options = companyOptions(companies)
+  const selectedBillingCompany = state.billingCompany ? billingEntityNameForCompany(state.billingCompany) : ''
+  const options = unique([selectedBillingCompany, ...billingEntityOptions()].filter(Boolean)).sort((a, b) => a.localeCompare(b))
   return `
     <section class="billing-layout">
       <div class="billing-settings">
@@ -6200,10 +6602,10 @@ function renderFacturacion(stats, companies) {
       }
       <div class="billing-filters">
         <label>
-          <span>Empresa</span>
+          <span>Razon social / empresa</span>
           <select id="billingCompany">
             <option value="">Todas</option>
-            ${options.map((company) => `<option value="${attr(company)}" ${state.billingCompany === company ? 'selected' : ''}>${esc(company)}</option>`).join('')}
+            ${options.map((company) => `<option value="${attr(company)}" ${normalizeHeader(selectedBillingCompany || state.billingCompany) === normalizeHeader(company) ? 'selected' : ''}>${esc(company)}</option>`).join('')}
           </select>
         </label>
         <label>
@@ -6216,14 +6618,14 @@ function renderFacturacion(stats, companies) {
         <label class="search-box billing-search">${icon('search')}<input id="billingSearchInput" value="${attr(state.billingQuery)}" placeholder="Equipo, UID o IMEI"></label>
         <div class="filter-count"><span>Partidas a facturar</span><strong>${periodStats.totalBillable}</strong></div>
       </div>
-      <div class="notice">Facturacion de equipos cuenta estrictamente equipos importados de Wialon. Las lineas celulares se agregan desde la pestaña Lineas y entran por su fecha de renovacion del periodo seleccionado.</div>
+      <div class="notice">Facturacion agrupa por razon social cuando la empresa esta ligada; si no, conserva la empresa del CRM. Los equipos cuentan estrictamente desde Wialon y las lineas entran por su renovacion del periodo.</div>
       <section class="metric-grid billing-metrics">
         ${metric('Mensuales', periodStats.monthly)}
         ${metric('Anualidades periodo', periodStats.annual, 'amber')}
         ${metric('Semestrales periodo', periodStats.semestral, 'amber')}
         ${metric('Lineas periodo', periodStats.lines, 'amber')}
         ${metric('Anualidades fuera', periodStats.outsideAnnual, 'red')}
-        ${metric('Empresas en lista', previewRows.length)}
+        ${metric('Razones/empresas', previewRows.length)}
         ${metricMoney('Mensualidad Felipe', sellerMonthlyTotals[quoteAttendantOptions[0]] || 0, state.billing.currency)}
         ${metricMoney('Mensualidad Isaac', sellerMonthlyTotals[quoteAttendantOptions[1]] || 0, state.billing.currency)}
       </section>
@@ -6254,7 +6656,7 @@ function renderFacturacion(stats, companies) {
         <div>${icon('calendar-days')}<span>Periodo: ${esc(period.label)}</span></div>
         <strong>${money(projectedTotal, state.billing.currency)}</strong>
       </div>
-      ${billingTable()}
+      ${billingTable(previewRows)}
     </section>
   `
 }
@@ -6332,6 +6734,7 @@ function renderCotizaciones(companies) {
   const quote = buildQuote()
   const options = companyOptions(companies)
   const q = state.quote
+  const selectedFiscalData = q.company ? quoteFiscalDataForSelection(q.company) : null
 
   return `
     <section class="billing-layout quote-layout">
@@ -6348,6 +6751,8 @@ function renderCotizaciones(companies) {
             </select>
           </label>
           <label><span>Cliente / razon social</span><input value="${attr(q.clientName)}" data-quote="clientName" placeholder="${attr(quote.clientName)}"></label>
+          <label><span>RFC</span><input value="${attr(q.rfc || quote.rfc || '')}" data-quote="rfc" placeholder="RFC del cliente"></label>
+          <label><span>Correo facturas</span><input type="email" value="${attr(q.contactEmail || quote.email || '')}" data-quote="contactEmail" placeholder="facturas@cliente.com"></label>
           <label>
             <span>Atiende</span>
             <select data-quote="attendant">
@@ -6365,6 +6770,15 @@ function renderCotizaciones(companies) {
           <label><span>IVA</span><input type="number" min="0" step="0.01" value="${attr(q.ivaRate)}" data-quote="ivaRate"></label>
           <label class="wide"><span>Descripcion</span><input value="${attr(q.equipmentDescription)}" data-quote="equipmentDescription"></label>
         </div>
+        ${
+          selectedFiscalData
+            ? `<div class="quote-fiscal-preview">
+                <span>${esc(selectedFiscalData.sourceLabel)}</span>
+                <strong>${esc(selectedFiscalData.clientName || q.company)}</strong>
+                <small>RFC: ${esc(q.rfc || selectedFiscalData.rfc || '-')} / Correo: ${esc(q.contactEmail || selectedFiscalData.contactEmail || '-')}</small>
+              </div>`
+            : ''
+        }
       </div>
 
       <div class="quote-section">
@@ -6809,6 +7223,8 @@ function render() {
       ? renderResumen(companies, stats)
       : state.view === 'empresas'
         ? renderEmpresas(companies)
+        : state.view === 'razones-sociales'
+          ? renderRazonesSociales(companies)
         : state.view === 'usuarios'
           ? state.auth.user.role === 'admin'
             ? renderUsersAdmin()
@@ -6847,6 +7263,7 @@ function render() {
         ${[
           ['resumen', 'building-2', 'Resumen'],
           ['empresas', 'users-round', 'Empresas'],
+          ['razones-sociales', 'landmark', 'Razones sociales'],
           ['equipos', 'wrench', 'Equipos'],
           ['lineas', 'sim-card', 'Lineas'],
           ['facturacion', 'circle-dollar-sign', 'Facturacion'],
@@ -7112,13 +7529,26 @@ function bindEvents() {
           ? normalizeInvoiceProfile(
               {
                 ...profile,
-                [field]: field === 'linkedCompanies' ? splitGroups(input.value) : input.value
+                [field]: field === 'linkedCompanies' ? invoiceProfileAllowedLinkedCompanies(profile, splitGroups(input.value)) : input.value
               },
               index
             )
           : profile
       )
       syncInvoiceProfilesToCompanyMeta()
+      const editedProfile = state.invoiceProfiles.map(normalizeInvoiceProfile).find((profile) => profile.id === id)
+      if (editedProfile && field === 'contactEmail') {
+        state.companyMeta = {
+          ...state.companyMeta,
+          [editedProfile.razonSocial]: {
+            ...blankMeta(editedProfile.razonSocial),
+            ...(state.companyMeta[editedProfile.razonSocial] || {}),
+            legalName: editedProfile.razonSocial,
+            rfc: editedProfile.rfc || state.companyMeta[editedProfile.razonSocial]?.rfc || '',
+            email: textValue(input.value)
+          }
+        }
+      }
       persistState()
       render()
     })
@@ -7195,11 +7625,33 @@ function bindEvents() {
       const value = field === 'clientOnly' ? input.value === 'true' : field === 'annualPrice' ? input.value : input.value
       state.lines = state.lines.map((line) =>
         line.id === id
-          ? normalizeLine({
-              ...line,
-              [field]: value,
-              ...(field === 'lineType' ? { providerManual: true, providerDetectedBy: 'manual' } : {})
-            })
+          ? (() => {
+              const previousCurrentImei = importTextValue(line.imei || line.imeiLong || line.imeiShort)
+              const patch = {
+                [field]: value,
+                ...(field === 'lineType' ? { providerManual: true, providerDetectedBy: 'manual' } : {})
+              }
+              if (field === 'status') {
+                const nextActive = normalizeLineStatus(value) === 'activa'
+                const refImei = lineCurrentImei(line) || lineReferenceImei(line)
+                patch.statusManual = true
+                if (!nextActive && refImei) {
+                  patch.previousImei = line.previousImei || line.deactivatedImei || refImei
+                  patch.deactivatedImei = line.deactivatedImei || refImei
+                  patch.deactivatedAt = line.deactivatedAt || todayIsoDate()
+                }
+              }
+              if (['imei', 'imeiLong', 'imeiShort'].includes(field)) {
+                const nextCurrentImei = importTextValue(value)
+                if (previousCurrentImei && nextCurrentImei && normalizeIdentifier(previousCurrentImei) !== normalizeIdentifier(nextCurrentImei)) {
+                  patch.previousImei = line.previousImei || line.deactivatedImei || previousCurrentImei
+                }
+              }
+              return normalizeLine({
+                ...line,
+                ...patch
+              })
+            })()
           : line
       )
       persistState()
@@ -7211,6 +7663,26 @@ function bindEvents() {
       input.addEventListener('input', () => saveLine(false))
       input.addEventListener('change', () => saveLine(true))
     }
+  })
+
+  document.querySelectorAll('[data-deactivate-line]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const id = button.dataset.deactivateLine
+      state.lines = state.lines.map((line) => {
+        if (line.id !== id) return line
+        const refImei = lineCurrentImei(line) || lineReferenceImei(line)
+        return normalizeLine({
+          ...line,
+          status: 'desactivada',
+          statusManual: true,
+          previousImei: line.previousImei || line.deactivatedImei || refImei,
+          deactivatedImei: line.deactivatedImei || refImei,
+          deactivatedAt: line.deactivatedAt || todayIsoDate()
+        })
+      })
+      persistState()
+      render()
+    })
   })
 
   document.getElementById('searchInput')?.addEventListener('input', (event) => {
@@ -7339,7 +7811,7 @@ function bindEvents() {
   document.getElementById('addAccessoryQuote')?.addEventListener('click', addAccessoryToQuote)
 
   document.getElementById('quoteCompany')?.addEventListener('change', (event) => {
-    setState({ quote: { ...state.quote, company: event.target.value, group: '' } })
+    applyQuoteCompanySelection(event.target.value)
   })
 
   document.querySelectorAll('[data-quote]').forEach((input) => {
