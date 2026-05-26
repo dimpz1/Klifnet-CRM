@@ -711,6 +711,146 @@ tbody tr:focus-within {
   min-width: 190px;
 }
 
+.fiscal-parent-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+  margin: 0 10px 10px;
+}
+
+.fiscal-parent-contact-panel {
+  margin: 0 10px 10px;
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--brand);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.compact-head {
+  min-height: 56px;
+  padding: 8px 10px;
+}
+
+.compact-combo {
+  min-width: min(360px, 100%);
+}
+
+.fiscal-parent-card {
+  width: 100%;
+  min-height: 64px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--black);
+  border-radius: 8px;
+  background: #fff;
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fiscal-parent-card:hover {
+  border-color: var(--brand);
+}
+
+.fiscal-parent-card span,
+.fiscal-parent-card small {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.fiscal-parent-card strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fiscal-parent-contact-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 8px;
+  padding: 0 10px 10px;
+}
+
+.fiscal-parent-contact-grid label,
+.company-fiscal-linker {
+  display: grid;
+  gap: 5px;
+}
+
+.fiscal-parent-contact-grid span,
+.company-fiscal-linker > span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.fiscal-parent-editor,
+.invoice-link-editor {
+  display: grid;
+  gap: 7px;
+  min-width: 300px;
+}
+
+.suggestion-row,
+.linked-company-tags,
+.company-fiscal-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.chip-button,
+.linked-company-tag {
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--black);
+  font-weight: 900;
+  line-height: 1.1;
+}
+
+.chip-button {
+  cursor: pointer;
+}
+
+.linked-company-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+}
+
+.linked-company-tag .mini-button {
+  flex: 0 0 auto;
+}
+
+.invoice-link-add-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.mini-button {
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  border-radius: 6px;
+}
+
+.button.small-button {
+  min-height: 36px;
+  padding: 0 12px;
+}
+
 .combo-field {
   position: relative;
   display: block;
@@ -886,7 +1026,43 @@ tbody tr:focus-within {
 
 .company-settings {
   padding: 0 14px 12px;
-  max-width: 520px;
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(360px, 1.2fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.company-data-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.company-data-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.company-data-grid label,
+.company-fiscal-linker label {
+  display: grid;
+  gap: 5px;
+}
+
+.company-data-grid .wide {
+  grid-column: 1 / -1;
+}
+
+.company-data-grid span,
+.company-fiscal-linker label span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
 }
 
 .group-row {
@@ -1546,7 +1722,10 @@ small {
   .billing-settings,
   .billing-filters,
   .company-form,
+  .company-settings,
+  .company-data-grid,
   .client-status,
+  .fiscal-parent-contact-grid,
   .line-profile-grid,
   .quote-section-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1585,9 +1764,16 @@ small {
   .billing-settings,
   .billing-filters,
   .company-form,
+  .company-settings,
+  .company-data-grid,
   .client-status,
+  .fiscal-parent-contact-grid,
   .line-profile-grid,
   .quote-section-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .invoice-link-add-row {
     grid-template-columns: 1fr;
   }
 

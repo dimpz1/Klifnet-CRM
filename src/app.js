@@ -351,6 +351,7 @@ const state = {
   invoiceImport: null,
   invoiceProfileQuery: '',
   invoiceProfilePage: 1,
+  fiscalParentContactSelection: '',
   billing: { ...defaultBilling },
   billingRows: [],
   paymentImport: null,
@@ -775,10 +776,21 @@ function blankMeta(company) {
     rfc: '',
     email: '',
     linkedCompanies: [],
+    parentGroup: '',
+    parentContacts: {
+      primary: { name: '', email: '', phone: '' },
+      secondary: { name: '', email: '', phone: '' }
+    },
     lastInvoice: null,
     billingCycle: 'mensual',
     annualMonth: String(new Date().getMonth() + 1),
     contact: '',
+    phone: '',
+    contactEmail: '',
+    secondaryContact: '',
+    secondaryEmail: '',
+    secondaryPhone: '',
+    address: '',
     notes: ''
   }
 }
@@ -812,7 +824,7 @@ function isMultiCompanyInvoiceProfile(profile) {
 }
 
 function invoiceProfileLinkedLimit(profile) {
-  return isMultiCompanyInvoiceProfile(profile) ? 2 : 1
+  return isMultiCompanyInvoiceProfile(profile) ? 2 : 12
 }
 
 function invoiceProfileAllowedLinkedCompanies(profile, values, companies = buildCompanies()) {
@@ -825,11 +837,102 @@ function invoiceProfileAllowedLinkedCompanies(profile, values, companies = build
   return sanitized.slice(0, invoiceProfileLinkedLimit(profile))
 }
 
+const knownFiscalParentNames = []
+
+function invoiceProfileParentGroup(profile) {
+  const normalized = normalizeInvoiceProfile(profile)
+  const meta = state.companyMeta[normalized.razonSocial] || {}
+  return textValue(normalized.parentGroup || normalized.fiscalParent || meta.parentGroup || meta.fiscalParent)
+}
+
+function invoiceProfileParentSuggestions(profile, profiles = state.invoiceProfiles) {
+  return []
+}
+
+function fiscalParentOptions(profiles = state.invoiceProfiles) {
+  return unique(
+    [
+      ...knownFiscalParentNames,
+      ...Object.keys(state.companyMeta || {})
+        .filter((key) => key.startsWith('__fiscal_parent__'))
+        .map((key) => key.replace('__fiscal_parent__', '')),
+      ...profiles.flatMap((profile) => {
+        const normalized = normalizeInvoiceProfile(profile)
+        return [invoiceProfileParentGroup(normalized), ...invoiceProfileParentSuggestions(normalized, profiles)]
+      })
+    ]
+  )
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b))
+}
+
+function fiscalParentGroups(profiles = state.invoiceProfiles) {
+  const groups = new Map()
+  profiles.map(normalizeInvoiceProfile).forEach((profile) => {
+    const parent = invoiceProfileParentGroup(profile)
+    if (!parent) return
+    const list = groups.get(parent) || []
+    list.push(profile)
+    groups.set(parent, list)
+  })
+  return Array.from(groups.entries())
+    .map(([parent, children]) => ({ parent, children: children.sort((a, b) => a.razonSocial.localeCompare(b.razonSocial)) }))
+    .sort((a, b) => b.children.length - a.children.length || a.parent.localeCompare(b.parent))
+}
+
+function blankFiscalParentContact() {
+  return {
+    primary: { name: '', email: '', phone: '' },
+    secondary: { name: '', email: '', phone: '' }
+  }
+}
+
+function fiscalParentContact(parentName) {
+  const key = textValue(parentName)
+  const fromState = state.companyMeta?.[`__fiscal_parent__${key}`]?.parentContacts || {}
+  return {
+    primary: { ...blankFiscalParentContact().primary, ...(fromState.primary || {}) },
+    secondary: { ...blankFiscalParentContact().secondary, ...(fromState.secondary || {}) }
+  }
+}
+
+function selectedFiscalParentContactName(options = fiscalParentOptions()) {
+  const selected = textValue(state.fiscalParentContactSelection)
+  if (selected) return selected
+  return options[0] || ''
+}
+
+function setFiscalParentContact(parentName, contactSlot, field, value) {
+  const cleanParent = textValue(parentName)
+  if (!cleanParent || !['primary', 'secondary'].includes(contactSlot) || !['name', 'email', 'phone'].includes(field)) return false
+  const key = `__fiscal_parent__${cleanParent}`
+  const current = fiscalParentContact(cleanParent)
+  state.companyMeta = {
+    ...state.companyMeta,
+    [key]: {
+      ...blankMeta(cleanParent),
+      ...(state.companyMeta[key] || {}),
+      legalName: cleanParent,
+      parentGroup: cleanParent,
+      parentContacts: {
+        ...current,
+        [contactSlot]: {
+          ...current[contactSlot],
+          [field]: textValue(value)
+        }
+      }
+    }
+  }
+  persistState()
+  return true
+}
+
 function normalizeInvoiceProfile(profile = {}, index = 0) {
   const razonSocial = textValue(profile.razonSocial || profile.razon_social || profile.legalName || profile.company || profile.name)
   const rfc = textValue(profile.rfc || profile.rfc_receptor)
   const id = textValue(profile.id) || slug(`${rfc || razonSocial}-${razonSocial}`) || `factura-${index + 1}`
   const contactEmail = textValue(profile.contactEmail || profile.contact_email || profile.email || profile.correo || profile.correoContacto || profile.correo_contacto)
+  const parentGroup = textValue(profile.parentGroup || profile.parent_group || profile.fiscalParent || profile.fiscal_parent || profile.grupoPadre || profile.grupo_padre)
   const linkedCompanies = cleanInvoiceLinkedCompanies(
     [
       ...(Array.isArray(profile.linkedCompanies) ? profile.linkedCompanies : []),
@@ -856,6 +959,7 @@ function normalizeInvoiceProfile(profile = {}, index = 0) {
     moneda: textValue(profile.moneda || 'MXN'),
     estadoFiscal: textValue(profile.estadoFiscal || profile.estado_fiscal),
     linkedCompanies,
+    parentGroup,
     sourceRow: profile.sourceRow || profile.source_row || ''
   }
 }
@@ -879,14 +983,54 @@ function mergeInvoiceProfiles(existingProfiles = [], importedProfiles = []) {
     return {
       ...normalized,
       contactEmail: normalized.contactEmail || existing?.contactEmail || '',
-      linkedCompanies: unique([...(existing?.linkedCompanies || []), ...normalized.linkedCompanies])
+      linkedCompanies: unique([...(existing?.linkedCompanies || []), ...normalized.linkedCompanies]),
+      parentGroup: normalized.parentGroup || existing?.parentGroup || ''
     }
   })
 }
 
+function setInvoiceProfileLinkedCompanies(profileId, values = []) {
+  let editedProfile = null
+  state.invoiceProfiles = state.invoiceProfiles.map((profile, index) => {
+    const normalized = normalizeInvoiceProfile(profile, index)
+    if (normalized.id !== profileId) return normalized
+    editedProfile = normalizeInvoiceProfile(
+      {
+        ...normalized,
+        linkedCompanies: invoiceProfileAllowedLinkedCompanies(normalized, values)
+      },
+      index
+    )
+    return editedProfile
+  })
+  if (!editedProfile) return false
+  syncInvoiceProfilesToCompanyMeta()
+  persistState()
+  render()
+  return true
+}
+
 function syncInvoiceProfilesToCompanyMeta(profiles = state.invoiceProfiles) {
   const nextMeta = { ...state.companyMeta }
-  profiles.forEach((rawProfile, index) => {
+  const normalizedProfiles = profiles.map(normalizeInvoiceProfile)
+  const profileIds = new Set(normalizedProfiles.map((profile) => profile.id).filter(Boolean))
+  const profileNames = invoiceProfileNameSet(normalizedProfiles)
+
+  Object.entries(nextMeta).forEach(([companyName, meta]) => {
+    const companyKey = normalizeHeader(companyName)
+    const isProfileOwnMeta = profileNames.has(companyKey)
+    const hasFiscalLink = profileIds.has(meta?.fiscalProfileId) || profileNames.has(normalizeHeader(meta?.legalName || ''))
+    if (!isProfileOwnMeta && hasFiscalLink) {
+      nextMeta[companyName] = {
+        ...blankMeta(companyName),
+        ...meta,
+        legalName: companyName,
+        rfc: '',
+        fiscalProfileId: ''
+      }
+    }
+  })
+  normalizedProfiles.forEach((rawProfile, index) => {
     const profile = normalizeInvoiceProfile(rawProfile, index)
     if (!profile.razonSocial) return
     const linkedCompanies = invoiceProfileAllowedLinkedCompanies(profile, profile.linkedCompanies)
@@ -897,6 +1041,7 @@ function syncInvoiceProfilesToCompanyMeta(profiles = state.invoiceProfiles) {
       rfc: profile.rfc || existing.rfc,
       email: profile.contactEmail || existing.email || '',
       linkedCompanies,
+      parentGroup: profile.parentGroup || existing.parentGroup || '',
       lastInvoice: {
         folio: profile.folio,
         uuid: profile.uuid,
@@ -925,7 +1070,7 @@ function invoiceProfileSearchText(profile) {
   const normalized = normalizeInvoiceProfile(profile)
   const meta = getCompanyMeta(normalized.razonSocial)
   return normalizeHeader(
-    `${normalized.razonSocial} ${normalized.rfc} ${normalized.folio} ${normalized.uuid} ${normalized.contactEmail} ${meta.email} ${invoiceProfileLinkedCompanies(normalized).join(' ')}`
+    `${normalized.razonSocial} ${normalized.rfc} ${normalized.folio} ${normalized.uuid} ${normalized.contactEmail} ${meta.email} ${invoiceProfileParentGroup(normalized)} ${invoiceProfileLinkedCompanies(normalized).join(' ')}`
   )
 }
 
@@ -1496,6 +1641,7 @@ function stateSnapshot() {
     invoiceImport: state.invoiceImport,
     invoiceProfileQuery: state.invoiceProfileQuery,
     invoiceProfilePage: state.invoiceProfilePage,
+    fiscalParentContactSelection: state.fiscalParentContactSelection,
     billing: state.billing,
     billingRows: state.billingRows,
     paymentImport: state.paymentImport,
@@ -6258,9 +6404,17 @@ function renderRazonesSociales(companies) {
   const invoicePagination = tablePaginationState(invoiceProfiles.length, state.invoiceProfilePage)
   const pageInvoiceProfiles = invoiceProfiles.slice(invoicePagination.start, invoicePagination.end)
   const crmCompanyOptions = crmCompanyNamesForFiscalLinks(companies)
+  const fiscalParents = fiscalParentOptions(invoiceProfiles)
+  const parentGroups = fiscalParentGroups(invoiceProfiles)
+  const selectedParentContact = selectedFiscalParentContactName(fiscalParents)
+  const selectedParentContacts = fiscalParentContact(selectedParentContact)
+  const parentContactDisabled = selectedParentContact ? '' : 'disabled'
   return `
     <datalist id="crmCompanyList">
       ${crmCompanyOptions.map((company) => `<option value="${attr(company)}"></option>`).join('')}
+    </datalist>
+    <datalist id="fiscalParentList">
+      ${fiscalParents.map((parent) => `<option value="${attr(parent)}"></option>`).join('')}
     </datalist>
     <section class="invoice-profile-panel">
       <div class="line-section-head">
@@ -6277,11 +6431,49 @@ function renderRazonesSociales(companies) {
           ? `<div class="notice">Base fiscal: ${esc(state.invoiceImport.imported || 0)} razones sociales, desde ${esc(state.invoiceImport.minFechaEmision || '2025-01-01')}. Excluye pagos, notas de credito y canceladas.</div>`
           : '<div class="notice">Carga la base para crear perfiles por razon social y ligarlos a una o varias empresas operativas del CRM.</div>'
       }
+      <section class="fiscal-parent-contact-panel">
+        <div class="line-section-head compact-head">
+          <div><span>Contacto padre</span><h2>Grupo padre / sub empresa</h2></div>
+          <label class="combo-field compact-combo">
+            <input id="fiscalParentContactSelect" list="fiscalParentList" value="${attr(selectedParentContact)}" placeholder="Ej. TORNIMASTER" spellcheck="false" autocomplete="off">
+            ${icon('chevron-down')}
+          </label>
+        </div>
+        <div class="fiscal-parent-contact-grid">
+          <label><span>Responsable 1</span><input value="${attr(selectedParentContacts.primary.name)}" data-fiscal-parent-contact="primary" data-parent-contact-field="name" placeholder="Nombre" ${parentContactDisabled}></label>
+          <label><span>Email 1</span><input type="email" value="${attr(selectedParentContacts.primary.email)}" data-fiscal-parent-contact="primary" data-parent-contact-field="email" placeholder="correo@cliente.com" ${parentContactDisabled}></label>
+          <label><span>Telefono 1</span><input value="${attr(selectedParentContacts.primary.phone)}" data-fiscal-parent-contact="primary" data-parent-contact-field="phone" placeholder="Numero" ${parentContactDisabled}></label>
+          <label><span>Responsable 2</span><input value="${attr(selectedParentContacts.secondary.name)}" data-fiscal-parent-contact="secondary" data-parent-contact-field="name" placeholder="Nombre" ${parentContactDisabled}></label>
+          <label><span>Email 2</span><input type="email" value="${attr(selectedParentContacts.secondary.email)}" data-fiscal-parent-contact="secondary" data-parent-contact-field="email" placeholder="correo@cliente.com" ${parentContactDisabled}></label>
+          <label><span>Telefono 2</span><input value="${attr(selectedParentContacts.secondary.phone)}" data-fiscal-parent-contact="secondary" data-parent-contact-field="phone" placeholder="Numero" ${parentContactDisabled}></label>
+        </div>
+      </section>
+      ${
+        parentGroups.length
+          ? `<div class="fiscal-parent-summary">
+              ${parentGroups
+                .slice(0, 8)
+                .map(
+                  (group) => {
+                    const contacts = fiscalParentContact(group.parent)
+                    const hasContact = contacts.primary.name || contacts.primary.email || contacts.primary.phone || contacts.secondary.name || contacts.secondary.email || contacts.secondary.phone
+                    return `
+                      <button class="fiscal-parent-card" data-parent-card-select="${attr(group.parent)}">
+                        <span>Sub empresa</span>
+                        <strong>${esc(group.parent)}</strong>
+                        <small>${group.children.length} razones sociales${hasContact ? ' / contacto listo' : ''}</small>
+                      </button>`
+                  }
+                )
+                .join('')}
+            </div>`
+          : '<div class="notice">Usa Grupo padre para armar sub-empresas fiscales, por ejemplo Tornimaster con sus razones sociales relacionadas.</div>'
+      }
       ${renderTablePagination(invoiceProfiles.length, invoicePagination, { label: 'razones sociales', dataAttr: 'data-invoice-profile-page', ariaLabel: 'Paginacion de razones sociales', sticky: true })}
       <div class="table-wrap">
         <table class="invoice-profile-table">
           <thead>
-            <tr><th>Razon social</th><th>RFC</th><th>Correo facturas</th><th>Ultima factura</th><th>Total</th><th>Empresas CRM ligadas</th></tr>
+            <tr><th>Razon social</th><th>Grupo padre</th><th>RFC</th><th>Correo facturas</th><th>Ultima factura</th><th>Total</th><th>Empresas CRM ligadas</th></tr>
           </thead>
           <tbody>
             ${
@@ -6289,23 +6481,64 @@ function renderRazonesSociales(companies) {
                 ? pageInvoiceProfiles
                     .map((profile) => {
                       const contactEmail = profile.contactEmail || getCompanyMeta(profile.razonSocial).email || ''
+                      const parentGroup = invoiceProfileParentGroup(profile)
+                      const parentSuggestions = invoiceProfileParentSuggestions(profile, state.invoiceProfiles).filter((suggestion) => normalizeHeader(suggestion) !== normalizeHeader(parentGroup))
+                      const linkedCompanies = invoiceProfileLinkedCompanies(profile)
                       return `
                         <tr>
                           <td><strong>${esc(profile.razonSocial)}</strong><small>${esc(profile.uuid || '-')}</small></td>
+                          <td>
+                            <div class="fiscal-parent-editor">
+                              <label class="combo-field">
+                                <input list="fiscalParentList" value="${attr(parentGroup)}" data-invoice-profile="${attr(profile.id)}" data-invoice-field="parentGroup" placeholder="Grupo padre" spellcheck="false" autocomplete="off">
+                                ${icon('chevron-down')}
+                              </label>
+                              ${
+                                parentSuggestions.length
+                                  ? `<div class="suggestion-row">${parentSuggestions
+                                      .map(
+                                        (suggestion) =>
+                                          `<button class="chip-button" data-invoice-parent-suggestion="${attr(profile.id)}" data-parent="${attr(suggestion)}">${esc(suggestion)}</button>`
+                                      )
+                                      .join('')}</div>`
+                                  : ''
+                              }
+                            </div>
+                          </td>
                           <td>${esc(profile.rfc || '-')}</td>
                           <td><input type="email" value="${attr(contactEmail)}" data-invoice-profile="${attr(profile.id)}" data-invoice-field="contactEmail" placeholder="facturas@cliente.com"></td>
                           <td>${esc(profile.folio || '-')}<small>${esc(profile.fechaEmision || '-')}</small></td>
                           <td>${money(profile.total, profile.moneda || 'MXN')}</td>
                           <td>
-                            <label class="combo-field">
-                              <input list="crmCompanyList" value="${attr(invoiceProfileLinkedCompanies(profile).join(', '))}" data-invoice-profile="${attr(profile.id)}" data-invoice-field="linkedCompanies" placeholder="Empresa CRM" spellcheck="false" autocomplete="off">
-                              ${icon('chevron-down')}
-                            </label>
+                            <div class="invoice-link-editor">
+                              <div class="linked-company-tags">
+                                ${
+                                  linkedCompanies.length
+                                    ? linkedCompanies
+                                        .map(
+                                          (company) => `
+                                            <span class="linked-company-tag">
+                                              ${esc(company)}
+                                              <button class="icon-button mini-button" title="Quitar empresa ligada" data-invoice-link-remove="${attr(profile.id)}" data-company="${attr(company)}">${icon('x')}</button>
+                                            </span>`
+                                        )
+                                        .join('')
+                                    : '<small class="muted">Sin empresa ligada</small>'
+                                }
+                              </div>
+                              <div class="invoice-link-add-row">
+                                <label class="combo-field">
+                                  <input class="invoice-company-link-input" list="crmCompanyList" value="" data-invoice-link-input="${attr(profile.id)}" placeholder="Empresa CRM" spellcheck="false" autocomplete="off">
+                                  ${icon('chevron-down')}
+                                </label>
+                                <button class="button small-button" data-invoice-link-add="${attr(profile.id)}">${icon('plus')}Agregar</button>
+                              </div>
+                            </div>
                           </td>
                         </tr>`
                     })
                     .join('')
-                : '<tr><td colspan="6">Sin razones sociales para los filtros.</td></tr>'
+                : '<tr><td colspan="7">Sin razones sociales para los filtros.</td></tr>'
             }
           </tbody>
         </table>
@@ -6318,12 +6551,18 @@ function renderRazonesSociales(companies) {
 function renderEmpresas(companies) {
   const pagination = tablePaginationState(companies.length, state.companyPage)
   const pageCompanies = companies.slice(pagination.start, pagination.end)
+  const invoiceProfileOptions = state.invoiceProfiles.map(normalizeInvoiceProfile).filter((profile) => profile.razonSocial).sort((a, b) => a.razonSocial.localeCompare(b.razonSocial))
   return `
+    <datalist id="invoiceProfileList">
+      ${invoiceProfileOptions.map((profile) => `<option value="${attr(profile.razonSocial)}"></option>`).join('')}
+    </datalist>
     ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas', sticky: true })}
     <section class="company-list">
       ${pageCompanies
-        .map(
-          (company) => `
+        .map((company) => {
+          const linkedProfiles = invoiceProfilesForCompany(company.name)
+          const meta = getCompanyMeta(company.name)
+          return `
             <details class="company-row">
               <summary>
                 <div>
@@ -6334,10 +6573,73 @@ function renderEmpresas(companies) {
                 ${icon('chevron-right')}
               </summary>
               <div class="company-settings">
-                <label>
-                  <span>Email de facturacion</span>
-                  <input type="email" value="${attr(getCompanyMeta(company.name).email || '')}" data-company-meta="${attr(company.name)}" data-meta-field="email" placeholder="facturas@empresa.com">
-                </label>
+                <div class="company-data-card">
+                  <div class="compact-head">
+                    <span>Datos de empresa</span>
+                    <strong>${esc(company.name)}</strong>
+                  </div>
+                  <div class="company-data-grid">
+                    <label>
+                      <span>Responsable</span>
+                      <input value="${attr(meta.contact || '')}" data-company-meta="${attr(company.name)}" data-meta-field="contact" placeholder="Nombre de contacto">
+                    </label>
+                    <label>
+                      <span>Telefono</span>
+                      <input value="${attr(meta.phone || '')}" data-company-meta="${attr(company.name)}" data-meta-field="phone" placeholder="Numero directo o WhatsApp">
+                    </label>
+                    <label>
+                      <span>Correo contacto</span>
+                      <input type="email" value="${attr(meta.contactEmail || '')}" data-company-meta="${attr(company.name)}" data-meta-field="contactEmail" placeholder="contacto@empresa.com">
+                    </label>
+                    <label>
+                      <span>RFC manual</span>
+                      <input value="${attr(meta.rfc || '')}" data-company-meta="${attr(company.name)}" data-meta-field="rfc" placeholder="RFC si aplica">
+                    </label>
+                    <label class="wide">
+                      <span>Direccion / referencia</span>
+                      <input value="${attr(meta.address || '')}" data-company-meta="${attr(company.name)}" data-meta-field="address" placeholder="Direccion, zona o referencia operativa">
+                    </label>
+                    <label class="wide">
+                      <span>Notas</span>
+                      <input value="${attr(meta.notes || '')}" data-company-meta="${attr(company.name)}" data-meta-field="notes" placeholder="Acuerdos, condiciones o pendientes">
+                    </label>
+                  </div>
+                </div>
+                <div class="company-data-card">
+                  <div class="compact-head">
+                    <span>Facturacion</span>
+                    <strong>${linkedProfiles.length ? `${linkedProfiles.length} razon(es)` : 'Sin liga fiscal'}</strong>
+                  </div>
+                  <div class="company-fiscal-linker">
+                    <label>
+                      <span>Email de facturacion</span>
+                      <input type="email" value="${attr(meta.email || '')}" data-company-meta="${attr(company.name)}" data-meta-field="email" placeholder="facturas@empresa.com">
+                    </label>
+                    <span>Razones sociales ligadas</span>
+                    <div class="company-fiscal-tags">
+                      ${
+                        linkedProfiles.length
+                          ? linkedProfiles
+                              .map(
+                                (profile) => `
+                                  <span class="linked-company-tag">
+                                    ${esc(profile.razonSocial)}
+                                    <button class="icon-button mini-button" title="Quitar razon social de esta empresa" data-company-fiscal-remove="${attr(company.name)}" data-profile-id="${attr(profile.id)}">${icon('x')}</button>
+                                  </span>`
+                              )
+                              .join('')
+                          : '<small class="muted">Sin razon social ligada</small>'
+                      }
+                    </div>
+                    <div class="invoice-link-add-row">
+                      <label class="combo-field">
+                        <input list="invoiceProfileList" data-company-fiscal-input="${attr(company.name)}" placeholder="Seleccionar razon social" spellcheck="false" autocomplete="off">
+                        ${icon('chevron-down')}
+                      </label>
+                      <button class="button small-button" data-company-fiscal-add="${attr(company.name)}">${icon('plus')}Ligar</button>
+                    </div>
+                  </div>
+                </div>
               </div>
               <div class="group-list">
                 ${Array.from(company.groups.entries())
@@ -6349,7 +6651,7 @@ function renderEmpresas(companies) {
                   .join('')}
               </div>
             </details>`
-        )
+        })
         .join('')}
     </section>
     ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas' })}
@@ -7549,8 +7851,151 @@ function bindEvents() {
           }
         }
       }
+      if (editedProfile && field === 'parentGroup') {
+        state.companyMeta = {
+          ...state.companyMeta,
+          [editedProfile.razonSocial]: {
+            ...blankMeta(editedProfile.razonSocial),
+            ...(state.companyMeta[editedProfile.razonSocial] || {}),
+            legalName: editedProfile.razonSocial,
+            rfc: editedProfile.rfc || state.companyMeta[editedProfile.razonSocial]?.rfc || '',
+            parentGroup: textValue(input.value)
+          }
+        }
+      }
       persistState()
       render()
+    })
+  })
+
+  document.querySelectorAll('[data-invoice-parent-suggestion]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const id = button.dataset.invoiceParentSuggestion
+      const parentGroup = textValue(button.dataset.parent)
+      state.invoiceProfiles = state.invoiceProfiles.map((profile, index) =>
+        normalizeInvoiceProfile(profile, index).id === id ? normalizeInvoiceProfile({ ...profile, parentGroup }, index) : profile
+      )
+      const editedProfile = state.invoiceProfiles.map(normalizeInvoiceProfile).find((profile) => profile.id === id)
+      if (editedProfile) {
+        state.companyMeta = {
+          ...state.companyMeta,
+          [editedProfile.razonSocial]: {
+            ...blankMeta(editedProfile.razonSocial),
+            ...(state.companyMeta[editedProfile.razonSocial] || {}),
+            legalName: editedProfile.razonSocial,
+            rfc: editedProfile.rfc || state.companyMeta[editedProfile.razonSocial]?.rfc || '',
+            parentGroup
+          }
+        }
+      }
+      syncInvoiceProfilesToCompanyMeta()
+      persistState()
+      render()
+    })
+  })
+
+  document.querySelectorAll('[data-invoice-link-add]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const id = button.dataset.invoiceLinkAdd
+      const input =
+        button.closest('.invoice-link-editor')?.querySelector('[data-invoice-link-input]') ||
+        Array.from(document.querySelectorAll('[data-invoice-link-input]')).find((node) => node.dataset.invoiceLinkInput === id)
+      const profile = state.invoiceProfiles.map(normalizeInvoiceProfile).find((item) => item.id === id)
+      const companyName = textValue(input?.value)
+      if (!profile || !companyName) return
+      const existingCompanies = invoiceProfileLinkedCompanies(profile)
+      const nextCompanies = unique([...existingCompanies, companyName])
+      if (nextCompanies.length === existingCompanies.length) {
+        setState({ notice: 'Esa empresa ya esta ligada a la razon social.', view: 'razones-sociales' })
+        return
+      }
+      if (!setInvoiceProfileLinkedCompanies(id, nextCompanies)) {
+        setState({ notice: 'No se pudo ligar la empresa a la razon social.', view: 'razones-sociales' })
+      }
+    })
+  })
+
+  document.querySelectorAll('[data-invoice-link-remove]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const id = button.dataset.invoiceLinkRemove
+      const companyName = normalizeHeader(button.dataset.company)
+      const profile = state.invoiceProfiles.map(normalizeInvoiceProfile).find((item) => item.id === id)
+      if (!profile || !companyName) return
+      setInvoiceProfileLinkedCompanies(
+        id,
+        invoiceProfileLinkedCompanies(profile).filter((company) => normalizeHeader(company) !== companyName)
+      )
+    })
+  })
+
+  document.getElementById('fiscalParentContactSelect')?.addEventListener('change', (event) => {
+    const parentName = textValue(event.target.value)
+    state.fiscalParentContactSelection = parentName
+    if (parentName) {
+      const key = `__fiscal_parent__${parentName}`
+      state.companyMeta = {
+        ...state.companyMeta,
+        [key]: {
+          ...blankMeta(parentName),
+          ...(state.companyMeta[key] || {}),
+          legalName: parentName,
+          parentGroup: parentName,
+          parentContacts: fiscalParentContact(parentName)
+        }
+      }
+    }
+    persistState()
+    render()
+  })
+
+  document.querySelectorAll('[data-parent-card-select]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.fiscalParentContactSelection = textValue(button.dataset.parentCardSelect)
+      persistState()
+      render()
+    })
+  })
+
+  document.querySelectorAll('[data-fiscal-parent-contact]').forEach((input) => {
+    const saveFiscalParentContact = () => {
+      const parentName = selectedFiscalParentContactName()
+      setFiscalParentContact(parentName, input.dataset.fiscalParentContact, input.dataset.parentContactField, input.value)
+    }
+    input.addEventListener('input', saveFiscalParentContact)
+    input.addEventListener('change', saveFiscalParentContact)
+  })
+
+  document.querySelectorAll('[data-company-fiscal-add]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const companyName = textValue(button.dataset.companyFiscalAdd)
+      const input =
+        button.closest('.company-fiscal-linker')?.querySelector('[data-company-fiscal-input]') ||
+        Array.from(document.querySelectorAll('[data-company-fiscal-input]')).find((node) => node.dataset.companyFiscalInput === companyName)
+      const profile = invoiceProfileByRazonSocial(input?.value)
+      if (!companyName || !profile) {
+        setState({ notice: 'Selecciona una razon social valida para ligar la empresa.', view: 'empresas' })
+        return
+      }
+      const existingCompanies = invoiceProfileLinkedCompanies(profile)
+      const nextCompanies = unique([...existingCompanies, companyName])
+      if (nextCompanies.length === existingCompanies.length) {
+        setState({ notice: 'Esa empresa ya esta ligada a la razon social.', view: 'empresas' })
+        return
+      }
+      setInvoiceProfileLinkedCompanies(profile.id, nextCompanies)
+    })
+  })
+
+  document.querySelectorAll('[data-company-fiscal-remove]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const companyName = normalizeHeader(button.dataset.companyFiscalRemove)
+      const profileId = button.dataset.profileId
+      const profile = state.invoiceProfiles.map(normalizeInvoiceProfile).find((item) => item.id === profileId)
+      if (!profile || !companyName) return
+      setInvoiceProfileLinkedCompanies(
+        profileId,
+        invoiceProfileLinkedCompanies(profile).filter((company) => normalizeHeader(company) !== companyName)
+      )
     })
   })
 
@@ -8002,6 +8447,7 @@ function applySavedState(parsed = {}) {
       invoiceImport: parsed.invoiceImport || null,
       invoiceProfileQuery: parsed.invoiceProfileQuery || '',
       invoiceProfilePage: Math.max(1, Number(parsed.invoiceProfilePage || 1)),
+      fiscalParentContactSelection: parsed.fiscalParentContactSelection || '',
       billing: {
         ...defaultBilling,
         ...(parsed.billing || {}),
