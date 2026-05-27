@@ -42,6 +42,7 @@ const lineTypeOptions = [
 const quoteAttendantOptions = ['Felipe De Jesus Gomez Tirado', 'Isaac Gomez Estrada']
 const defaultEquipmentSeller = quoteAttendantOptions[0]
 const defaultNewEquipmentSeller = quoteAttendantOptions[1]
+const defaultBillingGroupName = 'Principal'
 
 const equipmentPageSize = 40
 const linePageSize = 40
@@ -354,6 +355,7 @@ const state = {
   fiscalParentContactSelection: '',
   billing: { ...defaultBilling },
   billingRows: [],
+  newBillingGroupName: '',
   paymentImport: null,
   lineImport: null,
   lineSeedImportVersion: 0,
@@ -370,6 +372,8 @@ const state = {
     deviceType: '',
     phone: '',
     soldBy: defaultNewEquipmentSeller,
+    billingGroup: defaultBillingGroupName,
+    billable: true,
     agreedPrice: '',
     saleDate: '',
     priceNote: ''
@@ -590,6 +594,25 @@ function devicesShareIdentifier(firstDevice, secondDevice) {
   return deviceIdentifierKeys(secondDevice).some((key) => firstKeys.has(key))
 }
 
+function cleanBillingGroupName(value) {
+  return textValue(value) || defaultBillingGroupName
+}
+
+function normalizeBillableFlag(value, fallback = true) {
+  if (value === undefined || value === null || value === '') return fallback
+  if (typeof value === 'boolean') return value
+  const clean = normalizeHeader(value)
+  return !['false', 'no', '0', 'efectivo', 'sin iva', 'no facturable'].includes(clean)
+}
+
+function deviceBillingGroup(device = {}) {
+  return cleanBillingGroupName(device.billingGroup || device.invoiceGroup || device.grupoFacturacion || device.grupo_facturacion)
+}
+
+function isDeviceBillingEnabled(device = {}) {
+  return normalizeBillableFlag(device.billable ?? device.facturable ?? device.isBillable, true)
+}
+
 function normalizeDeviceIdentifiers(device) {
   const uid = importTextValue(device.uid)
   const rawImei = importTextValue(device.imei)
@@ -613,6 +636,8 @@ function normalizeDeviceIdentifiers(device) {
     lineCarrier: importTextValue(device.lineCarrier),
     linePhone: importTextValue(device.linePhone),
     lineMatchSource: importTextValue(device.lineMatchSource),
+    billingGroup: deviceBillingGroup(device),
+    billable: isDeviceBillingEnabled(device),
     soldBy: normalizeSeller(device.soldBy || device.seller || device.vendedor, defaultEquipmentSeller)
   }
 }
@@ -646,6 +671,8 @@ function createManualDevice() {
     groups: splitGroups(draft.groups),
     customFields: '',
     billingCycle: 'mensual',
+    billingGroup: cleanBillingGroupName(draft.billingGroup),
+    billable: normalizeBillableFlag(draft.billable, true),
     annualMonth: String(new Date().getMonth() + 1),
     renewalDate: '',
     agreedPrice: textValue(draft.agreedPrice) || standardMonthlyPriceText(),
@@ -679,6 +706,8 @@ function createManualDevice() {
       deviceType: '',
       phone: '',
       soldBy: defaultNewEquipmentSeller,
+      billingGroup: defaultBillingGroupName,
+      billable: true,
       agreedPrice: '',
       saleDate: '',
       priceNote: ''
@@ -689,7 +718,7 @@ function createManualDevice() {
 }
 
 function isBillableDevice(device) {
-  return device.recordState !== 'no_encontrado' && !device.deactivatedAt
+  return device.recordState !== 'no_encontrado' && !device.deactivatedAt && isDeviceBillingEnabled(device)
 }
 
 function isImportedWialonDevice(device) {
@@ -776,6 +805,7 @@ function blankMeta(company) {
     rfc: '',
     email: '',
     linkedCompanies: [],
+    billingGroups: [defaultBillingGroupName],
     parentGroup: '',
     parentContacts: {
       primary: { name: '', email: '', phone: '' },
@@ -1266,6 +1296,58 @@ function billingEntityOptions() {
   return unique([...linkedProfiles, ...operationalCompanies]).sort((a, b) => a.localeCompare(b))
 }
 
+function sortBillingGroupNames(groups = []) {
+  return unique(groups.map(cleanBillingGroupName)).sort((a, b) => {
+    if (a === defaultBillingGroupName) return -1
+    if (b === defaultBillingGroupName) return 1
+    return a.localeCompare(b)
+  })
+}
+
+function billingGroupsForEntity(entityName) {
+  const cleanEntity = textValue(entityName)
+  const groups = [defaultBillingGroupName]
+  if (!cleanEntity) return groups
+  const entityKey = normalizeHeader(cleanEntity)
+  const rawMetaGroups = getCompanyMeta(cleanEntity).billingGroups
+  const metaGroups = Array.isArray(rawMetaGroups) ? rawMetaGroups : []
+  groups.push(...metaGroups)
+  state.devices.forEach((device) => {
+    if (normalizeHeader(billingEntityNameForCompany(device.company)) === entityKey) groups.push(deviceBillingGroup(device))
+  })
+  return sortBillingGroupNames(groups)
+}
+
+function billingGroupOptionsForDevice(device) {
+  const entityName = billingEntityNameForCompany(device.company)
+  return sortBillingGroupNames([...billingGroupsForEntity(entityName), deviceBillingGroup(device)])
+}
+
+function addBillingGroupForSelectedCompany() {
+  const entityName = state.billingCompany ? billingEntityNameForCompany(state.billingCompany) : ''
+  const groupName = cleanBillingGroupName(state.newBillingGroupName)
+  if (!entityName) {
+    setState({ notice: 'Selecciona una razon social o empresa para crear su grupo de facturacion.', view: 'facturacion' })
+    return
+  }
+  if (groupName === defaultBillingGroupName) {
+    setState({ notice: 'Principal ya existe como grupo base.', view: 'facturacion', newBillingGroupName: '' })
+    return
+  }
+  const existing = getCompanyMeta(entityName)
+  const nextGroups = sortBillingGroupNames([...(existing.billingGroups || []), groupName])
+  setState({
+    companyMeta: {
+      ...state.companyMeta,
+      [entityName]: { ...existing, legalName: existing.legalName || entityName, billingGroups: nextGroups }
+    },
+    billingGroup: groupName,
+    newBillingGroupName: '',
+    view: 'facturacion',
+    notice: `Grupo de facturacion creado: ${groupName}`
+  })
+}
+
 async function loadInvoiceProfilesFromPrivate() {
   try {
     const payload = await fetchPrivateJson('facturas')
@@ -1644,6 +1726,7 @@ function stateSnapshot() {
     fiscalParentContactSelection: state.fiscalParentContactSelection,
     billing: state.billing,
     billingRows: state.billingRows,
+    newBillingGroupName: state.newBillingGroupName,
     paymentImport: state.paymentImport,
     lineImport: state.lineImport,
     lineSeedImportVersion: state.lineSeedImportVersion,
@@ -2099,6 +2182,8 @@ function normalizeRows(rows, mapping, recordState) {
       customFields: get(row, 'customFields'),
       soldBy: defaultEquipmentSeller,
       billingCycle: 'mensual',
+      billingGroup: defaultBillingGroupName,
+      billable: true,
       annualMonth: String(new Date().getMonth() + 1),
       renewalDate: '',
       agreedPrice: '',
@@ -2148,6 +2233,8 @@ function mergeDevices(previous, incoming) {
       imeiLong: device.imeiLong || oldDevice.imeiLong || device.imei || oldDevice.imei || '',
       imeiShort: device.imeiShort || oldDevice.imeiShort || deriveShortImei(device.imeiLong || device.imei || oldDevice.imeiLong || oldDevice.imei),
       billingCycle: oldDevice.billingCycle || device.billingCycle || 'mensual',
+      billingGroup: cleanBillingGroupName(oldDevice.billingGroup || device.billingGroup),
+      billable: normalizeBillableFlag(oldDevice.billable ?? device.billable, true),
       annualMonth: oldDevice.annualMonth || device.annualMonth || String(new Date().getMonth() + 1),
       renewalDate: oldDevice.renewalDate || '',
       agreedPrice: oldDevice.agreedPrice ?? oldDevice.pricePerDeviceOverride ?? '',
@@ -4690,7 +4777,7 @@ function filteredDevices() {
     const queryMatches =
       !query ||
       normalizeHeader(
-        `${device.company} ${device.groups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType} ${
+        `${device.company} ${device.groups.join(' ')} ${deviceBillingGroup(device)} ${isDeviceBillingEnabled(device) ? 'facturable' : 'no facturable efectivo sin iva'} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType} ${
           lineIccid || ''
         } ${lineOperator || ''} ${lineCarrier || ''} ${linePhone || ''} ${deviceSeller(device)}`
       ).includes(query)
@@ -4708,7 +4795,7 @@ function filteredCobrosDevices() {
     const queryMatches =
       !query ||
       normalizeHeader(
-        `${device.company} ${deviceGroups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType} ${deviceSeller(device)}`
+        `${device.company} ${deviceGroups.join(' ')} ${deviceBillingGroup(device)} ${isDeviceBillingEnabled(device) ? 'facturable' : 'no facturable efectivo sin iva'} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType} ${deviceSeller(device)}`
       ).includes(query)
     return companyMatches && groupMatches && cycleMatches && queryMatches
   })
@@ -4728,23 +4815,27 @@ function billingFilterMatches(device) {
   const deviceGroups = device.groups.length ? device.groups : ['Sin grupo']
   const billingEntityName = billingEntityNameForCompany(device.company)
   const companyMatches = !state.billingCompany || normalizeHeader(billingEntityName) === billingCompanyFilterKey()
-  const groupMatches = !state.billingGroup || deviceGroups.includes(state.billingGroup)
+  const groupMatches = !state.billingGroup || normalizeHeader(deviceBillingGroup(device)) === normalizeHeader(state.billingGroup)
   const queryMatches =
     !query ||
     normalizeHeader(
-      `${billingEntityName} ${device.company} ${deviceGroups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType} ${deviceSeller(device)}`
+      `${billingEntityName} ${device.company} ${deviceBillingGroup(device)} ${deviceGroups.join(' ')} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType} ${deviceSeller(device)}`
     ).includes(query)
   return companyMatches && groupMatches && queryMatches
 }
 
 function billingGroups() {
-  const groups = new Set()
+  const groups = [defaultBillingGroupName]
   const companyFilterKey = billingCompanyFilterKey()
+  if (state.billingCompany) groups.push(...billingGroupsForEntity(billingEntityNameForCompany(state.billingCompany)))
   state.devices.forEach((device) => {
     if (state.billingCompany && normalizeHeader(billingEntityNameForCompany(device.company)) !== companyFilterKey) return
-    ;(device.groups.length ? device.groups : ['Sin grupo']).forEach((group) => groups.add(group))
+    groups.push(deviceBillingGroup(device))
   })
-  return Array.from(groups).sort((a, b) => a.localeCompare(b))
+  if (!state.billingCompany) {
+    Object.values(state.companyMeta || {}).forEach((meta) => groups.push(...(Array.isArray(meta.billingGroups) ? meta.billingGroups : [])))
+  }
+  return sortBillingGroupNames(groups)
 }
 
 function billingFilterStats(rows) {
@@ -5055,26 +5146,30 @@ function billingLineFilterMatches(line) {
   const companyName = device?.company || line.company
   const billingEntityName = billingEntityNameForCompany(companyName)
   const groups = Array.isArray(device?.groups) ? device.groups : []
+  const billingGroup = device ? deviceBillingGroup(device) : cleanBillingGroupName(line.billingGroup)
   const companyMatches = !state.billingCompany || normalizeHeader(billingEntityName) === billingCompanyFilterKey()
-  const groupMatches = !state.billingGroup || groups.some((group) => normalizeHeader(group) === normalizeHeader(state.billingGroup))
+  const groupMatches = !state.billingGroup || normalizeHeader(billingGroup) === normalizeHeader(state.billingGroup)
   const queryMatches =
     !query ||
     normalizeHeader(
-      `${billingEntityName} ${companyName} ${line.company} ${line.phone} ${line.iccid} ${line.imei} ${lineTypeLabel(line.lineType)} ${line.carrier} ${line.plan} ${line.notes} ${lineSeller(line)} ${device?.unitName || ''} ${
+      `${billingEntityName} ${billingGroup} ${companyName} ${line.company} ${groups.join(' ')} ${line.phone} ${line.iccid} ${line.imei} ${lineTypeLabel(line.lineType)} ${line.carrier} ${line.plan} ${line.notes} ${lineSeller(line)} ${device?.unitName || ''} ${
         device?.uid || ''
       } ${deviceImeiLong(device || {})} ${deviceImeiShort(device || {})}`
     ).includes(query)
   return companyMatches && groupMatches && queryMatches
 }
 
-function ensureBillingRow(rows, companyName, period) {
+function ensureBillingRow(rows, companyName, period, billingGroup = defaultBillingGroupName) {
   if (!companyName || companyName === 'Sin empresa') return null
   const entity = billingEntityForCompany(companyName)
-  if (!rows.has(entity.name)) {
-    rows.set(entity.name, {
-      id: `${slug(entity.name)}-${period.key}`,
+  const groupName = cleanBillingGroupName(billingGroup)
+  const rowKey = `${normalizeHeader(entity.name)}::${normalizeHeader(groupName)}`
+  if (!rows.has(rowKey)) {
+    rows.set(rowKey, {
+      id: `${slug(entity.name)}-${slug(groupName)}-${period.key}`,
       company: entity.name,
       legalName: entity.legalName || entity.name,
+      billingGroup: groupName,
       rfc: entity.rfc,
       email: entity.email,
       billingType: entity.isFiscalProfile ? 'razon_social' : 'empresa',
@@ -5097,7 +5192,7 @@ function ensureBillingRow(rows, companyName, period) {
       details: []
     })
   }
-  const row = rows.get(entity.name)
+  const row = rows.get(rowKey)
   row.sourceCompanies.add(companyName)
   return row
 }
@@ -5110,45 +5205,47 @@ function buildBillingRows() {
   state.devices
     .filter((device) => isBillableDevice(device) && isImportedWialonDevice(device) && billingFilterMatches(device))
     .forEach((device) => {
-    const companyName = device.company || 'Sin empresa'
-    const row = ensureBillingRow(rows, companyName, period)
-    if (!row) return
-    const cycle = deviceBillingCycle(device)
-    const months = devicePaymentMonths(device)
-    const shouldBill = cycle === 'mensual' || months.includes(String(periodMonth))
-    const unitPrice = deviceUnitPrice(device)
-    const soldBy = deviceSeller(device)
+      const companyName = device.company || 'Sin empresa'
+      const billingGroup = deviceBillingGroup(device)
+      const row = ensureBillingRow(rows, companyName, period, billingGroup)
+      if (!row) return
+      const cycle = deviceBillingCycle(device)
+      const months = devicePaymentMonths(device)
+      const shouldBill = cycle === 'mensual' || months.includes(String(periodMonth))
+      const unitPrice = deviceUnitPrice(device)
+      const soldBy = deviceSeller(device)
 
-    if (cycle === 'mensual') row.monthlyCount += 1
-    if (cycle === 'anual' && shouldBill) row.annualCount += 1
-    if (cycle === 'semestral' && shouldBill) row.semestralCount += 1
-    if ((cycle === 'anual' || cycle === 'semestral') && !shouldBill) row.annualOutsidePeriod += 1
+      if (cycle === 'mensual') row.monthlyCount += 1
+      if (cycle === 'anual' && shouldBill) row.annualCount += 1
+      if (cycle === 'semestral' && shouldBill) row.semestralCount += 1
+      if ((cycle === 'anual' || cycle === 'semestral') && !shouldBill) row.annualOutsidePeriod += 1
 
-    if (shouldBill) {
-      row.equipmentCount += 1
-      row.billableCount += 1
-      row.subtotal += unitPrice
-      if (cycle === 'mensual') addSellerMonthly(row, soldBy, unitPrice)
-      row.details.push({
-        sourceType: 'Equipo Wialon',
-        sourceCompany: companyName,
-        unitName: device.unitName,
-        uid: device.uid,
-        imei: device.imei,
-        imeiLong: deviceImeiLong(device),
-        imeiShort: deviceImeiShort(device),
-        phone: device.phone || '',
-        iccid: '',
-        lineType: '',
-        cycle,
-        paymentMonths: months,
-        renewalDate: device.renewalDate || '',
-        saleDate: device.saleDate || '',
-        soldBy,
-        priceNote: device.priceNote || '',
-        unitPrice
-      })
-    }
+      if (shouldBill) {
+        row.equipmentCount += 1
+        row.billableCount += 1
+        row.subtotal += unitPrice
+        if (cycle === 'mensual') addSellerMonthly(row, soldBy, unitPrice)
+        row.details.push({
+          sourceType: 'Equipo Wialon',
+          sourceCompany: companyName,
+          billingGroup,
+          unitName: device.unitName,
+          uid: device.uid,
+          imei: device.imei,
+          imeiLong: deviceImeiLong(device),
+          imeiShort: deviceImeiShort(device),
+          phone: device.phone || '',
+          iccid: '',
+          lineType: '',
+          cycle,
+          paymentMonths: months,
+          renewalDate: device.renewalDate || '',
+          saleDate: device.saleDate || '',
+          soldBy,
+          priceNote: device.priceNote || '',
+          unitPrice
+        })
+      }
     })
 
   state.lines
@@ -5156,9 +5253,11 @@ function buildBillingRows() {
     .filter((line) => isActiveLine(line) && billingLineFilterMatches(line))
     .forEach((line) => {
       const matchedDevice = matchLineDevice(line)
+      if (matchedDevice && !isBillableDevice(matchedDevice)) return
       const matchedDeviceImei = deviceImeiLong(matchedDevice || {})
       const companyName = matchedDevice?.company || line.company || 'Sin empresa'
-      const row = ensureBillingRow(rows, companyName, period)
+      const billingGroup = matchedDevice ? deviceBillingGroup(matchedDevice) : cleanBillingGroupName(line.billingGroup)
+      const row = ensureBillingRow(rows, companyName, period, billingGroup)
       if (!row) return
       const cycle = lineBillingCycle(line)
       const months = linePaymentMonths(line)
@@ -5179,6 +5278,7 @@ function buildBillingRows() {
         row.details.push({
           sourceType: 'Linea celular',
           sourceCompany: companyName,
+          billingGroup,
           unitName: matchedDevice?.unitName ? `${lineTypeLabel(line.lineType)} / ${matchedDevice.unitName}` : lineTypeLabel(line.lineType),
           uid: matchedDevice?.uid || '',
           imei: line.imei || line.imeiLong || matchedDeviceImei || '',
@@ -5210,7 +5310,7 @@ function buildBillingRows() {
           : `${row.annualOutsidePeriod} anualidades/semestrales fuera de este periodo.`
       return row
     })
-    .sort((a, b) => b.total - a.total || a.company.localeCompare(b.company))
+    .sort((a, b) => b.total - a.total || a.company.localeCompare(b.company) || cleanBillingGroupName(a.billingGroup).localeCompare(cleanBillingGroupName(b.billingGroup)))
 }
 
 function generateBillingList() {
@@ -6017,6 +6117,7 @@ async function exportBillingXlsx() {
     [
       'Razon social / Empresa',
       'Tipo facturacion',
+      'Grupo facturacion',
       'Empresas CRM ligadas',
       'Razon social',
       'RFC',
@@ -6039,6 +6140,7 @@ async function exportBillingXlsx() {
     ...rows.map((row) => [
       row.company,
       row.billingType === 'razon_social' ? 'Razon social' : 'Empresa sin razon social',
+      cleanBillingGroupName(row.billingGroup),
       (row.sourceCompanies || []).join(', '),
       row.legalName,
       row.rfc,
@@ -6063,6 +6165,7 @@ async function exportBillingXlsx() {
     row.details.map((detail) => [
       row.company,
       detail.sourceCompany || (row.sourceCompanies || []).join(', '),
+      detail.billingGroup || cleanBillingGroupName(row.billingGroup),
       detail.sourceType || 'Equipo Wialon',
       detail.unitName,
       detail.uid,
@@ -6086,6 +6189,7 @@ async function exportBillingXlsx() {
     [
       'Razon social / Empresa',
       'Empresa CRM origen',
+      'Grupo facturacion',
       'Tipo partida',
       'Equipo / Linea',
       'UID',
@@ -6268,7 +6372,7 @@ function deviceTable(devices) {
       <table>
         <thead>
           <tr>
-            <th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>ICCID</th><th>Operadora</th><th>Linea / MSISDN</th><th>Telefono Wialon</th><th>Tipo</th><th>Vendido por</th><th>Cobro</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Origen</th><th>Ultimo mensaje</th><th>Estado</th>
+            <th>Empresa</th><th>Grupos Wialon</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>ICCID</th><th>Operadora</th><th>Linea / MSISDN</th><th>Telefono Wialon</th><th>Tipo</th><th>Vendido por</th><th>Facturable</th><th>Grupo facturacion</th><th>Cobro</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Origen</th><th>Ultimo mensaje</th><th>Estado</th>
           </tr>
         </thead>
         <tbody>
@@ -6296,6 +6400,13 @@ function deviceTable(devices) {
                   <td><input value="${attr(device.phone || '')}" data-device="${attr(device.id)}" data-field="phone"></td>
                   <td><input value="${attr(device.deviceType || '')}" data-device="${attr(device.id)}" data-field="deviceType"></td>
                   <td><select data-device="${attr(device.id)}" data-field="soldBy">${sellerSelectOptions(device.soldBy)}</select></td>
+                  <td>
+                    <label class="inline-check">
+                      <input type="checkbox" data-device="${attr(device.id)}" data-field="billable" ${isDeviceBillingEnabled(device) ? 'checked' : ''}>
+                      <span>${isDeviceBillingEnabled(device) ? 'Si' : 'No'}</span>
+                    </label>
+                  </td>
+                  <td><input list="billingGroupList" value="${attr(deviceBillingGroup(device))}" data-device="${attr(device.id)}" data-field="billingGroup"></td>
                   <td>
                     <select data-device="${attr(device.id)}" data-field="billingCycle">
                       <option value="mensual" ${deviceBillingCycle(device) === 'mensual' ? 'selected' : ''}>Mensual</option>
@@ -6328,7 +6439,7 @@ function billingTable(rows = state.billingRows) {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Razon social / Empresa</th><th>Empresas CRM</th><th>Periodo</th><th>Mensuales</th><th>Anuales</th><th>Semestrales</th><th>Equipos</th><th>Lineas</th><th>Total partidas</th><th>Mensualidad Felipe</th><th>Mensualidad Isaac</th><th>Subtotal</th><th>IVA</th><th>Total</th><th>Estado</th></tr>
+          <tr><th>Razon social / Empresa</th><th>Grupo facturacion</th><th>Empresas CRM</th><th>Periodo</th><th>Mensuales</th><th>Anuales</th><th>Semestrales</th><th>Equipos</th><th>Lineas</th><th>Total partidas</th><th>Mensualidad Felipe</th><th>Mensualidad Isaac</th><th>Subtotal</th><th>IVA</th><th>Total</th><th>Estado</th></tr>
         </thead>
         <tbody>
           ${pageRows
@@ -6336,6 +6447,7 @@ function billingTable(rows = state.billingRows) {
               (row) => `
                 <tr>
                   <td><strong>${esc(row.company)}</strong><small>${row.billingType === 'razon_social' ? 'Razon social' : 'Empresa sin razon social'}</small></td>
+                  <td><span class="pill">${esc(cleanBillingGroupName(row.billingGroup))}</span></td>
                   <td>${esc((row.sourceCompanies || []).join(', ') || '-')}</td>
                   <td>${esc(row.periodLabel)}</td>
                   <td>${row.monthlyCount}</td>
@@ -6665,12 +6777,16 @@ function renderEquipos() {
   const companyOptions = unique([...buildCompanies().map((company) => company.name), ...state.devices.map((device) => device.company), ...Object.keys(state.companyMeta)]).sort((a, b) =>
     a.localeCompare(b)
   )
+  const billingGroupOptions = billingGroups()
   const d = state.newDevice
   return `
     <section>
       ${renderEquipmentPagination(devices.length, pagination, { sticky: true })}
       <datalist id="equipmentCompanyList">
         ${companyOptions.map((company) => `<option value="${attr(company)}"></option>`).join('')}
+      </datalist>
+      <datalist id="billingGroupList">
+        ${billingGroupOptions.map((group) => `<option value="${attr(group)}"></option>`).join('')}
       </datalist>
       <div class="table-toolbar">
         <label class="search-box">${icon('search')}<input id="searchInput" value="${attr(state.query)}" placeholder="Buscar"></label>
@@ -6699,6 +6815,8 @@ function renderEquipos() {
             <span>Vendido por</span>
             <select data-new-device="soldBy">${sellerSelectOptions(d.soldBy || defaultNewEquipmentSeller)}</select>
           </label>
+          <label><span>Grupo facturacion</span><input list="billingGroupList" value="${attr(d.billingGroup || defaultBillingGroupName)}" data-new-device="billingGroup" placeholder="Principal"></label>
+          <label class="check-field"><input type="checkbox" data-new-device="billable" ${normalizeBillableFlag(d.billable, true) ? 'checked' : ''}><span>Equipo facturable</span></label>
           <label><span>Precio pactado</span><input type="number" min="0" step="0.01" value="${attr(d.agreedPrice)}" data-new-device="agreedPrice"></label>
           <label><span>Fecha venta</span><input type="date" value="${attr(d.saleDate)}" data-new-device="saleDate"></label>
           <label class="wide"><span>Nota precio</span><input value="${attr(d.priceNote)}" data-new-device="priceNote"></label>
@@ -6911,7 +7029,7 @@ function renderFacturacion(stats, companies) {
           </select>
         </label>
         <label>
-          <span>Grupo</span>
+          <span>Grupo facturacion</span>
           <select id="billingGroup">
             <option value="">Todos</option>
             ${groups.map((group) => `<option value="${attr(group)}" ${state.billingGroup === group ? 'selected' : ''}>${esc(group)}</option>`).join('')}
@@ -6920,7 +7038,22 @@ function renderFacturacion(stats, companies) {
         <label class="search-box billing-search">${icon('search')}<input id="billingSearchInput" value="${attr(state.billingQuery)}" placeholder="Equipo, UID o IMEI"></label>
         <div class="filter-count"><span>Partidas a facturar</span><strong>${periodStats.totalBillable}</strong></div>
       </div>
-      <div class="notice">Facturacion agrupa por razon social cuando la empresa esta ligada; si no, conserva la empresa del CRM. Los equipos cuentan estrictamente desde Wialon y las lineas entran por su renovacion del periodo.</div>
+      <div class="billing-group-manager">
+        <div>
+          <span>Grupos de facturacion</span>
+          <strong>${esc(selectedBillingCompany || 'Selecciona una razon social / empresa')}</strong>
+          <small>Todo equipo inicia en Principal; puedes crear grupos y asignarlos equipo por equipo.</small>
+          <div class="billing-group-chip-list">
+            ${groups.map((group) => `<span class="pill ${state.billingGroup === group ? 'ok' : ''}">${esc(group)}</span>`).join('')}
+          </div>
+        </div>
+        <label>
+          <span>Nuevo grupo</span>
+          <input id="newBillingGroupName" value="${attr(state.newBillingGroupName || '')}" placeholder="Ej. Obra norte, Sucursal GDL">
+        </label>
+        <button class="button" id="addBillingGroup" ${selectedBillingCompany ? '' : 'disabled'}>${icon('plus')}Crear grupo</button>
+      </div>
+      <div class="notice">Facturacion agrupa por razon social cuando la empresa esta ligada; si no, conserva la empresa del CRM. El grupo de facturacion es manual por equipo: Principal, obra, sucursal o el nombre que captures.</div>
       <section class="metric-grid billing-metrics">
         ${metric('Mensuales', periodStats.monthly)}
         ${metric('Anualidades periodo', periodStats.annual, 'amber')}
@@ -7291,8 +7424,12 @@ function renderCobros(companies) {
   const pagination = tablePaginationState(devices.length, state.cobrosPage)
   const pageDevices = devices.slice(pagination.start, pagination.end)
   const groups = cobrosGroups()
+  const billingGroupOptions = billingGroups()
   return `
     <section class="client-layout">
+      <datalist id="billingGroupList">
+        ${billingGroupOptions.map((group) => `<option value="${attr(group)}"></option>`).join('')}
+      </datalist>
       ${renderTablePagination(devices.length, pagination, { label: 'equipos', dataAttr: 'data-cobros-page', ariaLabel: 'Paginacion de cobros', sticky: true })}
       <div class="billing-filters">
         <label>
@@ -7324,7 +7461,7 @@ function renderCobros(companies) {
       <div class="table-wrap devices-table">
         <table>
           <thead>
-            <tr><th>Empresa</th><th>Grupos</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Origen</th><th>Vendido por</th><th>Cobro</th><th>Fecha renovacion</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Estado</th></tr>
+            <tr><th>Empresa</th><th>Grupos Wialon</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Origen</th><th>Vendido por</th><th>Facturable</th><th>Grupo facturacion</th><th>Cobro</th><th>Fecha renovacion</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Estado</th></tr>
           </thead>
           <tbody>
             ${pageDevices
@@ -7340,6 +7477,13 @@ function renderCobros(companies) {
                     <td>${esc(deviceImeiShort(device) || '-')}</td>
                     <td><span class="pill ${isImportedWialonDevice(device) ? 'ok' : 'warn'}">${isImportedWialonDevice(device) ? 'Wialon' : 'Manual'}</span></td>
                     <td><select data-device-billing="${attr(device.id)}" data-billing-field="soldBy">${sellerSelectOptions(device.soldBy)}</select></td>
+                    <td>
+                      <label class="inline-check">
+                        <input type="checkbox" data-device-billing="${attr(device.id)}" data-billing-field="billable" ${isDeviceBillingEnabled(device) ? 'checked' : ''}>
+                        <span>${isDeviceBillingEnabled(device) ? 'Si' : 'No'}</span>
+                      </label>
+                    </td>
+                    <td><input list="billingGroupList" value="${attr(deviceBillingGroup(device))}" data-device-billing="${attr(device.id)}" data-billing-field="billingGroup"></td>
                     <td>
                       <select data-device-billing="${attr(device.id)}" data-billing-field="billingCycle">
                         <option value="mensual" ${deviceBillingCycle(device) === 'mensual' ? 'selected' : ''}>Mensual</option>
@@ -8001,7 +8145,9 @@ function bindEvents() {
 
   document.querySelectorAll('[data-new-device]').forEach((input) => {
     const saveNewDeviceDraft = () => {
-      state.newDevice = { ...state.newDevice, [input.dataset.newDevice]: input.value }
+      const field = input.dataset.newDevice
+      const value = input.type === 'checkbox' ? input.checked : input.value
+      state.newDevice = { ...state.newDevice, [field]: field === 'billingGroup' ? cleanBillingGroupName(value) : value }
       persistState()
     }
     input.addEventListener('input', saveNewDeviceDraft)
@@ -8181,6 +8327,13 @@ function bindEvents() {
     setState({ billingGroup: event.target.value, billingPage: 1 })
   })
 
+  document.getElementById('newBillingGroupName')?.addEventListener('input', (event) => {
+    state.newBillingGroupName = event.target.value
+    persistState()
+  })
+
+  document.getElementById('addBillingGroup')?.addEventListener('click', addBillingGroupForSelectedCompany)
+
   document.getElementById('billingSearchInput')?.addEventListener('input', (event) => {
     state.billingQuery = event.target.value
     state.billingPage = 1
@@ -8199,23 +8352,26 @@ function bindEvents() {
       const id = input.dataset.device
       const field = input.dataset.field
       const shouldRecalculateLines = field === 'uid' || field === 'imei' || field === 'imeiLong' || field === 'imeiShort' || field === 'phone'
+      const value = input.type === 'checkbox' ? input.checked : input.value
       state.devices = state.devices.map((device) => {
         if (device.id !== id) return device
-        if (field === 'groups') return { ...device, groups: splitGroups(input.value) }
-        if (field === 'paymentMonths') return { ...device, paymentMonths: parsePaymentMonths(input.value) }
-        if (field === 'billingCycle' && input.value === 'mensual') return { ...device, billingCycle: input.value, paymentMonths: [], agreedPrice: deviceAgreedPriceValue({ ...device, billingCycle: 'mensual' }) }
-        if (field === 'uid') return normalizeDeviceIdentifiers({ ...device, uid: input.value })
-        if (field === 'imei') return normalizeDeviceIdentifiers({ ...device, imei: input.value, imeiLong: input.value || device.imeiLong })
-        if (field === 'imeiLong') return normalizeDeviceIdentifiers({ ...device, imeiLong: input.value, imei: input.value || device.imei })
-        if (field === 'imeiShort') return normalizeDeviceIdentifiers({ ...device, imeiShort: input.value })
-        return { ...device, [field]: input.value }
+        if (field === 'groups') return { ...device, groups: splitGroups(value) }
+        if (field === 'paymentMonths') return { ...device, paymentMonths: parsePaymentMonths(value) }
+        if (field === 'billingCycle' && value === 'mensual') return { ...device, billingCycle: value, paymentMonths: [], agreedPrice: deviceAgreedPriceValue({ ...device, billingCycle: 'mensual' }) }
+        if (field === 'billingGroup') return { ...device, billingGroup: cleanBillingGroupName(value) }
+        if (field === 'billable') return { ...device, billable: Boolean(value) }
+        if (field === 'uid') return normalizeDeviceIdentifiers({ ...device, uid: value })
+        if (field === 'imei') return normalizeDeviceIdentifiers({ ...device, imei: value, imeiLong: value || device.imeiLong })
+        if (field === 'imeiLong') return normalizeDeviceIdentifiers({ ...device, imeiLong: value, imei: value || device.imei })
+        if (field === 'imeiShort') return normalizeDeviceIdentifiers({ ...device, imeiShort: value })
+        return { ...device, [field]: value }
       })
       if (shouldRecalculateLines) {
         const bridge = mergedLineBridge(state.lines, state.devices)
         state.lines = enrichLinesFromBridge(state.lines, bridge, state.devices).map((line, index) => normalizeLine(line, index))
       }
-      if (field === 'company' && shouldRender && textValue(input.value)) {
-        const company = textValue(input.value)
+      if (field === 'company' && shouldRender && textValue(value)) {
+        const company = textValue(value)
         state.companyMeta = {
           ...state.companyMeta,
           [company]: { ...blankMeta(company), ...(state.companyMeta[company] || {}) }
@@ -8410,20 +8566,23 @@ function bindEvents() {
     const saveDeviceBilling = (shouldRender) => {
       const id = input.dataset.deviceBilling
       const field = input.dataset.billingField
+      const value = input.type === 'checkbox' ? input.checked : input.value
       state.devices = state.devices.map((device) => {
         if (device.id !== id) return device
-        if (field === 'groups') return { ...device, groups: splitGroups(input.value) }
-        if (field === 'paymentMonths') return { ...device, paymentMonths: parsePaymentMonths(input.value) }
-        if (field === 'billingCycle' && input.value === 'mensual') return { ...device, billingCycle: input.value, paymentMonths: [], agreedPrice: deviceAgreedPriceValue({ ...device, billingCycle: 'mensual' }) }
-        if (field === 'imeiLong') return normalizeDeviceIdentifiers({ ...device, imeiLong: input.value, imei: input.value || device.imei })
-        if (field === 'imeiShort') return normalizeDeviceIdentifiers({ ...device, imeiShort: input.value })
-        return { ...device, [field]: input.value }
+        if (field === 'groups') return { ...device, groups: splitGroups(value) }
+        if (field === 'paymentMonths') return { ...device, paymentMonths: parsePaymentMonths(value) }
+        if (field === 'billingCycle' && value === 'mensual') return { ...device, billingCycle: value, paymentMonths: [], agreedPrice: deviceAgreedPriceValue({ ...device, billingCycle: 'mensual' }) }
+        if (field === 'billingGroup') return { ...device, billingGroup: cleanBillingGroupName(value) }
+        if (field === 'billable') return { ...device, billable: Boolean(value) }
+        if (field === 'imeiLong') return normalizeDeviceIdentifiers({ ...device, imeiLong: value, imei: value || device.imei })
+        if (field === 'imeiShort') return normalizeDeviceIdentifiers({ ...device, imeiShort: value })
+        return { ...device, [field]: value }
       })
       persistState()
       if (shouldRender) render()
     }
 
-    if (input.tagName === 'SELECT') {
+    if (input.tagName === 'SELECT' || input.type === 'checkbox') {
       input.addEventListener('change', () => saveDeviceBilling(true))
     } else {
       input.addEventListener('input', () => saveDeviceBilling(false))
@@ -8457,6 +8616,7 @@ function applySavedState(parsed = {}) {
         annualPricePerDevice: parsed.billing?.annualPricePerDevice ?? 0
       },
       billingRows: parsed.billingRows || parsed.invoices || [],
+      newBillingGroupName: parsed.newBillingGroupName || '',
       paymentImport: parsed.paymentImport || null,
       lineImport: parsed.lineImport || null,
       lineSeedImportVersion: parsed.lineSeedImportVersion || 0,
@@ -8479,6 +8639,8 @@ function applySavedState(parsed = {}) {
         imeiShort: '',
         deviceType: '',
         phone: '',
+        billingGroup: defaultBillingGroupName,
+        billable: true,
         agreedPrice: '',
         saleDate: '',
         priceNote: '',
