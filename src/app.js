@@ -54,6 +54,9 @@ let stickyLayoutWindowBound = false
 let deviceMatchIndexCache = { devices: null, index: null }
 let lineForDeviceIndexCache = { lines: null, devices: null, index: null }
 let invoiceProfileCompanyIndexCache = { profiles: null, companyMeta: null, devices: null, lines: null, index: null }
+let lineMatchInfoIndexCache = { lines: null, devices: null, index: null }
+let billingRowsCache = { devices: null, lines: null, companyMeta: null, invoiceProfiles: null, billing: null, key: '', rows: null }
+let companiesCache = { devices: null, companyMeta: null, invoiceProfiles: null, companies: null }
 
 const hardwarePresets = [
   {
@@ -430,8 +433,9 @@ let currentServerUpdatedAt = ''
 let applyingServerState = false
 let serverPollTimer = null
 let searchRenderTimer = null
+let lineRevalidationInFlight = false
 
-function renderPreservingInput(selector, delay = 550) {
+function renderPreservingInput(selector, delay = 300) {
   clearTimeout(searchRenderTimer)
   const active = document.activeElement
   const activeId = active?.id || ''
@@ -1840,6 +1844,11 @@ async function saveChangesNow() {
 function setState(patch, shouldRender = true) {
   Object.assign(state, patch)
   persistState()
+  if (shouldRender) render()
+}
+
+function setUiState(patch, shouldRender = true) {
+  Object.assign(state, patch)
   if (shouldRender) render()
 }
 
@@ -3515,12 +3524,17 @@ function deviceMatchIndex(devices = state.devices) {
     phone: new Map(),
     streamaxPhone: new Map(),
     name: new Map(),
-    suffix: []
+    suffix: new Map(),
+    suffixLengths: []
   }
   const duplicateNames = new Set()
   const add = (map, key, device) => {
     if (key && !map.has(key)) map.set(key, device)
   }
+  const addSuffix = (key, device) => {
+    if (key && !index.suffix.has(key)) index.suffix.set(key, device)
+  }
+  const suffixLengths = new Set()
   devices.forEach((device) => {
     deviceIdentifierValues(device).forEach((value) => add(index.exact, normalizeIdentifier(value), device))
     phoneMatchValues(device.phone).forEach((value) => add(isStreamaxDevice(device) ? index.streamaxPhone : index.phone, value, device))
@@ -3529,15 +3543,20 @@ function deviceMatchIndex(devices = state.devices) {
       if (index.name.has(deviceName)) duplicateNames.add(deviceName)
       else index.name.set(deviceName, device)
     }
-    const suffixLengths = deviceImeiSuffixLengths(device)
-    if (suffixLengths.length) {
+    const deviceSuffixLengths = deviceImeiSuffixLengths(device)
+    if (deviceSuffixLengths.length) {
       const identifiers = deviceIdentifierValues(device)
         .map((value) => textValue(value).replace(/\D/g, ''))
         .filter(Boolean)
-      index.suffix.push({ device, suffixLengths, identifiers })
+      deviceSuffixLengths.forEach((length) => suffixLengths.add(length))
+      identifiers.forEach((identifier) => {
+        addSuffix(identifier, device)
+        deviceSuffixLengths.forEach((length) => addSuffix(deriveImeiSuffix(identifier, length), device))
+      })
     }
   })
   duplicateNames.forEach((name) => index.name.delete(name))
+  index.suffixLengths = Array.from(suffixLengths).sort((a, b) => b - a)
   deviceMatchIndexCache = { devices, index }
   return index
 }
@@ -3558,14 +3577,14 @@ function matchLineDeviceWithMethod(line, devices = state.devices) {
   const lineIdentifiers = unique([...lineImeiValues(line), ...lineTextIdentifierValues(line)])
     .map((value) => textValue(value).replace(/\D/g, ''))
     .filter(Boolean)
-  for (const candidate of index.suffix) {
-    const matched = lineIdentifiers.some((lineIdentifier) =>
-      candidate.suffixLengths.some((length) => {
-        const suffix = deriveImeiSuffix(lineIdentifier, length)
-        return suffix && candidate.identifiers.some((deviceIdentifier) => deviceIdentifier === suffix || deviceIdentifier === lineIdentifier)
-      })
-    )
-    if (matched) return { device: candidate.device, method: 'imei' }
+  for (const lineIdentifier of lineIdentifiers) {
+    const exactSuffixDevice = index.suffix.get(lineIdentifier)
+    if (exactSuffixDevice) return { device: exactSuffixDevice, method: 'imei' }
+    for (const length of index.suffixLengths) {
+      const suffix = deriveImeiSuffix(lineIdentifier, length)
+      const device = suffix ? index.suffix.get(suffix) : null
+      if (device) return { device, method: 'imei' }
+    }
   }
   for (const phoneKey of phoneMatchValues(phone)) {
     const device = index.phone.get(phoneKey)
@@ -3578,21 +3597,62 @@ function matchLineDeviceWithMethod(line, devices = state.devices) {
   return { device: null, method: '' }
 }
 
+function buildLineMatchInfo(line, devices = state.devices) {
+  const match = matchLineDeviceWithMethod(line, devices)
+  const type = lineMatchTypeFromMatch(line, match, devices)
+  let label = 'Sin match'
+  if (isBernardoLine(line)) {
+    label = 'Solo linea celular'
+  } else if (match.device) {
+    const suffix = match.method === 'telefono' ? ' / telefono Wialon' : match.method === 'nombre' ? ' / nombre Wialon' : ''
+    label = `${match.device.unitName || 'Equipo'} / ${match.device.company || 'Sin empresa'}${suffix}`
+  } else if (type === 'no_asignada') {
+    label = lineWialonExemptLabel(line)
+  } else if (line.clientOnly) {
+    label = 'Solo linea celular'
+  }
+  return {
+    match,
+    device: match.device,
+    method: match.method,
+    type,
+    label
+  }
+}
+
+function lineMatchInfoIndex(lines = state.lines, devices = state.devices) {
+  if (lineMatchInfoIndexCache.lines === lines && lineMatchInfoIndexCache.devices === devices && lineMatchInfoIndexCache.index) {
+    return lineMatchInfoIndexCache.index
+  }
+  const byObject = new Map()
+  lines.forEach((line, index) => {
+    const normalized = line?.id ? line : normalizeLine(line, index)
+    const info = buildLineMatchInfo(normalized, devices)
+    byObject.set(line, info)
+  })
+  const index = { byObject }
+  lineMatchInfoIndexCache = { lines, devices, index }
+  return index
+}
+
+function lineMatchInfo(line, devices = state.devices) {
+  if (devices === state.devices) {
+    const index = lineMatchInfoIndex(state.lines, devices)
+    return index.byObject.get(line) || buildLineMatchInfo(line, devices)
+  }
+  return buildLineMatchInfo(line, devices)
+}
+
 function matchLineDevice(line, devices = state.devices) {
-  return matchLineDeviceWithMethod(line, devices).device
+  return lineMatchInfo(line, devices).device
 }
 
 function lineMatchMethod(line, devices = state.devices) {
-  return matchLineDeviceWithMethod(line, devices).method
+  return lineMatchInfo(line, devices).method
 }
 
 function lineMatchType(line, devices = state.devices) {
-  if (isBernardoLine(line)) return 'solo_linea'
-  const match = matchLineDeviceWithMethod(line, devices)
-  if (match.device) return 'equipo'
-  if (lineIsWialonMatchExempt(line, devices, match)) return 'no_asignada'
-  if (line.clientOnly) return 'solo_linea'
-  return 'sin_match'
+  return lineMatchInfo(line, devices).type
 }
 
 function lineMatchTypeFromMatch(line, match, devices = state.devices) {
@@ -3604,19 +3664,11 @@ function lineMatchTypeFromMatch(line, match, devices = state.devices) {
 }
 
 function lineMatchLabel(line) {
-  if (isBernardoLine(line)) return 'Solo linea celular'
-  const device = matchLineDevice(line)
-  if (device) {
-    const method = lineMatchMethod(line)
-    const suffix = method === 'telefono' ? ' / telefono Wialon' : method === 'nombre' ? ' / nombre Wialon' : ''
-    return `${device.unitName || 'Equipo'} / ${device.company || 'Sin empresa'}${suffix}`
-  }
-  if (lineIsWialonMatchExempt(line)) return lineWialonExemptLabel(line)
-  return line.clientOnly ? 'Solo linea celular' : 'Sin match'
+  return lineMatchInfo(line).label
 }
 
 function lineMatchTypeText(line) {
-  const matchType = lineMatchType(line)
+  const matchType = lineMatchInfo(line).type
   if (matchType === 'equipo') return 'Equipo GPS'
   if (matchType === 'no_asignada') return 'No asignable'
   if (matchType === 'solo_linea') return 'Solo linea celular'
@@ -3629,9 +3681,9 @@ function lineForDeviceIndex(lines = state.lines, devices = state.devices) {
   }
   const index = new Map()
   lines.forEach((line) => {
-    const match = matchLineDeviceWithMethod(line, devices)
-    const deviceId = match.device?.id
-    if (deviceId && !index.has(deviceId)) index.set(deviceId, { line, method: match.method })
+    const info = lines === state.lines && devices === state.devices ? lineMatchInfo(line, devices) : buildLineMatchInfo(line, devices)
+    const deviceId = info.device?.id
+    if (deviceId && !index.has(deviceId)) index.set(deviceId, { line, method: info.method })
   })
   lineForDeviceIndexCache = { lines, devices, index }
   return index
@@ -3895,11 +3947,12 @@ function dedupeLines(lines, devices = state.devices) {
 }
 
 function lineStats(lines = state.lines, devices = state.devices) {
-  return lines.reduce((totals, line) => {
-    const match = matchLineDeviceWithMethod(line, devices)
-    const matchType = lineMatchTypeFromMatch(line, match, devices)
+  const useCachedInfo = lines === state.lines && devices === state.devices
+  return lines.reduce((totals, line, index) => {
+    const normalized = line?.id ? line : normalizeLine(line, index)
+    const matchType = useCachedInfo ? lineMatchInfo(normalized, devices).type : buildLineMatchInfo(normalized, devices).type
     totals.total += 1
-    if (isActiveLine(line)) totals.active += 1
+    if (isActiveLine(normalized)) totals.active += 1
     else totals.inactive += 1
     totals[matchType === 'equipo' ? 'matched' : matchType === 'solo_linea' ? 'clientOnly' : matchType === 'no_asignada' ? 'exempt' : 'unmatched'] += 1
     return totals
@@ -3918,7 +3971,8 @@ function filteredLines() {
   const query = normalizeHeader(state.lineQuery)
   const iccQuery = normalizeIdentifier(state.lineIccQuery)
   return state.lines.filter((line) => {
-    const matchType = lineMatchType(line)
+    const matchInfo = lineMatchInfo(line)
+    const matchType = matchInfo.type
     const statusMatches =
       !state.lineStatusFilter ||
       (state.lineStatusFilter === 'activa' ? isActiveLine(line) : state.lineStatusFilter === 'desactivada' ? !isActiveLine(line) : normalizeLineStatus(line.status) === state.lineStatusFilter)
@@ -3927,7 +3981,7 @@ function filteredLines() {
     const queryMatches =
       !query ||
       normalizeHeader(
-        `${line.company} ${line.phone} ${line.iccid} ${line.imei} ${lineTypeLabel(line.lineType)} ${line.carrier} ${line.plan} ${line.notes} ${lineSeller(line)} ${lineMatchLabel(line)}`
+        `${line.company} ${line.phone} ${line.iccid} ${line.imei} ${line.imeiLong} ${line.imeiShort} ${lineTypeLabel(line.lineType)} ${line.carrier} ${line.plan} ${line.notes} ${lineSeller(line)} ${matchInfo.label}`
       ).includes(query)
     const iccMatches = !iccQuery || normalizeIdentifier(line.iccid).includes(iccQuery)
     return statusMatches && matchMatches && typeMatches && queryMatches && iccMatches
@@ -4428,6 +4482,11 @@ function revalidateLinesWithRelationBase(relationLines = []) {
 }
 
 async function revalidateLineasPage(options = {}) {
+  if (lineRevalidationInFlight) {
+    return { ok: false, skipped: true }
+  }
+  lineRevalidationInFlight = true
+  try {
   let relationLines = []
   let source = state.lineImport?.source || 'lineas actuales'
   let relationBaseLoaded = false
@@ -4498,6 +4557,9 @@ async function revalidateLineasPage(options = {}) {
   persistState()
   render()
   return { ...stats, ok: true }
+  } finally {
+    lineRevalidationInFlight = false
+  }
 }
 
 async function loadLineRelationBase(options = {}) {
@@ -4781,6 +4843,14 @@ function applyMapping(nextMapping) {
 }
 
 function buildCompanies() {
+  if (
+    companiesCache.devices === state.devices &&
+    companiesCache.companyMeta === state.companyMeta &&
+    companiesCache.invoiceProfiles === state.invoiceProfiles &&
+    companiesCache.companies
+  ) {
+    return companiesCache.companies
+  }
   const map = new Map()
   const fiscalProfileNames = invoiceProfileNameSet()
   state.devices.forEach((device) => {
@@ -4805,7 +4875,14 @@ function buildCompanies() {
       map.set(companyName, { name: companyName, devices: [], billableCount: 0, groups: new Map() })
     }
   })
-  return Array.from(map.values()).sort((a, b) => b.billableCount - a.billableCount || a.name.localeCompare(b.name))
+  const companies = Array.from(map.values()).sort((a, b) => b.billableCount - a.billableCount || a.name.localeCompare(b.name))
+  companiesCache = {
+    devices: state.devices,
+    companyMeta: state.companyMeta,
+    invoiceProfiles: state.invoiceProfiles,
+    companies
+  }
+  return companies
 }
 
 function filteredDevices() {
@@ -5185,9 +5262,9 @@ function billingSellerMonthlyTotals(rows) {
   }, emptySellerMonthlyTotals())
 }
 
-function billingLineFilterMatches(line) {
+function billingLineFilterMatches(line, match = null) {
   const query = normalizeHeader(state.billingQuery)
-  const device = matchLineDevice(line)
+  const device = match ? match.device : matchLineDevice(line)
   const companyName = device?.company || line.company
   const billingEntityName = billingEntityNameForCompany(companyName)
   const groups = Array.isArray(device?.groups) ? device.groups : []
@@ -5295,9 +5372,11 @@ function buildBillingRows() {
 
   state.lines
     .map((line, index) => normalizeLine(line, index))
-    .filter((line) => isActiveLine(line) && billingLineFilterMatches(line))
+    .filter((line) => isActiveLine(line))
     .forEach((line) => {
-      const matchedDevice = matchLineDevice(line)
+      const lineMatch = matchLineDeviceWithMethod(line)
+      if (!billingLineFilterMatches(line, lineMatch)) return
+      const matchedDevice = lineMatch.device
       if (matchedDevice && !isBillableDevice(matchedDevice)) return
       const matchedDeviceImei = deviceImeiLong(matchedDevice || {})
       const companyName = matchedDevice?.company || line.company || 'Sin empresa'
@@ -5337,7 +5416,7 @@ function buildBillingRows() {
           renewalDate: line.renewalDate || '',
           saleDate: '',
           soldBy,
-          priceNote: [line.notes, matchedDevice && lineMatchMethod(line) === 'telefono' ? 'Ligada a Wialon por telefono' : ''].filter(Boolean).join(' | '),
+          priceNote: [line.notes, matchedDevice && lineMatch.method === 'telefono' ? 'Ligada a Wialon por telefono' : ''].filter(Boolean).join(' | '),
           unitPrice
         })
       }
@@ -5356,6 +5435,41 @@ function buildBillingRows() {
       return row
     })
     .sort((a, b) => b.total - a.total || a.company.localeCompare(b.company) || cleanBillingGroupName(a.billingGroup).localeCompare(cleanBillingGroupName(b.billingGroup)))
+}
+
+function billingRowsCacheKey() {
+  return JSON.stringify({
+    company: state.billingCompany || '',
+    group: state.billingGroup || '',
+    query: state.billingQuery || '',
+    billing: state.billing || {}
+  })
+}
+
+function cachedBillingRows() {
+  const key = billingRowsCacheKey()
+  if (
+    billingRowsCache.devices === state.devices &&
+    billingRowsCache.lines === state.lines &&
+    billingRowsCache.companyMeta === state.companyMeta &&
+    billingRowsCache.invoiceProfiles === state.invoiceProfiles &&
+    billingRowsCache.billing === state.billing &&
+    billingRowsCache.key === key &&
+    billingRowsCache.rows
+  ) {
+    return billingRowsCache.rows
+  }
+  const rows = buildBillingRows()
+  billingRowsCache = {
+    devices: state.devices,
+    lines: state.lines,
+    companyMeta: state.companyMeta,
+    invoiceProfiles: state.invoiceProfiles,
+    billing: state.billing,
+    key,
+    rows
+  }
+  return rows
 }
 
 function buildBillingRowsForPeriod(periodMode = 'next', ignoreFilters = true) {
@@ -7087,7 +7201,8 @@ function renderLineRows(lines) {
   if (!lines.length) return '<tr><td colspan="20">Sin lineas en esta seccion.</td></tr>'
   return lines
     .map((line) => {
-      const matchType = lineMatchType(line)
+      const matchInfo = lineMatchInfo(line)
+      const matchType = matchInfo.type
       const pillClass = matchType === 'equipo' ? 'ok' : matchType === 'no_asignada' || matchType === 'solo_linea' ? 'warn' : 'red'
       const inactive = !isActiveLine(line)
       const previousImei = linePreviousImeiValue(line)
@@ -7106,7 +7221,7 @@ function renderLineRows(lines) {
           <td><input value="${attr(line.imeiShort)}" data-line="${attr(line.id)}" data-line-field="imeiShort"></td>
           <td><input value="${attr(previousImei)}" data-line="${attr(line.id)}" data-line-field="previousImei" placeholder="IMEI anterior"></td>
           <td><select data-line="${attr(line.id)}" data-line-field="soldBy">${sellerSelectOptions(line.soldBy)}</select></td>
-          <td><span class="pill ${pillClass}">${esc(lineMatchLabel(line))}</span></td>
+          <td><span class="pill ${pillClass}">${esc(matchInfo.label)}</span></td>
           <td><span class="pill">${esc(providerDetectionLabel(line.providerDetectedBy))}</span></td>
           <td>
             <select data-line="${attr(line.id)}" data-line-field="clientOnly">
@@ -7254,7 +7369,7 @@ function renderLineas(companies) {
 
 function renderFacturacion(stats, companies) {
   const period = getBillingPeriod()
-  const previewRows = buildBillingRows()
+  const previewRows = cachedBillingRows()
   const periodStats = billingFilterStats(previewRows)
   const sellerMonthlyTotals = billingSellerMonthlyTotals(previewRows)
   const projectedTotal = previewRows.reduce((sum, row) => sum + row.total, 0)
@@ -8135,7 +8250,8 @@ function bindEvents() {
     button.addEventListener('click', async () => {
       if (button.dataset.view !== state.view) window.scrollTo({ top: 0, left: 0 })
       if (button.dataset.view === 'lineas') {
-        await revalidateLineasPage({ notice: true })
+        setUiState({ view: 'lineas', notice: state.notice || 'Revalidando lineas en segundo plano...' })
+        revalidateLineasPage({ notice: true })
         return
       }
       setState({ view: button.dataset.view })
@@ -8202,7 +8318,7 @@ function bindEvents() {
 
   document.querySelectorAll('[data-company-page]').forEach((button) => {
     button.addEventListener('click', () => {
-      setState({ companyPage: Math.max(1, Number(button.dataset.companyPage || 1)) })
+      setUiState({ companyPage: Math.max(1, Number(button.dataset.companyPage || 1)) })
     })
   })
 
@@ -8211,13 +8327,12 @@ function bindEvents() {
   document.getElementById('invoiceProfileSearchInput')?.addEventListener('input', (event) => {
     state.invoiceProfileQuery = event.target.value
     state.invoiceProfilePage = 1
-    persistState()
     renderPreservingInput('#invoiceProfileSearchInput')
   })
 
   document.querySelectorAll('[data-invoice-profile-page]').forEach((button) => {
     button.addEventListener('click', () => {
-      setState({ invoiceProfilePage: Math.max(1, Number(button.dataset.invoiceProfilePage || 1)) })
+      setUiState({ invoiceProfilePage: Math.max(1, Number(button.dataset.invoiceProfilePage || 1)) })
     })
   })
 
@@ -8435,32 +8550,30 @@ function bindEvents() {
   document.getElementById('lineSearchInput')?.addEventListener('input', (event) => {
     state.lineQuery = event.target.value
     state.linePage = 1
-    persistState()
     renderPreservingInput('#lineSearchInput')
   })
 
   document.getElementById('lineIccSearchInput')?.addEventListener('input', (event) => {
     state.lineIccQuery = event.target.value
     state.linePage = 1
-    persistState()
     renderPreservingInput('#lineIccSearchInput')
   })
 
   document.getElementById('lineStatusFilter')?.addEventListener('change', (event) => {
-    setState({ lineStatusFilter: event.target.value, linePage: 1 })
+    setUiState({ lineStatusFilter: event.target.value, linePage: 1 })
   })
 
   document.getElementById('lineMatchFilter')?.addEventListener('change', (event) => {
-    setState({ lineMatchFilter: event.target.value, linePage: 1 })
+    setUiState({ lineMatchFilter: event.target.value, linePage: 1 })
   })
 
   document.getElementById('lineTypeFilter')?.addEventListener('change', (event) => {
-    setState({ lineTypeFilter: event.target.value, linePage: 1 })
+    setUiState({ lineTypeFilter: event.target.value, linePage: 1 })
   })
 
   document.querySelectorAll('[data-line-page]').forEach((button) => {
     button.addEventListener('click', () => {
-      setState({ linePage: Math.max(1, Number(button.dataset.linePage || 1)) })
+      setUiState({ linePage: Math.max(1, Number(button.dataset.linePage || 1)) })
     })
   })
 
@@ -8535,51 +8648,49 @@ function bindEvents() {
     state.query = event.target.value
     state.equipmentPage = 1
     state.cobrosPage = 1
-    persistState()
     renderPreservingInput('#searchInput')
   })
 
   document.getElementById('equipmentCompanyFilter')?.addEventListener('input', (event) => {
     state.equipmentCompanyFilter = event.target.value
     state.equipmentPage = 1
-    persistState()
     renderPreservingInput('#equipmentCompanyFilter')
   })
 
   document.getElementById('equipmentCycleFilter')?.addEventListener('change', (event) => {
-    setState({ equipmentCycleFilter: event.target.value, equipmentPage: 1 })
+    setUiState({ equipmentCycleFilter: event.target.value, equipmentPage: 1 })
   })
 
   document.querySelectorAll('[data-equipment-page]').forEach((button) => {
     button.addEventListener('click', () => {
-      setState({ equipmentPage: Math.max(1, Number(button.dataset.equipmentPage || 1)) })
+      setUiState({ equipmentPage: Math.max(1, Number(button.dataset.equipmentPage || 1)) })
     })
   })
 
   document.getElementById('cobrosCompany')?.addEventListener('change', (event) => {
-    setState({ cobrosCompany: event.target.value, cobrosGroup: '', cobrosPage: 1 })
+    setUiState({ cobrosCompany: event.target.value, cobrosGroup: '', cobrosPage: 1 })
   })
 
   document.getElementById('cobrosGroup')?.addEventListener('change', (event) => {
-    setState({ cobrosGroup: event.target.value, cobrosPage: 1 })
+    setUiState({ cobrosGroup: event.target.value, cobrosPage: 1 })
   })
 
   document.getElementById('cobrosCycleFilter')?.addEventListener('change', (event) => {
-    setState({ cobrosCycleFilter: event.target.value, cobrosPage: 1 })
+    setUiState({ cobrosCycleFilter: event.target.value, cobrosPage: 1 })
   })
 
   document.querySelectorAll('[data-cobros-page]').forEach((button) => {
     button.addEventListener('click', () => {
-      setState({ cobrosPage: Math.max(1, Number(button.dataset.cobrosPage || 1)) })
+      setUiState({ cobrosPage: Math.max(1, Number(button.dataset.cobrosPage || 1)) })
     })
   })
 
   document.getElementById('billingCompany')?.addEventListener('change', (event) => {
-    setState({ billingCompany: event.target.value, billingGroup: '', billingPage: 1 })
+    setUiState({ billingCompany: event.target.value, billingGroup: '', billingPage: 1 })
   })
 
   document.getElementById('billingGroup')?.addEventListener('change', (event) => {
-    setState({ billingGroup: event.target.value, billingPage: 1 })
+    setUiState({ billingGroup: event.target.value, billingPage: 1 })
   })
 
   document.getElementById('newBillingGroupName')?.addEventListener('input', (event) => {
@@ -8592,13 +8703,12 @@ function bindEvents() {
   document.getElementById('billingSearchInput')?.addEventListener('input', (event) => {
     state.billingQuery = event.target.value
     state.billingPage = 1
-    persistState()
     renderPreservingInput('#billingSearchInput')
   })
 
   document.querySelectorAll('[data-billing-page]').forEach((button) => {
     button.addEventListener('click', () => {
-      setState({ billingPage: Math.max(1, Number(button.dataset.billingPage || 1)) })
+      setUiState({ billingPage: Math.max(1, Number(button.dataset.billingPage || 1)) })
     })
   })
 
