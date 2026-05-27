@@ -1041,6 +1041,55 @@ tbody tr:focus-within {
   gap: 10px;
 }
 
+.company-parent-summary-card {
+  grid-column: 1 / -1;
+  border-left: 4px solid var(--brand);
+  background: linear-gradient(180deg, #fff, var(--surface-soft));
+}
+
+.parent-account-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.parent-account-card {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.25fr) repeat(3, minmax(150px, 1fr));
+  gap: 8px;
+  align-items: stretch;
+}
+
+.parent-account-card > div {
+  min-height: 58px;
+  border: 1px solid #eee7e7;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px 10px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+}
+
+.parent-account-card > div:first-child,
+.parent-account-card > div:nth-last-child(-n + 2) {
+  grid-column: span 2;
+}
+
+.parent-account-card span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.parent-account-card strong {
+  overflow-wrap: anywhere;
+}
+
+.parent-account-card small {
+  color: var(--muted);
+}
+
 .company-data-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(180px, 1fr));

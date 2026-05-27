@@ -1169,6 +1169,51 @@ function companyFiscalProfileHtml(companyName) {
   return label ? `<span class="fiscal-chip" title="${attr(label)}"><span>Razon social</span><strong>${esc(label)}</strong></span>` : '<span class="fiscal-chip missing">Sin razon social</span>'
 }
 
+function companyParentAccountSummaryHtml(companyName, linkedProfiles = invoiceProfilesForCompany(companyName)) {
+  if (!linkedProfiles.length) return ''
+  return `
+    <div class="company-data-card company-parent-summary-card">
+      <div class="compact-head">
+        <span>Cuenta padre</span>
+        <strong>${linkedProfiles.length === 1 ? esc(linkedProfiles[0].razonSocial) : `${linkedProfiles.length} razones ligadas`}</strong>
+      </div>
+      <div class="parent-account-grid">
+        ${linkedProfiles
+          .map((profile) => {
+            const normalized = normalizeInvoiceProfile(profile)
+            const parentMeta = getCompanyMeta(normalized.razonSocial)
+            const lastInvoice = parentMeta.lastInvoice || {}
+            const parentGroup = invoiceProfileParentGroup(normalized)
+            const linkedCompanies = invoiceProfileLinkedCompanies(normalized)
+            const billingGroups = billingGroupsForEntity(normalized.razonSocial)
+            const parentContacts = parentGroup ? fiscalParentContact(parentGroup) : blankFiscalParentContact()
+            return `
+              <div class="parent-account-card">
+                <div>
+                  <span>Razon social</span>
+                  <strong>${esc(normalized.razonSocial)}</strong>
+                </div>
+                <div><span>RFC</span><strong>${esc(normalized.rfc || parentMeta.rfc || '-')}</strong></div>
+                <div><span>Correo facturas</span><strong>${esc(parentMeta.email || normalized.contactEmail || '-')}</strong></div>
+                <div><span>Correo contacto</span><strong>${esc(parentMeta.contactEmail || '-')}</strong></div>
+                <div><span>Grupo padre</span><strong>${esc(parentGroup || '-')}</strong></div>
+                <div><span>Contacto padre</span><strong>${esc(parentContacts.primary.name || parentMeta.contact || '-')}</strong></div>
+                <div><span>Telefono padre</span><strong>${esc(parentContacts.primary.phone || parentMeta.phone || '-')}</strong></div>
+                <div>
+                  <span>Ultima factura</span>
+                  <strong>${esc(lastInvoice.folio || normalized.folio || '-')}</strong>
+                  <small>${esc(lastInvoice.fechaEmision || normalized.fechaEmision || '-')}</small>
+                </div>
+                <div><span>Total ultima</span><strong>${money(lastInvoice.total ?? normalized.total, lastInvoice.moneda || normalized.moneda || 'MXN')}</strong></div>
+                <div><span>Empresas ligadas</span><strong>${esc(linkedCompanies.join(', ') || companyName)}</strong></div>
+                <div><span>Grupos facturacion</span><strong>${esc(billingGroups.join(', ') || defaultBillingGroupName)}</strong></div>
+              </div>`
+          })
+          .join('')}
+      </div>
+    </div>`
+}
+
 function lineCountsByCompany() {
   const counts = new Map()
   state.lines
@@ -6685,6 +6730,7 @@ function renderEmpresas(companies) {
                 ${icon('chevron-right')}
               </summary>
               <div class="company-settings">
+                ${companyParentAccountSummaryHtml(company.name, linkedProfiles)}
                 <div class="company-data-card">
                   <div class="compact-head">
                     <span>Datos de empresa</span>
