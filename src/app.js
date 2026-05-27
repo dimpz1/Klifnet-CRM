@@ -3118,7 +3118,7 @@ function isBernardoLine(line) {
       line?.fuente || ''
     }`
   )
-  return signal.includes('bernardo') || signal.includes('berna')
+  return /\bbernardo\b|\bbernando\b|\bberna\b/.test(signal)
 }
 
 function lineCanMatchWialon(line) {
@@ -5358,6 +5358,60 @@ function buildBillingRows() {
     .sort((a, b) => b.total - a.total || a.company.localeCompare(b.company) || cleanBillingGroupName(a.billingGroup).localeCompare(cleanBillingGroupName(b.billingGroup)))
 }
 
+function buildBillingRowsForPeriod(periodMode = 'next', ignoreFilters = true) {
+  const previousBilling = { ...state.billing }
+  const previousFilters = {
+    billingCompany: state.billingCompany,
+    billingGroup: state.billingGroup,
+    billingQuery: state.billingQuery
+  }
+  state.billing = { ...state.billing, periodMode }
+  if (ignoreFilters) {
+    state.billingCompany = ''
+    state.billingGroup = ''
+    state.billingQuery = ''
+  }
+  try {
+    return {
+      period: getBillingPeriod(),
+      rows: buildBillingRows()
+    }
+  } finally {
+    state.billing = previousBilling
+    state.billingCompany = previousFilters.billingCompany
+    state.billingGroup = previousFilters.billingGroup
+    state.billingQuery = previousFilters.billingQuery
+  }
+}
+
+function bernardoLineAnnualityRowsForPeriod(period) {
+  const periodMonth = Number(period.key.slice(5, 7))
+  return state.lines
+    .map((line, index) => normalizeLine(line, index))
+    .filter((line) => {
+      const cycle = lineBillingCycle(line)
+      return isBernardoLine(line) && isActiveLine(line) && cycle !== 'mensual' && linePaymentMonths(line).includes(String(periodMonth)) && lineUnitPrice(line) > 0
+    })
+    .map((line) => ({
+      company: line.company || 'Bernardo',
+      alias: line.alias || line.unitName || '',
+      phone: line.phone || '',
+      iccid: line.iccid || '',
+      imei: line.imei || line.imeiLong || '',
+      imeiLong: line.imeiLong || line.imei || '',
+      imeiShort: line.imeiShort || deriveShortImei(line.imeiLong || line.imei || ''),
+      lineType: lineTypeLabel(line.lineType),
+      cycle: lineBillingCycle(line),
+      paymentMonths: linePaymentMonths(line),
+      renewalDate: line.renewalDate || '',
+      unitPrice: lineUnitPrice(line),
+      soldBy: lineSeller(line),
+      status: line.status || '',
+      notes: line.notes || ''
+    }))
+    .sort((a, b) => (a.renewalDate || '').localeCompare(b.renewalDate || '') || a.alias.localeCompare(b.alias))
+}
+
 function generateBillingList() {
   const rows = buildBillingRows()
   const hasBillableAmount = rows.some((row) => row.total > 0)
@@ -6261,6 +6315,160 @@ async function exportBillingXlsx() {
   ])
 }
 
+async function exportNextMonthBillingSummaryXlsx() {
+  const { period, rows } = buildBillingRowsForPeriod('next', true)
+  const periodStats = billingFilterStats(rows)
+  const sellerMonthlyTotals = billingSellerMonthlyTotals(rows)
+  const bernardoLines = bernardoLineAnnualityRowsForPeriod(period)
+  const summaryRows = [
+    ['Resumen', 'Valor'],
+    ['Periodo', period.label],
+    ['Razones sociales / empresas', rows.length],
+    ['Equipos a facturar', periodStats.billable],
+    ['Lineas Bernardo a facturar', bernardoLines.length],
+    ['Mensuales', periodStats.monthly],
+    ['Anualidades equipos', periodStats.annual],
+    ['Semestrales equipos', periodStats.semestral],
+    ['Anualidades fuera de periodo', periodStats.outsideAnnual],
+    ['Mensualidad Felipe', sellerMonthlyTotals[quoteAttendantOptions[0]] || 0],
+    ['Mensualidad Isaac', sellerMonthlyTotals[quoteAttendantOptions[1]] || 0],
+    ['Subtotal equipos y lineas', periodStats.total],
+    ['Total anualidades Bernardo', bernardoLines.reduce((sum, line) => sum + line.unitPrice, 0)]
+  ]
+  const entityRows = [
+    [
+      'Razon social / Empresa',
+      'Tipo facturacion',
+      'Grupo facturacion',
+      'Empresas CRM ligadas',
+      'RFC',
+      'Email',
+      'Periodo',
+      'Mensuales',
+      'Anualidades equipos',
+      'Semestrales equipos',
+      'Anualidades fuera',
+      'Equipos',
+      'Lineas',
+      'Total partidas',
+      'Subtotal',
+      'IVA',
+      'Total',
+      'Nota'
+    ],
+    ...rows.map((row) => [
+      row.company,
+      row.billingType === 'razon_social' ? 'Razon social' : 'Empresa sin razon social',
+      cleanBillingGroupName(row.billingGroup),
+      (row.sourceCompanies || []).join(', '),
+      row.rfc,
+      row.email,
+      row.periodLabel,
+      row.monthlyCount,
+      row.annualCount,
+      row.semestralCount,
+      row.annualOutsidePeriod,
+      row.equipmentCount,
+      row.lineCount || 0,
+      row.billableCount || row.equipmentCount,
+      row.subtotal,
+      row.tax,
+      row.total,
+      row.message
+    ])
+  ]
+  const detailRows = [
+    [
+      'Razon social / Empresa',
+      'Empresa CRM origen',
+      'Grupo facturacion',
+      'Tipo partida',
+      'Equipo / Linea',
+      'UID',
+      'Telefono',
+      'ICCID',
+      'IMEI',
+      'IMEI largo',
+      'IMEI corto',
+      'Proveedora linea',
+      'Cobro',
+      'Meses pago',
+      'Fecha renovacion',
+      'Precio pactado/aplicado',
+      'Fecha venta',
+      'Vendido por',
+      'Nota precio',
+      'Periodo'
+    ],
+    ...rows.flatMap((row) =>
+      row.details.map((detail) => [
+        row.company,
+        detail.sourceCompany || (row.sourceCompanies || []).join(', '),
+        detail.billingGroup || cleanBillingGroupName(row.billingGroup),
+        detail.sourceType || 'Equipo Wialon',
+        detail.unitName,
+        detail.uid,
+        detail.phone || '',
+        detail.iccid || '',
+        detail.imei,
+        detail.imeiLong,
+        detail.imeiShort,
+        detail.lineType || '',
+        detail.cycle,
+        formatPaymentMonths(detail.paymentMonths),
+        detail.renewalDate,
+        detail.unitPrice,
+        detail.saleDate,
+        detail.soldBy || '',
+        detail.priceNote,
+        row.periodLabel
+      ])
+    )
+  ]
+  const bernardoRows = [
+    [
+      'Cliente',
+      'Alias / referencia',
+      'Linea / MSISDN',
+      'ICCID',
+      'IMEI',
+      'IMEI largo',
+      'IMEI corto',
+      'Proveedora',
+      'Cobro',
+      'Meses pago',
+      'Fecha renovacion',
+      'Precio anual',
+      'Vendido por',
+      'Estatus',
+      'Notas'
+    ],
+    ...bernardoLines.map((line) => [
+      line.company,
+      line.alias,
+      line.phone,
+      line.iccid,
+      line.imei,
+      line.imeiLong,
+      line.imeiShort,
+      line.lineType,
+      line.cycle,
+      formatPaymentMonths(line.paymentMonths),
+      line.renewalDate,
+      line.unitPrice,
+      line.soldBy,
+      line.status,
+      line.notes
+    ])
+  ]
+  await exportWorkbookXlsx(`resumen-facturacion-mes-siguiente-${period.key}.xlsx`, [
+    { name: 'Resumen ejecutivo', title: `Resumen facturacion ${period.label}`, subtitle: 'Equipos Wialon y anualidades Bernardo del mes siguiente', rows: summaryRows },
+    { name: 'Resumen por razon', title: `Resumen por razon social ${period.label}`, rows: entityRows },
+    { name: 'Detalle partidas', title: `Detalle a facturar ${period.label}`, rows: detailRows },
+    { name: 'Anualidades Bernardo', title: `Lineas Bernardo ${period.label}`, subtitle: 'Solo lineas Bernardo con renovacion/anualidad en el mes siguiente', rows: bernardoRows }
+  ])
+}
+
 async function exportQuoteXlsx() {
   const quote = buildQuote()
   const quoteHasAmount = quote.quantity > 0 || quote.lineQuantity > 0 || quote.accessoryRows.length > 0 || quote.travelFee > 0
@@ -7131,6 +7339,7 @@ function renderFacturacion(stats, companies) {
         </label>
         <label class="wide"><span>Concepto</span><input value="${attr(state.billing.concept)}" data-billing="concept"></label>
         <button class="button primary" id="generateBilling">${icon('file-spreadsheet')}Generar prefactura</button>
+        <button class="button" id="exportNextMonthBillingSummary">${icon('calendar-days')}Resumen mes siguiente</button>
         <button class="button" id="exportBillingXlsx">${icon('download')}Exportar XLSX</button>
       </div>
       <div class="billing-summary">
@@ -8450,6 +8659,7 @@ function bindEvents() {
   })
 
   document.getElementById('generateBilling')?.addEventListener('click', generateBillingList)
+  document.getElementById('exportNextMonthBillingSummary')?.addEventListener('click', exportNextMonthBillingSummaryXlsx)
   document.getElementById('exportBillingXlsx')?.addEventListener('click', exportBillingXlsx)
   document.getElementById('loadPaymentSeed')?.addEventListener('click', loadPaymentSeed)
   document.getElementById('uploadPaymentFile')?.addEventListener('click', () => document.getElementById('paymentFileInput')?.click())
