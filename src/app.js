@@ -7713,7 +7713,11 @@ function renderFacturacion(stats, companies) {
       </div>
       ${
         state.paymentImport
-          ? `<div class="notice">Pagos pactados: ${(state.paymentImport.matchedById || 0) + (state.paymentImport.matchedByCompanyName || 0) + (state.paymentImport.matchedByName || 0)} equipos comparados (${state.paymentImport.matchedById || 0} por UID/IMEI largo/corto, ${state.paymentImport.matchedByCompanyName || 0} por empresa+nombre, ${state.paymentImport.matchedByName || 0} por nombre), ${state.paymentImport.semestral} semestrales, ${state.paymentImport.annual} anuales, ${state.paymentImport.defaultMonthly} mensuales por defecto.</div>`
+          ? `<div class="notice">${
+              state.paymentImport.priceUpdateOnly
+                ? `Precios importados: ${(state.paymentImport.matchedById || 0) + (state.paymentImport.matchedByCompanyName || 0) + (state.paymentImport.matchedByName || 0)} equipos actualizados (${state.paymentImport.unmatchedRules || 0} filas sin equipo).`
+                : `Pagos pactados: ${(state.paymentImport.matchedById || 0) + (state.paymentImport.matchedByCompanyName || 0) + (state.paymentImport.matchedByName || 0)} equipos comparados (${state.paymentImport.matchedById || 0} por UID/IMEI largo/corto, ${state.paymentImport.matchedByCompanyName || 0} por empresa+nombre, ${state.paymentImport.matchedByName || 0} por nombre), ${state.paymentImport.semestral} semestrales, ${state.paymentImport.annual} anuales, ${state.paymentImport.defaultMonthly} mensuales por defecto.`
+            }</div>`
           : ''
       }
       <div class="billing-filters">
