@@ -1,6 +1,7 @@
 param(
   [int]$Port = 8787,
-  [string]$BindHost = "0.0.0.0"
+  [string]$BindHost = "0.0.0.0",
+  [switch]$Restart
 )
 
 $ErrorActionPreference = "Stop"
@@ -50,6 +51,50 @@ if (Test-Path $envFile) {
 
 $env:PORT = [string]$Port
 $env:HOST = $BindHost
+
+$listener = $null
+try {
+  $listener = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
+} catch {
+}
+
+if ($listener) {
+  $processId = $listener.OwningProcess
+  $processName = "desconocido"
+  try {
+    $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
+    if ($process) {
+      $processName = $process.ProcessName
+    }
+  } catch {
+  }
+
+  if ($Restart) {
+    Write-Host "Puerto $Port ocupado por $processName (PID $processId). Reiniciando..."
+    try {
+      Stop-Process -Id $processId -Force -ErrorAction Stop
+      Start-Sleep -Seconds 1
+    } catch {
+      throw "No pude cerrar el proceso que ocupa el puerto $Port. Cierra node.exe o ejecuta como administrador."
+    }
+  } else {
+    Write-Host ""
+    Write-Host "KLIFNET CRM ya esta corriendo en el puerto $Port."
+    Write-Host "Proceso: $processName (PID $processId)"
+    Write-Host "Abre: http://127.0.0.1:$Port/"
+    if ($BindHost -eq "0.0.0.0") {
+      try {
+        Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+          Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" } |
+          ForEach-Object { Write-Host "Red: http://$($_.IPAddress):$Port/" }
+      } catch {
+      }
+    }
+    Write-Host ""
+    Write-Host "Para reiniciar usa: .\iniciar-crm.ps1 -Restart"
+    exit 0
+  }
+}
 
 $ips = @()
 try {
