@@ -56,6 +56,7 @@ let lineForDeviceIndexCache = { lines: null, devices: null, index: null }
 let invoiceProfileCompanyIndexCache = { profiles: null, companyMeta: null, devices: null, lines: null, index: null }
 let lineMatchInfoIndexCache = { lines: null, devices: null, index: null }
 let billingRowsCache = { devices: null, lines: null, companyMeta: null, invoiceProfiles: null, billing: null, key: '', rows: null }
+let prefactReportCache = { devices: null, lines: null, companyMeta: null, invoiceProfiles: null, billing: null, key: '', report: null }
 let companiesCache = { devices: null, companyMeta: null, invoiceProfiles: null, companies: null }
 
 const hardwarePresets = [
@@ -395,6 +396,10 @@ const state = {
   billingGroup: '',
   billingQuery: '',
   billingPage: 1,
+  billingReportTab: 'resumen',
+  billingReportSummaryPage: 1,
+  billingReportEquipmentPage: 1,
+  billingReportBernardoPage: 1,
   lineQuery: '',
   lineIccQuery: '',
   lineStatusFilter: '',
@@ -5472,6 +5477,134 @@ function cachedBillingRows() {
   return rows
 }
 
+function monthlySellerTotalsFromDetails(details) {
+  return details.reduce((totals, item) => {
+    if (item.detail.cycle === 'mensual') {
+      const seller = normalizeSeller(item.detail.soldBy)
+      totals[seller] = Number(totals[seller] || 0) + Number(item.detail.unitPrice || 0)
+    }
+    return totals
+  }, emptySellerMonthlyTotals())
+}
+
+function buildNextMonthPrefactReport() {
+  const { period, rows } = buildBillingRowsForPeriod('next', true)
+  const ivaRate = Number(state.billing.ivaRate || 0)
+  const equipmentDetails = rows
+    .flatMap((row) =>
+      (row.details || [])
+        .filter((detail) => (detail.sourceType || 'Equipo Wialon') === 'Equipo Wialon')
+        .map((detail) => ({
+          row,
+          detail,
+          billingEntity: row.company,
+          billingType: row.billingType,
+          rfc: row.rfc,
+          email: row.email,
+          sourceCompanies: row.sourceCompanies || []
+        }))
+    )
+    .sort(
+      (a, b) =>
+        a.billingEntity.localeCompare(b.billingEntity) ||
+        (a.detail.sourceCompany || '').localeCompare(b.detail.sourceCompany || '') ||
+        (a.detail.unitName || '').localeCompare(b.detail.unitName || '')
+    )
+  const summaryMap = new Map()
+  equipmentDetails.forEach((item) => {
+    const billingGroup = cleanBillingGroupName(item.detail.billingGroup || item.row.billingGroup)
+    const key = `${normalizeHeader(item.billingEntity)}::${normalizeHeader(billingGroup)}`
+    if (!summaryMap.has(key)) {
+      summaryMap.set(key, {
+        company: item.billingEntity,
+        billingType: item.billingType,
+        billingGroup,
+        rfc: item.rfc,
+        email: item.email,
+        sourceCompanies: new Set(),
+        monthlyCount: 0,
+        annualCount: 0,
+        semestralCount: 0,
+        equipmentCount: 0,
+        subtotal: 0,
+        tax: 0,
+        total: 0
+      })
+    }
+    const summary = summaryMap.get(key)
+    summary.sourceCompanies.add(item.detail.sourceCompany || '')
+    summary.equipmentCount += 1
+    summary.subtotal += Number(item.detail.unitPrice || 0)
+    if (item.detail.cycle === 'anual') summary.annualCount += 1
+    else if (item.detail.cycle === 'semestral') summary.semestralCount += 1
+    else summary.monthlyCount += 1
+  })
+  const summaryRows = Array.from(summaryMap.values())
+    .map((row) => ({
+      ...row,
+      sourceCompanies: Array.from(row.sourceCompanies).filter(Boolean).sort((a, b) => a.localeCompare(b)),
+      subtotal: Number(row.subtotal || 0),
+      tax: Number(row.subtotal || 0) * ivaRate,
+      total: Number(row.subtotal || 0) * (1 + ivaRate)
+    }))
+    .sort((a, b) => b.total - a.total || a.company.localeCompare(b.company) || a.billingGroup.localeCompare(b.billingGroup))
+  const bernardoLines = bernardoLineAnnualityRowsForPeriod(period)
+  const totals = {
+    entities: summaryRows.length,
+    equipment: equipmentDetails.length,
+    monthly: summaryRows.reduce((sum, row) => sum + row.monthlyCount, 0),
+    annual: summaryRows.reduce((sum, row) => sum + row.annualCount, 0),
+    semestral: summaryRows.reduce((sum, row) => sum + row.semestralCount, 0),
+    subtotal: summaryRows.reduce((sum, row) => sum + row.subtotal, 0),
+    tax: summaryRows.reduce((sum, row) => sum + row.tax, 0),
+    total: summaryRows.reduce((sum, row) => sum + row.total, 0),
+    bernardo: bernardoLines.length,
+    bernardoTotal: bernardoLines.reduce((sum, line) => sum + Number(line.unitPrice || 0), 0),
+    sellerMonthlyTotals: monthlySellerTotalsFromDetails(equipmentDetails)
+  }
+  return {
+    period,
+    ivaRate,
+    summaryRows,
+    equipmentDetails,
+    bernardoLines,
+    totals
+  }
+}
+
+function prefactReportCacheKey() {
+  return JSON.stringify({
+    billing: state.billing || {},
+    periodMode: 'next'
+  })
+}
+
+function cachedNextMonthPrefactReport() {
+  const key = prefactReportCacheKey()
+  if (
+    prefactReportCache.devices === state.devices &&
+    prefactReportCache.lines === state.lines &&
+    prefactReportCache.companyMeta === state.companyMeta &&
+    prefactReportCache.invoiceProfiles === state.invoiceProfiles &&
+    prefactReportCache.billing === state.billing &&
+    prefactReportCache.key === key &&
+    prefactReportCache.report
+  ) {
+    return prefactReportCache.report
+  }
+  const report = buildNextMonthPrefactReport()
+  prefactReportCache = {
+    devices: state.devices,
+    lines: state.lines,
+    companyMeta: state.companyMeta,
+    invoiceProfiles: state.invoiceProfiles,
+    billing: state.billing,
+    key,
+    report
+  }
+  return report
+}
+
 function buildBillingRowsForPeriod(periodMode = 'next', ignoreFilters = true) {
   const previousBilling = { ...state.billing }
   const previousFilters = {
@@ -6839,6 +6972,185 @@ function billingTable(rows = state.billingRows) {
   `
 }
 
+function renderPrefactSummaryTab(report) {
+  const pagination = tablePaginationState(report.summaryRows.length, state.billingReportSummaryPage)
+  const pageRows = report.summaryRows.slice(pagination.start, pagination.end)
+  return `
+    <section class="prefact-tab-panel">
+      <section class="metric-grid billing-metrics prefact-metrics">
+        ${metric('Razones / empresas', report.totals.entities)}
+        ${metric('Equipos a facturar', report.totals.equipment)}
+        ${metric('Mensuales', report.totals.monthly)}
+        ${metric('Anualidades equipos', report.totals.annual, 'amber')}
+        ${metric('Lineas Bernardo', report.totals.bernardo, 'amber')}
+        ${metricMoney('Total equipos', report.totals.total, state.billing.currency)}
+      </section>
+      <div class="prefact-total-strip">
+        <div><span>Subtotal equipos</span><strong>${money(report.totals.subtotal, state.billing.currency)}</strong></div>
+        <div><span>IVA equipos</span><strong>${money(report.totals.tax, state.billing.currency)}</strong></div>
+        <div><span>Total Bernardo</span><strong>${money(report.totals.bernardoTotal, state.billing.currency)}</strong></div>
+        <div><span>Mensualidad Felipe</span><strong>${money(report.totals.sellerMonthlyTotals[quoteAttendantOptions[0]] || 0, state.billing.currency)}</strong></div>
+        <div><span>Mensualidad Isaac</span><strong>${money(report.totals.sellerMonthlyTotals[quoteAttendantOptions[1]] || 0, state.billing.currency)}</strong></div>
+      </div>
+      ${renderTablePagination(report.summaryRows.length, pagination, { label: 'razones', dataAttr: 'data-prefact-summary-page', ariaLabel: 'Paginacion de resumen de prefacturacion' })}
+      <div class="table-wrap prefact-table-wrap">
+        <table>
+          <thead>
+            <tr><th>Razon social / Empresa</th><th>Tipo</th><th>Grupo facturacion</th><th>Empresas CRM</th><th>Equipos</th><th>Mensuales</th><th>Anuales</th><th>Semestrales</th><th>Subtotal</th><th>IVA</th><th>Total</th></tr>
+          </thead>
+          <tbody>
+            ${
+              pageRows.length
+                ? pageRows
+                    .map(
+                      (row) => `
+                        <tr>
+                          <td><strong>${esc(row.company)}</strong><small>${esc(row.rfc || row.email || '')}</small></td>
+                          <td>${row.billingType === 'razon_social' ? 'Razon social' : 'Empresa sin razon social'}</td>
+                          <td><span class="pill">${esc(row.billingGroup)}</span></td>
+                          <td>${esc((row.sourceCompanies || []).join(', ') || '-')}</td>
+                          <td>${row.equipmentCount}</td>
+                          <td>${row.monthlyCount}</td>
+                          <td>${row.annualCount}</td>
+                          <td>${row.semestralCount}</td>
+                          <td>${money(row.subtotal, state.billing.currency)}</td>
+                          <td>${money(row.tax, state.billing.currency)}</td>
+                          <td><strong>${money(row.total, state.billing.currency)}</strong></td>
+                        </tr>`
+                    )
+                    .join('')
+                : '<tr><td colspan="11">Sin razones para el periodo.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+      ${renderTablePagination(report.summaryRows.length, pagination, { label: 'razones', dataAttr: 'data-prefact-summary-page', ariaLabel: 'Paginacion de resumen de prefacturacion' })}
+    </section>
+  `
+}
+
+function renderPrefactEquipmentTab(report) {
+  const pagination = tablePaginationState(report.equipmentDetails.length, state.billingReportEquipmentPage)
+  const pageRows = report.equipmentDetails.slice(pagination.start, pagination.end)
+  return `
+    <section class="prefact-tab-panel">
+      ${renderTablePagination(report.equipmentDetails.length, pagination, { label: 'equipos', dataAttr: 'data-prefact-equipment-page', ariaLabel: 'Paginacion de equipos a facturar' })}
+      <div class="table-wrap devices-table prefact-table-wrap">
+        <table>
+          <thead>
+            <tr><th>Razon social / Empresa</th><th>Empresa CRM</th><th>Grupo facturacion</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Telefono</th><th>Tipo</th><th>Cobro</th><th>Meses pago</th><th>Fecha renovacion</th><th>Vendido por</th><th>Precio pactado</th><th>Nota</th></tr>
+          </thead>
+          <tbody>
+            ${
+              pageRows.length
+                ? pageRows
+                    .map(({ row, detail }) => `
+                      <tr>
+                        <td><strong>${esc(row.company)}</strong><small>${esc(row.rfc || row.email || '')}</small></td>
+                        <td>${esc(detail.sourceCompany || '-')}</td>
+                        <td><span class="pill">${esc(cleanBillingGroupName(detail.billingGroup || row.billingGroup))}</span></td>
+                        <td>${esc(detail.unitName || '-')}</td>
+                        <td>${esc(detail.uid || '-')}</td>
+                        <td>${esc(detail.imei || '-')}</td>
+                        <td>${esc(detail.imeiLong || '-')}</td>
+                        <td>${esc(detail.imeiShort || '-')}</td>
+                        <td>${esc(detail.phone || '-')}</td>
+                        <td>${esc(detail.lineType || detail.sourceType || 'Equipo Wialon')}</td>
+                        <td>${esc(detail.cycle)}</td>
+                        <td>${esc(formatPaymentMonths(detail.paymentMonths))}</td>
+                        <td>${esc(detail.renewalDate || '-')}</td>
+                        <td>${esc(detail.soldBy || '-')}</td>
+                        <td><strong>${money(detail.unitPrice, state.billing.currency)}</strong></td>
+                        <td>${esc(detail.priceNote || '')}</td>
+                      </tr>`)
+                    .join('')
+                : '<tr><td colspan="16">Sin equipos para el periodo.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+      ${renderTablePagination(report.equipmentDetails.length, pagination, { label: 'equipos', dataAttr: 'data-prefact-equipment-page', ariaLabel: 'Paginacion de equipos a facturar' })}
+    </section>
+  `
+}
+
+function renderPrefactBernardoTab(report) {
+  const pagination = tablePaginationState(report.bernardoLines.length, state.billingReportBernardoPage)
+  const pageRows = report.bernardoLines.slice(pagination.start, pagination.end)
+  return `
+    <section class="prefact-tab-panel">
+      ${renderTablePagination(report.bernardoLines.length, pagination, { label: 'lineas Bernardo', dataAttr: 'data-prefact-bernardo-page', ariaLabel: 'Paginacion de lineas Bernardo' })}
+      <div class="table-wrap prefact-table-wrap">
+        <table>
+          <thead>
+            <tr><th>Cliente</th><th>Alias / referencia</th><th>Linea / MSISDN</th><th>ICCID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Proveedora</th><th>Cobro</th><th>Meses pago</th><th>Renovacion</th><th>Precio anual</th><th>Vendido por</th><th>Estatus</th><th>Notas</th></tr>
+          </thead>
+          <tbody>
+            ${
+              pageRows.length
+                ? pageRows
+                    .map(
+                      (line) => `
+                        <tr>
+                          <td>${esc(line.company || 'Bernardo')}</td>
+                          <td>${esc(line.alias || '-')}</td>
+                          <td>${esc(line.phone || '-')}</td>
+                          <td>${esc(line.iccid || '-')}</td>
+                          <td>${esc(line.imei || '-')}</td>
+                          <td>${esc(line.imeiLong || '-')}</td>
+                          <td>${esc(line.imeiShort || '-')}</td>
+                          <td>${esc(line.lineType || '-')}</td>
+                          <td>${esc(line.cycle)}</td>
+                          <td>${esc(formatPaymentMonths(line.paymentMonths))}</td>
+                          <td>${esc(line.renewalDate || '-')}</td>
+                          <td><strong>${money(line.unitPrice, state.billing.currency)}</strong></td>
+                          <td>${esc(line.soldBy || '-')}</td>
+                          <td>${esc(line.status || '-')}</td>
+                          <td>${esc(line.notes || '')}</td>
+                        </tr>`
+                    )
+                    .join('')
+                : '<tr><td colspan="15">Sin anualidades Bernardo para el mes siguiente.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+      ${renderTablePagination(report.bernardoLines.length, pagination, { label: 'lineas Bernardo', dataAttr: 'data-prefact-bernardo-page', ariaLabel: 'Paginacion de lineas Bernardo' })}
+    </section>
+  `
+}
+
+function renderPrefactReport(report) {
+  const activeTab = ['resumen', 'equipos', 'bernardo'].includes(state.billingReportTab) ? state.billingReportTab : 'resumen'
+  const tabContent =
+    activeTab === 'equipos'
+      ? renderPrefactEquipmentTab(report)
+      : activeTab === 'bernardo'
+        ? renderPrefactBernardoTab(report)
+        : renderPrefactSummaryTab(report)
+  return `
+    <section class="prefact-report">
+      <div class="prefact-report-head">
+        <div>
+          <span>Reporte de prefacturacion</span>
+          <h2>${esc(report.period.label)}</h2>
+          <small>Vista previa del corte del mes siguiente, separada igual que el Excel.</small>
+        </div>
+        <div class="prefact-report-total">
+          <span>Total equipos</span>
+          <strong>${money(report.totals.total, state.billing.currency)}</strong>
+        </div>
+      </div>
+      <div class="prefact-tabs" role="tablist" aria-label="Reporte de prefacturacion">
+        <button class="${activeTab === 'resumen' ? 'active' : ''}" data-billing-report-tab="resumen">${icon('layout-dashboard')}Resumen</button>
+        <button class="${activeTab === 'equipos' ? 'active' : ''}" data-billing-report-tab="equipos">${icon('wrench')}Equipos <span>${report.totals.equipment}</span></button>
+        <button class="${activeTab === 'bernardo' ? 'active' : ''}" data-billing-report-tab="bernardo">${icon('sim-card')}Lineas Bernardo <span>${report.totals.bernardo}</span></button>
+      </div>
+      ${tabContent}
+    </section>
+  `
+}
+
 function renderResumen(companies, stats) {
   return `
     <section class="status-strip">
@@ -7370,6 +7682,7 @@ function renderLineas(companies) {
 function renderFacturacion(stats, companies) {
   const period = getBillingPeriod()
   const previewRows = cachedBillingRows()
+  const nextPrefactReport = cachedNextMonthPrefactReport()
   const periodStats = billingFilterStats(previewRows)
   const sellerMonthlyTotals = billingSellerMonthlyTotals(previewRows)
   const projectedTotal = previewRows.reduce((sum, row) => sum + row.total, 0)
@@ -7461,7 +7774,11 @@ function renderFacturacion(stats, companies) {
         <div>${icon('calendar-days')}<span>Periodo: ${esc(period.label)}</span></div>
         <strong>${money(projectedTotal, state.billing.currency)}</strong>
       </div>
-      ${billingTable(previewRows)}
+      ${renderPrefactReport(nextPrefactReport)}
+      <details class="compact-panel">
+        <summary>${icon('table-2')}Vista compacta segun filtros actuales</summary>
+        ${billingTable(previewRows)}
+      </details>
     </section>
   `
 }
@@ -8709,6 +9026,30 @@ function bindEvents() {
   document.querySelectorAll('[data-billing-page]').forEach((button) => {
     button.addEventListener('click', () => {
       setUiState({ billingPage: Math.max(1, Number(button.dataset.billingPage || 1)) })
+    })
+  })
+
+  document.querySelectorAll('[data-billing-report-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setUiState({ billingReportTab: button.dataset.billingReportTab || 'resumen' })
+    })
+  })
+
+  document.querySelectorAll('[data-prefact-summary-page]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setUiState({ billingReportSummaryPage: Math.max(1, Number(button.dataset.prefactSummaryPage || 1)) })
+    })
+  })
+
+  document.querySelectorAll('[data-prefact-equipment-page]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setUiState({ billingReportEquipmentPage: Math.max(1, Number(button.dataset.prefactEquipmentPage || 1)) })
+    })
+  })
+
+  document.querySelectorAll('[data-prefact-bernardo-page]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setUiState({ billingReportBernardoPage: Math.max(1, Number(button.dataset.prefactBernardoPage || 1)) })
     })
   })
 

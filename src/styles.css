@@ -1687,6 +1687,140 @@ tbody tr:focus-within {
   gap: 6px;
 }
 
+.prefact-report {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.prefact-report-head {
+  min-height: 62px;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.prefact-report-head span,
+.prefact-report-total span,
+.prefact-total-strip span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.prefact-report-head h2 {
+  margin: 3px 0;
+  font-size: 1.35rem;
+}
+
+.prefact-report-head small {
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.prefact-report-total {
+  min-width: 190px;
+  border: 1px solid #e2c3c5;
+  border-left: 5px solid var(--brand);
+  border-radius: 8px;
+  background: var(--brand-soft);
+  padding: 9px 12px;
+}
+
+.prefact-report-total strong {
+  color: var(--brand-dark);
+  font-size: 1.35rem;
+}
+
+.prefact-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-soft);
+}
+
+.prefact-tabs button {
+  min-height: 38px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--black);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.prefact-tabs button.active {
+  border-color: var(--black);
+  background: var(--black);
+  color: #ffffff;
+}
+
+.prefact-tabs button span {
+  min-width: 24px;
+  border-radius: 999px;
+  background: #f1eeee;
+  color: var(--black);
+  padding: 2px 7px;
+  text-align: center;
+}
+
+.prefact-tab-panel {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px 12px;
+}
+
+.prefact-metrics {
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  margin-bottom: 0;
+}
+
+.prefact-total-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(145px, 1fr));
+  gap: 8px;
+}
+
+.prefact-total-strip > div {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 9px 10px;
+}
+
+.prefact-total-strip strong {
+  display: block;
+  color: var(--black);
+  font-size: 1.08rem;
+}
+
+.prefact-table-wrap table {
+  min-width: 1320px;
+}
+
+.prefact-table-wrap td strong,
+.prefact-table-wrap td small {
+  display: block;
+}
+
+.prefact-table-wrap td small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
 .inline-check {
   min-height: 38px;
   display: inline-flex;
