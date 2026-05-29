@@ -2673,15 +2673,16 @@ function rowValueLoose(row, candidates) {
 }
 
 function paymentRuleFromRow(row) {
-  const name = rowValue(row, ['Nombre', 'Equipo', 'Unidad'])
+  const name = rowValue(row, ['Nombre', 'Equipo', 'Unidad', 'Equipo / Linea', 'Equipo / Línea', 'Equipo / Linea celular'])
   const uid = rowValue(row, ['UID', 'IMEI', 'Identificador'])
   const imeiLong = rowValue(row, ['IMEI largo', 'IMEI completo', 'IMEI full', 'Long IMEI'])
   const imeiShort = rowValue(row, ['IMEI corto', 'Short IMEI', 'IMEI short'])
-  const company = rowValue(row, ['Cuenta', 'Empresa'])
-  const tipo = rowValue(row, ['Tipo de Pago', 'Forma de pago'])
+  const company = rowValue(row, ['Cuenta', 'Empresa', 'Empresa CRM', 'Empresa CRM origen'])
+  const tipo = rowValue(row, ['Tipo de Pago', 'Forma de pago', 'Cobro'])
   const noPagos = rowValue(row, ['No. Pagos', 'Pagos'])
   const cycle = normalizeCycle(tipo, noPagos)
-  const price = parseAmount(rowValue(row, ['Importe', 'Precio', 'Precio pactado']))
+  const price = parseAmount(rowValue(row, ['Precio pactado a capturar', 'Precio pactado/aplicado', 'Precio pactado', 'Importe', 'Precio']))
+  const monthText = rowValue(row, ['Meses pago', 'Meses de pago', 'Meses'])
   const paymentMonths = monthNames
     .map((month, index) => {
       const value = rowValue(row, [month])
@@ -2689,6 +2690,7 @@ function paymentRuleFromRow(row) {
       return clean && clean !== '0' ? String(index + 1) : ''
     })
     .filter(Boolean)
+  const note = rowValue(row, ['Nota precio', 'Observaciones', 'Notas'])
 
   return {
     name,
@@ -2699,7 +2701,8 @@ function paymentRuleFromRow(row) {
     company,
     cycle,
     price,
-    paymentMonths,
+    paymentMonths: parsePaymentMonths(monthText).length ? parsePaymentMonths(monthText) : paymentMonths,
+    note,
     tipo,
     noPagos
   }
@@ -2725,6 +2728,14 @@ function applyPaymentRows(rows, label, options = {}) {
   }
 
   const rules = rows.map(paymentRuleFromRow)
+  const priceUpdateOnly =
+    options.priceUpdateOnly ||
+    rows.some((row) =>
+      Boolean(
+        rowValue(row, ['Precio pactado a capturar', 'Precio pactado/aplicado']) ||
+          rowValue(row, ['Tipo facturacion', 'Tipo facturación', 'Periodo', 'Empresa CRM origen'])
+      )
+    )
   rules.forEach((rule) => {
     const nameKey = normalizeHeader(rule.name)
     const companyKey = normalizeHeader(rule.company)
@@ -2749,6 +2760,7 @@ function applyPaymentRows(rows, label, options = {}) {
 
     if (!rule) {
       stats.defaultMonthly += 1
+      if (priceUpdateOnly) return device
       return {
         ...device,
         billingCycle: 'mensual',
@@ -2774,7 +2786,7 @@ function applyPaymentRows(rows, label, options = {}) {
       paymentMonths,
       annualMonth: paymentMonths[0] || device.annualMonth || String(new Date().getMonth() + 1),
       agreedPrice: rule.price > 0 ? String(rule.price) : deviceAgreedPriceValue({ ...device, billingCycle: rule.cycle }),
-      priceNote: rule.price > 0 ? `Pago pactado importado de ${label}` : device.priceNote || '',
+      priceNote: rule.price > 0 ? rule.note || `Pago pactado importado de ${label}` : device.priceNote || '',
       paymentSource: label,
       paymentMatchedBy: matchedBy,
       paymentImportName: rule.name,
@@ -2799,7 +2811,9 @@ function applyPaymentRows(rows, label, options = {}) {
         }
       : {}),
     paymentImport: stats,
-    notice: `Pagos pactados aplicados: ${matchedTotal} equipos; ${stats.semestral} semestrales, ${stats.annual} anuales; ${stats.defaultMonthly} quedaron mensuales.${lineMerge.imported.length ? ` Lineas/chips detectados: ${lineMerge.imported.length} (${lineMerge.imported.filter((line) => line.iccid).length} con ICC).` : ''}`,
+    notice: priceUpdateOnly
+      ? `Precios de equipos actualizados: ${matchedTotal} coincidencias; ${stats.unmatchedRules} filas no encontraron equipo.${lineMerge.imported.length ? ` Lineas/chips detectados: ${lineMerge.imported.length} (${lineMerge.imported.filter((line) => line.iccid).length} con ICC).` : ''}`
+      : `Pagos pactados aplicados: ${matchedTotal} equipos; ${stats.semestral} semestrales, ${stats.annual} anuales; ${stats.defaultMonthly} quedaron mensuales.${lineMerge.imported.length ? ` Lineas/chips detectados: ${lineMerge.imported.length} (${lineMerge.imported.filter((line) => line.iccid).length} con ICC).` : ''}`,
     view: options.keepView ? state.view : 'facturacion'
   })
 }
