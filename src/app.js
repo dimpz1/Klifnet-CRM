@@ -10,6 +10,7 @@ const authResetPasswordUrl = '/api/auth/reset-password'
 const authSetupInfoUrl = '/api/auth/setup-info'
 const authSetupTokenUrl = '/api/auth/setup-token'
 const authSetupUrl = '/api/auth/setup'
+const billingMailUrl = '/api/billing/send-emails'
 let setupTokenRequestInFlight = false
 let setupUserRequestInFlight = false
 let resetPasswordRequestInFlight = false
@@ -1911,7 +1912,7 @@ async function apiJson(url, options = {}) {
     message: result.message || result.error || (result.delivered ? 'Token enviado' : ''),
     detail: [result.smtpError, result.tokenPath, result.fallback].filter(Boolean).join(' | ')
   })
-  if (!response.ok || result.ok === false) throw new Error(result.error || 'No se pudo completar la operacion.')
+  if (!response.ok || result.ok === false) throw new Error(result.error || result.message || 'No se pudo completar la operacion.')
   return result
 }
 
@@ -5684,6 +5685,101 @@ function generateBillingList() {
   setState({ billingRows: rows, view: 'facturacion', notice: `Prefacturacion generada para ${getBillingPeriod().label}.` })
 }
 
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(textValue(value).toLowerCase())
+}
+
+function billingEmailDetailsForRow(report, summaryRow) {
+  const rowKey = `${normalizeHeader(summaryRow.company)}::${normalizeHeader(summaryRow.billingGroup)}`
+  return report.equipmentDetails.filter(({ row, detail }) => {
+    const detailKey = `${normalizeHeader(row.company)}::${normalizeHeader(cleanBillingGroupName(detail.billingGroup || row.billingGroup))}`
+    return detailKey === rowKey
+  })
+}
+
+function billingEmailBody(report, summaryRow) {
+  const details = billingEmailDetailsForRow(report, summaryRow)
+  const detailLines = details
+    .slice(0, 120)
+    .map(({ detail }, index) => {
+      const identifiers = [detail.uid && `UID ${detail.uid}`, detail.imeiLong && `IMEI ${detail.imeiLong}`].filter(Boolean).join(' / ')
+      return `${index + 1}. ${detail.unitName || 'Equipo'} - ${detail.cycle} - ${money(detail.unitPrice, state.billing.currency)}${identifiers ? ` (${identifiers})` : ''}`
+    })
+  if (details.length > detailLines.length) detailLines.push(`... ${details.length - detailLines.length} partidas adicionales.`)
+
+  return [
+    `Hola,`,
+    ``,
+    `Compartimos el resumen de servicios KLIFNET a facturar para ${report.period.label}.`,
+    ``,
+    `Razon social / cliente: ${summaryRow.company}`,
+    `RFC: ${summaryRow.rfc || 'Sin RFC capturado'}`,
+    `Grupo de facturacion: ${summaryRow.billingGroup || defaultBillingGroupName}`,
+    `Empresas CRM ligadas: ${(summaryRow.sourceCompanies || []).join(', ') || '-'}`,
+    ``,
+    `Equipos a facturar: ${summaryRow.equipmentCount}`,
+    `Mensuales: ${summaryRow.monthlyCount}`,
+    `Anuales: ${summaryRow.annualCount}`,
+    `Semestrales: ${summaryRow.semestralCount}`,
+    `Subtotal: ${money(summaryRow.subtotal, state.billing.currency)}`,
+    `IVA: ${money(summaryRow.tax, state.billing.currency)}`,
+    `Total: ${money(summaryRow.total, state.billing.currency)}`,
+    ``,
+    `Detalle:`,
+    ...(detailLines.length ? detailLines : ['Sin detalle de equipos para este periodo.']),
+    ``,
+    `Favor de responder este correo si requiere algun ajuste antes de emitir la factura.`,
+    ``,
+    `Saludos,`,
+    `KLIFNET`
+  ].join('\n')
+}
+
+function buildBillingEmailMessages(report = cachedNextMonthPrefactReport()) {
+  const skipped = []
+  const messages = report.summaryRows
+    .filter((row) => Number(row.total || 0) > 0)
+    .map((row) => {
+      const to = textValue(row.email)
+      if (!isValidEmail(to)) {
+        skipped.push(row.company)
+        return null
+      }
+      return {
+        to,
+        subject: `KLIFNET - Resumen a facturar ${report.period.label} - ${row.company}`,
+        text: billingEmailBody(report, row)
+      }
+    })
+    .filter(Boolean)
+  return { messages, skipped }
+}
+
+async function sendBillingEmails() {
+  const report = cachedNextMonthPrefactReport()
+  const { messages, skipped } = buildBillingEmailMessages(report)
+  if (!messages.length) {
+    setUiState({ notice: `No hay correos de facturacion capturados para ${report.period.label}. Faltan: ${skipped.length}.`, view: 'facturacion' })
+    return
+  }
+  const confirmed = window.confirm(`Enviar ${messages.length} correos de prefacturacion para ${report.period.label}? ${skipped.length ? `${skipped.length} razones/empresas no tienen correo y se omitiran.` : ''}`)
+  if (!confirmed) return
+
+  setUiState({ notice: `Enviando ${messages.length} correos de facturacion...`, view: 'facturacion' })
+  try {
+    const result = await apiJson(billingMailUrl, {
+      method: 'POST',
+      body: JSON.stringify({ messages })
+    })
+    setUiState({
+      notice: `Correos enviados: ${result.sent || 0}. Omitidos sin correo: ${skipped.length}. Fallidos: ${result.failed || 0}.`,
+      view: 'facturacion'
+    })
+  } catch (error) {
+    setUiState({ notice: `No se pudieron enviar los correos: ${error.message}`, view: 'facturacion' })
+  }
+}
+
 function download(filename, body, type) {
   const blob = new Blob([body], { type })
   const url = URL.createObjectURL(blob)
@@ -7785,6 +7881,7 @@ function renderFacturacion(stats, companies) {
         </label>
         <label class="wide"><span>Concepto</span><input value="${attr(state.billing.concept)}" data-billing="concept"></label>
         <button class="button primary" id="generateBilling">${icon('file-spreadsheet')}Generar prefactura</button>
+        <button class="button" id="sendBillingEmails">${icon('mail')}Enviar por correo</button>
         <button class="button" id="exportNextMonthBillingSummary">${icon('calendar-days')}Resumen mes siguiente</button>
         <button class="button" id="exportBillingXlsx">${icon('download')}Exportar XLSX</button>
       </div>
@@ -9128,6 +9225,7 @@ function bindEvents() {
   })
 
   document.getElementById('generateBilling')?.addEventListener('click', generateBillingList)
+  document.getElementById('sendBillingEmails')?.addEventListener('click', sendBillingEmails)
   document.getElementById('exportNextMonthBillingSummary')?.addEventListener('click', exportNextMonthBillingSummaryXlsx)
   document.getElementById('exportBillingXlsx')?.addEventListener('click', exportBillingXlsx)
   document.getElementById('loadPaymentSeed')?.addEventListener('click', loadPaymentSeed)

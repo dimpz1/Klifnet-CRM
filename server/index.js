@@ -605,6 +605,39 @@ function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase()
 }
 
+function isValidEmail(value) {
+  const email = normalizeEmail(value)
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+}
+
+async function sendBillingEmailBatch(messages = []) {
+  if (!smtpConfig()) throw new Error('SMTP no configurado en .env.')
+  const cleanMessages = messages
+    .slice(0, 100)
+    .map((message) => ({
+      to: normalizeEmail(message.to),
+      subject: cleanHeader(message.subject || 'KLIFNET CRM - Facturacion'),
+      text: String(message.text || '').trim()
+    }))
+    .filter((message) => isValidEmail(message.to) && message.subject && message.text)
+  const results = []
+  for (const message of cleanMessages) {
+    try {
+      const sent = await sendSmtpMail(message)
+      results.push({ to: message.to, sent: Boolean(sent), error: sent ? '' : 'SMTP no configurado.' })
+    } catch (error) {
+      results.push({ to: message.to, sent: false, error: error.message || 'Error SMTP.' })
+    }
+  }
+  return {
+    requested: messages.length,
+    accepted: cleanMessages.length,
+    sent: results.filter((result) => result.sent).length,
+    failed: results.filter((result) => !result.sent).length,
+    results
+  }
+}
+
 function publicUser(user) {
   return {
     id: user.id,
@@ -1004,6 +1037,17 @@ async function handleApi(req, res, url) {
         state: body.state || body
       })
       sendJson(res, 200, { ok: true, updatedAt })
+      return
+    }
+
+    if (url.pathname === '/api/billing/send-emails' && req.method === 'POST') {
+      const body = JSON.parse(await readBody(req))
+      const batch = await sendBillingEmailBatch(Array.isArray(body.messages) ? body.messages : [])
+      sendJson(res, 200, {
+        ok: true,
+        message: `Correos enviados: ${batch.sent}. Fallidos: ${batch.failed}.`,
+        ...batch
+      })
       return
     }
 
