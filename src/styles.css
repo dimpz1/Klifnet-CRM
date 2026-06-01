@@ -293,6 +293,12 @@ h2 {
   font-weight: 700;
 }
 
+.notice.ok {
+  border-color: #bfe8d0;
+  border-left-color: #1f8f4d;
+  background: #f3fbf7;
+}
+
 main {
   padding-top: 8px;
 }
@@ -1650,6 +1656,51 @@ tbody tr:focus-within {
 .billing-summary strong {
   color: var(--brand-dark);
   font-size: 1.4rem;
+}
+
+.invoice-api-panel {
+  overflow: hidden;
+}
+
+.invoice-api-head {
+  min-height: 62px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+}
+
+.invoice-api-head span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.invoice-api-head strong {
+  display: block;
+  color: var(--black);
+  font-size: 1.1rem;
+}
+
+.invoice-api-head small {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.invoice-api-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.invoice-api-actions > strong {
+  color: var(--brand-dark);
+  font-size: 1.25rem;
 }
 
 .billing-group-manager {

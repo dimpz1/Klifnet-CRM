@@ -401,6 +401,7 @@ const state = {
   billingReportSummaryPage: 1,
   billingReportEquipmentPage: 1,
   billingReportBernardoPage: 1,
+  invoiceApiDraft: null,
   lineQuery: '',
   lineIccQuery: '',
   lineStatusFilter: '',
@@ -1803,7 +1804,11 @@ function stateSnapshot() {
     equipmentPage: state.equipmentPage,
     companyPage: state.companyPage,
     cobrosPage: state.cobrosPage,
-    billingPage: state.billingPage
+    billingPage: state.billingPage,
+    billingReportTab: state.billingReportTab,
+    billingReportSummaryPage: state.billingReportSummaryPage,
+    billingReportEquipmentPage: state.billingReportEquipmentPage,
+    billingReportBernardoPage: state.billingReportBernardoPage
   }
 }
 
@@ -5780,6 +5785,155 @@ async function sendBillingEmails() {
   }
 }
 
+function invoiceApiAmount(value) {
+  return Number(Number(value || 0).toFixed(2))
+}
+
+function invoiceApiItemType(detail) {
+  if ((detail.sourceType || '').toLowerCase().includes('linea')) return 'LINEA'
+  if ((detail.sourceType || '').toLowerCase().includes('instalacion')) return 'INST'
+  return 'GPS'
+}
+
+function invoiceApiItemDescription(detail, periodLabel) {
+  const concept = textValue(state.billing.concept) || 'Servicio de rastreo GPS'
+  const base = detail.sourceType === 'Linea celular' ? 'Linea celular KLIFNET' : concept
+  const identifiers = [detail.unitName, detail.uid && `UID ${detail.uid}`, detail.imeiLong && `IMEI ${detail.imeiLong}`, detail.iccid && `ICCID ${detail.iccid}`].filter(Boolean).join(' / ')
+  return `${base} - ${periodLabel}${identifiers ? ` - ${identifiers}` : ''}`
+}
+
+function buildInvoiceApiDrafts() {
+  const { period, rows } = buildBillingRowsForPeriod('next', true)
+  const ivaRate = Number(state.billing.ivaRate || 0)
+  const drafts = rows
+    .filter((row) => Number(row.total || 0) > 0)
+    .map((row) => {
+      const items = (row.details || [])
+        .filter((detail) => Number(detail.unitPrice || 0) > 0)
+        .map((detail, index) => {
+          const unitPrice = invoiceApiAmount(detail.unitPrice)
+          const tax = invoiceApiAmount(unitPrice * ivaRate)
+          return {
+            lineNumber: index + 1,
+            productCode: invoiceApiItemType(detail),
+            sourceType: detail.sourceType || 'Equipo Wialon',
+            description: invoiceApiItemDescription(detail, row.periodLabel || period.label),
+            quantity: 1,
+            unitPrice,
+            subtotal: unitPrice,
+            tax,
+            total: invoiceApiAmount(unitPrice + tax),
+            sourceCompany: detail.sourceCompany || (row.sourceCompanies || []).join(', '),
+            billingGroup: cleanBillingGroupName(detail.billingGroup || row.billingGroup),
+            unitName: detail.unitName || '',
+            uid: detail.uid || '',
+            phone: detail.phone || '',
+            iccid: detail.iccid || '',
+            imei: detail.imei || '',
+            imeiLong: detail.imeiLong || detail.imei || '',
+            imeiShort: detail.imeiShort || deriveShortImei(detail.imeiLong || detail.imei || ''),
+            lineType: detail.lineType || '',
+            billingCycle: detail.cycle || '',
+            paymentMonths: formatPaymentMonths(detail.paymentMonths),
+            renewalDate: detail.renewalDate || '',
+            saleDate: detail.saleDate || '',
+            soldBy: detail.soldBy || '',
+            priceNote: detail.priceNote || ''
+          }
+        })
+      const missing = []
+      if (!textValue(row.company)) missing.push('razon social / cliente')
+      if (!textValue(row.rfc)) missing.push('RFC')
+      if (!isValidEmail(row.email)) missing.push('correo facturas')
+      if (!items.length) missing.push('partidas')
+      if (Number(row.total || 0) <= 0) missing.push('importe')
+
+      return {
+        id: row.id || `${slug(row.company)}-${slug(row.billingGroup)}-${period.key}`,
+        ready: missing.length === 0,
+        missing,
+        invoiceAction: 'draft_only_no_external_api_call',
+        razonSocial: row.company,
+        legalName: row.legalName || row.company,
+        rfc: row.rfc || '',
+        correoFacturas: row.email || '',
+        billingType: row.billingType || 'empresa',
+        billingGroup: cleanBillingGroupName(row.billingGroup),
+        empresasCrm: row.sourceCompanies || [],
+        periodKey: period.key,
+        periodLabel: period.label,
+        currency: state.billing.currency,
+        ivaRate,
+        subtotal: invoiceApiAmount(row.subtotal),
+        tax: invoiceApiAmount(row.tax),
+        total: invoiceApiAmount(row.total),
+        equipmentCount: row.equipmentCount || 0,
+        lineCount: row.lineCount || 0,
+        monthlyCount: row.monthlyCount || 0,
+        annualCount: row.annualCount || 0,
+        semestralCount: row.semestralCount || 0,
+        items
+      }
+    })
+
+  return {
+    createdAt: new Date().toISOString(),
+    apiCallEnabled: false,
+    nextStep: 'Conectar este payload al endpoint real de crear factura cuando este autorizado.',
+    period,
+    summary: {
+      total: drafts.length,
+      ready: drafts.filter((draft) => draft.ready).length,
+      blocked: drafts.filter((draft) => !draft.ready).length,
+      items: drafts.reduce((sum, draft) => sum + draft.items.length, 0),
+      totalAmount: invoiceApiAmount(drafts.reduce((sum, draft) => sum + draft.total, 0))
+    },
+    drafts
+  }
+}
+
+function prepareInvoiceApiDrafts() {
+  const draft = buildInvoiceApiDrafts()
+  setState({
+    invoiceApiDraft: draft,
+    view: 'facturacion',
+    notice: `Facturas API preparadas para ${draft.period.label}: ${draft.summary.ready} listas, ${draft.summary.blocked} con faltantes. No se llamo ningun API externo.`
+  })
+}
+
+function downloadInvoiceApiDraftJson() {
+  const draft = state.invoiceApiDraft || buildInvoiceApiDrafts()
+  download(`payload-facturas-api-${draft.period.key}.json`, JSON.stringify(draft, null, 2), 'application/json;charset=utf-8')
+  setUiState({ notice: 'Payload de facturacion descargado para revision. Sin llamada externa.', view: 'facturacion' })
+}
+
+function renderInvoiceApiDraftPanel() {
+  const draft = state.invoiceApiDraft
+  if (!draft?.drafts?.length) return ''
+  const blocked = draft.drafts.filter((item) => !item.ready).slice(0, 8)
+  const periodText = draft.period?.label || 'sin periodo'
+  return `
+    <section class="compact-panel invoice-api-panel">
+      <div class="invoice-api-head">
+        <div>
+          <span>Preparacion API facturas</span>
+          <strong>${esc(draft.summary.ready)} listas / ${esc(draft.summary.blocked)} con faltantes</strong>
+          <small>${esc(periodText)} · Payload local listo, sin llamada externa.</small>
+        </div>
+        <div class="invoice-api-actions">
+          <strong>${money(draft.summary.totalAmount, state.billing.currency)}</strong>
+          <button class="button" id="downloadInvoiceApiDraft">${icon('download')}Payload JSON</button>
+        </div>
+      </div>
+      ${
+        blocked.length
+          ? `<div class="notice">Pendientes antes de crear factura: ${blocked.map((item) => `${esc(item.razonSocial)} (${esc(item.missing.join(', '))})`).join(' · ')}</div>`
+          : '<div class="notice ok">Todo listo para conectar el API real de crear factura cuando lo autorices.</div>'
+      }
+    </section>
+  `
+}
+
 function download(filename, body, type) {
   const blob = new Blob([body], { type })
   const url = URL.createObjectURL(blob)
@@ -7881,6 +8035,7 @@ function renderFacturacion(stats, companies) {
         </label>
         <label class="wide"><span>Concepto</span><input value="${attr(state.billing.concept)}" data-billing="concept"></label>
         <button class="button primary" id="generateBilling">${icon('file-spreadsheet')}Generar prefactura</button>
+        <button class="button" id="prepareInvoiceApiDrafts">${icon('file-check-2')}Preparar facturas API</button>
         <button class="button" id="sendBillingEmails">${icon('mail')}Enviar por correo</button>
         <button class="button" id="exportNextMonthBillingSummary">${icon('calendar-days')}Resumen mes siguiente</button>
         <button class="button" id="exportBillingXlsx">${icon('download')}Exportar XLSX</button>
@@ -7889,6 +8044,7 @@ function renderFacturacion(stats, companies) {
         <div>${icon('calendar-days')}<span>Periodo: ${esc(period.label)}</span></div>
         <strong>${money(projectedTotal, state.billing.currency)}</strong>
       </div>
+      ${renderInvoiceApiDraftPanel()}
       ${renderPrefactReport(nextPrefactReport)}
       <details class="compact-panel">
         <summary>${icon('table-2')}Vista compacta segun filtros actuales</summary>
@@ -9225,6 +9381,8 @@ function bindEvents() {
   })
 
   document.getElementById('generateBilling')?.addEventListener('click', generateBillingList)
+  document.getElementById('prepareInvoiceApiDrafts')?.addEventListener('click', prepareInvoiceApiDrafts)
+  document.getElementById('downloadInvoiceApiDraft')?.addEventListener('click', downloadInvoiceApiDraftJson)
   document.getElementById('sendBillingEmails')?.addEventListener('click', sendBillingEmails)
   document.getElementById('exportNextMonthBillingSummary')?.addEventListener('click', exportNextMonthBillingSummaryXlsx)
   document.getElementById('exportBillingXlsx')?.addEventListener('click', exportBillingXlsx)
@@ -9481,7 +9639,12 @@ function applySavedState(parsed = {}) {
       equipmentPage: Math.max(1, Number(parsed.equipmentPage || 1)),
       companyPage: Math.max(1, Number(parsed.companyPage || 1)),
       cobrosPage: Math.max(1, Number(parsed.cobrosPage || 1)),
-      billingPage: Math.max(1, Number(parsed.billingPage || 1))
+      billingPage: Math.max(1, Number(parsed.billingPage || 1)),
+      billingReportTab: parsed.billingReportTab || 'resumen',
+      billingReportSummaryPage: Math.max(1, Number(parsed.billingReportSummaryPage || 1)),
+      billingReportEquipmentPage: Math.max(1, Number(parsed.billingReportEquipmentPage || 1)),
+      billingReportBernardoPage: Math.max(1, Number(parsed.billingReportBernardoPage || 1)),
+      invoiceApiDraft: null
     })
     if (state.invoiceProfiles.length) syncInvoiceProfilesToCompanyMeta()
     const previousLineCount = state.lines.length
