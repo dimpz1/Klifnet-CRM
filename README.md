@@ -41,6 +41,40 @@ Para que `Olvide mi password` mande el token por correo:
 
 El archivo `.env` no se sube a GitHub. Si SMTP falla o no esta configurado, el token queda como respaldo local en `data/password-reset-tokens.txt`.
 
+## Extraer facturas enviadas
+
+Para sacar una relacion de correos enviados con PDF de factura, ejecuta el script en la PC donde esta el correo o donde puedas leer el buzon por IMAP.
+
+Variables recomendadas en `.env` de esa PC:
+
+```env
+KLIFNET_IMAP_HOST=imap.gmail.com
+KLIFNET_IMAP_PORT=993
+KLIFNET_IMAP_SECURE=true
+KLIFNET_IMAP_USER=tu-correo@gmail.com
+KLIFNET_IMAP_PASS=tu-app-password
+KLIFNET_IMAP_SENT_BOX=[Gmail]/Sent Mail
+```
+
+Comando para revisar enviados del 01/06/2026:
+
+```powershell
+npm install
+npm run extraer:facturas-enviadas -- --date 2026-06-01
+```
+
+El resultado queda en `outputs/facturas_enviadas/2026-06-01/` con:
+
+- `relacion_facturas_enviadas_2026-06-01.xlsx`
+- copia de PDFs relacionados en `pdfs/`
+- JSON de respaldo para auditoria
+
+Si no quieres conectar IMAP, exporta correos como `.eml` o junta PDFs en una carpeta y corre:
+
+```powershell
+npm run extraer:facturas-enviadas -- --date 2026-06-01 --source dir --source-dir "C:\ruta\a\correos"
+```
+
 ## Wialon
 
 1. Exporta tus unidades/dispositivos desde Wialon en XLSX o CSV.
