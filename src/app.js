@@ -64,6 +64,7 @@ let prefactReportCache = { devices: null, lines: null, companyMeta: null, invoic
 let companiesCache = { devices: null, companyMeta: null, invoiceProfiles: null, companies: null }
 let billingGroupsForEntityCache = { devices: null, lines: null, companyMeta: null, invoiceProfiles: null, map: new Map() }
 let billingGroupsCache = { devices: null, lines: null, companyMeta: null, invoiceProfiles: null, companyKey: '', result: null }
+let allBillingGroupsCache = { devices: null, companyMeta: null, result: null }
 let lineCompanyOptionsCache = { companies: null, lines: null, companyMeta: null, result: null }
 let equipmentCompanyOptionsCache = { companies: null, devices: null, companyMeta: null, result: null }
 
@@ -1636,6 +1637,7 @@ function deleteBillingGroupForEntity(entityName, rawGroupName, view = state.view
     },
     billingGroup: normalizeHeader(state.billingGroup) === groupKey ? '' : state.billingGroup,
     newDevice: normalizeHeader(state.newDevice.billingGroup) === groupKey ? { ...state.newDevice, billingGroup: defaultBillingGroupName } : state.newDevice,
+    selectedCompany: state.selectedCompany,
     view,
     notice: `Grupo de facturacion borrado: ${groupName}${movedDevices ? `. ${movedDevices} equipo(s) regresaron a Principal.` : ''}`
   })
@@ -1644,6 +1646,7 @@ function deleteBillingGroupForEntity(entityName, rawGroupName, view = state.view
 function renderBillingGroupChipList(entityName, groups = [], options = {}) {
   const cleanEntity = textValue(entityName)
   const view = options.view || state.view
+  const openCompany = textValue(options.openCompany)
   return `
     <div class="billing-group-chip-list">
       ${sortBillingGroupNames(groups)
@@ -1655,7 +1658,7 @@ function renderBillingGroupChipList(entityName, groups = [], options = {}) {
               ${esc(group)}
               ${
                 !isDefault && cleanEntity
-                  ? `<button class="chip-remove-button" title="Borrar grupo" data-delete-billing-group="${attr(cleanEntity)}" data-group="${attr(group)}" data-view="${attr(view)}">${icon('x')}</button>`
+                  ? `<button class="chip-remove-button" title="Borrar grupo" data-delete-billing-group="${attr(cleanEntity)}" data-group="${attr(group)}" data-view="${attr(view)}" data-open-company="${attr(openCompany)}">${icon('x')}</button>`
                   : ''
               }
             </span>`
@@ -5465,6 +5468,22 @@ function billingGroups() {
   return result
 }
 
+function allBillingGroups() {
+  if (
+    allBillingGroupsCache.devices === state.devices &&
+    allBillingGroupsCache.companyMeta === state.companyMeta &&
+    allBillingGroupsCache.result
+  ) {
+    return allBillingGroupsCache.result
+  }
+  const groups = [defaultBillingGroupName]
+  state.devices.forEach((device) => groups.push(deviceBillingGroup(device)))
+  Object.values(state.companyMeta || {}).forEach((meta) => groups.push(...(Array.isArray(meta.billingGroups) ? meta.billingGroups : [])))
+  const result = sortBillingGroupNames(groups)
+  allBillingGroupsCache = { devices: state.devices, companyMeta: state.companyMeta, result }
+  return result
+}
+
 function billingFilterStats(rows) {
   return rows.reduce(
     (totals, row) => ({
@@ -8139,8 +8158,9 @@ function renderEmpresas(companies) {
           const contacts = companyContacts(meta)
           const billingEntity = billingEntityNameForCompany(company.name)
           const billingGroupList = billingGroupsForEntity(billingEntity)
+          const companyIsOpen = normalizeHeader(state.selectedCompany) === normalizeHeader(company.name)
           return `
-            <details class="company-row">
+            <details class="company-row" data-company-detail="${attr(company.name)}" ${companyIsOpen ? 'open' : ''}>
               <summary>
                 <div>
                   <strong>${esc(company.name)}</strong>
@@ -8213,7 +8233,7 @@ function renderEmpresas(companies) {
                     </label>
                     <div class="company-billing-groups">
                       <span>Grupos de facturacion</span>
-                      ${renderBillingGroupChipList(billingEntity, billingGroupList, { view: 'empresas' })}
+                      ${renderBillingGroupChipList(billingEntity, billingGroupList, { view: 'empresas', openCompany: company.name })}
                       <div class="invoice-link-add-row">
                         <input data-company-billing-group-input="${attr(company.name)}" placeholder="Nombre del grupo: Obra, sucursal, flotilla...">
                         <button class="button small-button" data-company-billing-group-add="${attr(company.name)}">${icon('plus')}Crear grupo</button>
@@ -8268,7 +8288,7 @@ function renderEquipos() {
   const pagination = equipmentPaginationState(devices.length)
   const pageDevices = devices.slice(pagination.start, pagination.end)
   const companyOptions = equipmentCompanyOptions()
-  const billingGroupOptions = billingGroups()
+  const billingGroupOptions = allBillingGroups()
   const equipmentGroupCompany = textValue(state.equipmentBillingGroupCompany || state.equipmentCompanyFilter || state.newDevice.company)
   const equipmentGroupEntity = equipmentGroupCompany ? billingEntityNameForCompany(equipmentGroupCompany) : ''
   const equipmentGroupList = equipmentGroupEntity ? billingGroupsForEntity(equipmentGroupEntity) : [defaultBillingGroupName]
@@ -8949,7 +8969,7 @@ function renderCobros(companies) {
   const pagination = tablePaginationState(devices.length, state.cobrosPage)
   const pageDevices = devices.slice(pagination.start, pagination.end)
   const groups = cobrosGroups()
-  const billingGroupOptions = billingGroups()
+  const billingGroupOptions = allBillingGroups()
   return `
     <section class="client-layout">
       <datalist id="billingGroupList">
@@ -9482,6 +9502,14 @@ function bindEvents() {
     )
   })
 
+  document.querySelectorAll('[data-company-detail]').forEach((details) => {
+    details.addEventListener('toggle', () => {
+      if (!details.open) return
+      state.selectedCompany = details.dataset.companyDetail || state.selectedCompany
+      persistState()
+    })
+  })
+
   document.querySelectorAll('[data-company-page]').forEach((button) => {
     button.addEventListener('click', () => {
       setUiState({ companyPage: Math.max(1, Number(button.dataset.companyPage || 1)) })
@@ -9696,6 +9724,7 @@ function bindEvents() {
 
   document.querySelectorAll('[data-delete-billing-group]').forEach((button) => {
     button.addEventListener('click', () => {
+      if (button.dataset.openCompany) state.selectedCompany = button.dataset.openCompany
       deleteBillingGroupForEntity(button.dataset.deleteBillingGroup, button.dataset.group, button.dataset.view || state.view)
     })
   })
