@@ -64,7 +64,6 @@ let prefactReportCache = { devices: null, lines: null, companyMeta: null, invoic
 let companiesCache = { devices: null, companyMeta: null, invoiceProfiles: null, companies: null }
 let billingGroupsForEntityCache = { devices: null, lines: null, companyMeta: null, invoiceProfiles: null, map: new Map() }
 let billingGroupsCache = { devices: null, lines: null, companyMeta: null, invoiceProfiles: null, companyKey: '', result: null }
-let allBillingGroupsCache = { devices: null, companyMeta: null, result: null }
 let lineCompanyOptionsCache = { companies: null, lines: null, companyMeta: null, result: null }
 let equipmentCompanyOptionsCache = { companies: null, devices: null, companyMeta: null, result: null }
 
@@ -398,6 +397,7 @@ const state = {
   equipmentBillingGroupCompany: '',
   equipmentBillingGroupName: '',
   equipmentPage: 1,
+  companyQuery: '',
   companyPage: 1,
   cobrosCompany: '',
   cobrosGroup: '',
@@ -2190,6 +2190,7 @@ function stateSnapshot() {
     equipmentCompanyFilter: state.equipmentCompanyFilter,
     equipmentCycleFilter: state.equipmentCycleFilter,
     equipmentPage: state.equipmentPage,
+    companyQuery: state.companyQuery,
     companyPage: state.companyPage,
     cobrosPage: state.cobrosPage,
     billingPage: state.billingPage,
@@ -5468,22 +5469,6 @@ function billingGroups() {
   return result
 }
 
-function allBillingGroups() {
-  if (
-    allBillingGroupsCache.devices === state.devices &&
-    allBillingGroupsCache.companyMeta === state.companyMeta &&
-    allBillingGroupsCache.result
-  ) {
-    return allBillingGroupsCache.result
-  }
-  const groups = [defaultBillingGroupName]
-  state.devices.forEach((device) => groups.push(deviceBillingGroup(device)))
-  Object.values(state.companyMeta || {}).forEach((meta) => groups.push(...(Array.isArray(meta.billingGroups) ? meta.billingGroups : [])))
-  const result = sortBillingGroupNames(groups)
-  allBillingGroupsCache = { devices: state.devices, companyMeta: state.companyMeta, result }
-  return result
-}
-
 function billingFilterStats(rows) {
   return rows.reduce(
     (totals, row) => ({
@@ -7677,7 +7662,7 @@ function deviceTable(devices) {
         </thead>
         <tbody>
           ${devices
-            .map((device) => {
+            .map((device, index) => {
               const line = lineForDevice(device)
               const lineIccid = deviceLineIccid(device, line)
               const lineOperator = deviceLineOperator(device, line)
@@ -7685,6 +7670,8 @@ function deviceTable(devices) {
               const lineCarrierText = deviceLineCarrier(device, line)
               const lineCarrier = lineCarrierText ? `<small>${esc(lineCarrierText)}</small>` : ''
               const matchLabel = deviceLineMatchLabel(device, line)
+              const billingGroupListId = `billingGroupList-${slug(device.id || device.uid || device.unitName || index)}-${index}`
+              const rowBillingGroupOptions = billingGroupOptionsForDevice(device)
               return `
                 <tr>
                   <td><input list="equipmentCompanyList" value="${attr(device.company)}" data-device="${attr(device.id)}" data-field="company"></td>
@@ -7706,7 +7693,12 @@ function deviceTable(devices) {
                       <span>${isDeviceBillingEnabled(device) ? 'Si' : 'No'}</span>
                     </label>
                   </td>
-                  <td><input list="billingGroupList" value="${attr(deviceBillingGroup(device))}" data-device="${attr(device.id)}" data-field="billingGroup"></td>
+                  <td>
+                    <datalist id="${attr(billingGroupListId)}">
+                      ${rowBillingGroupOptions.map((group) => `<option value="${attr(group)}"></option>`).join('')}
+                    </datalist>
+                    <input list="${attr(billingGroupListId)}" value="${attr(deviceBillingGroup(device))}" data-device="${attr(device.id)}" data-field="billingGroup">
+                  </td>
                   <td>
                     <select data-device="${attr(device.id)}" data-field="billingCycle">
                       <option value="mensual" ${deviceBillingCycle(device) === 'mensual' ? 'selected' : ''}>Mensual</option>
@@ -8142,14 +8134,37 @@ function renderRazonesSociales(companies) {
 }
 
 function renderEmpresas(companies) {
-  const pagination = tablePaginationState(companies.length, state.companyPage)
-  const pageCompanies = companies.slice(pagination.start, pagination.end)
+  const companyQuery = normalizeHeader(state.companyQuery)
+  const filteredCompanies = companyQuery
+    ? companies.filter((company) => {
+        const linkedProfiles = invoiceProfilesForCompany(company.name)
+        const meta = getCompanyMeta(company.name)
+        const contacts = companyContacts(meta)
+        const searchText = normalizeHeader(
+          [
+            company.name,
+            Array.from(company.groups.keys()).join(' '),
+            linkedProfiles.map((profile) => `${profile.razonSocial} ${profile.rfc || ''} ${profile.contactEmail || ''}`).join(' '),
+            meta.email,
+            meta.contactEmail,
+            contacts.map((contact) => `${contact.name} ${contact.email} ${contact.phone} ${contact.role}`).join(' ')
+          ].join(' ')
+        )
+        return searchText.includes(companyQuery)
+      })
+    : companies
+  const pagination = tablePaginationState(filteredCompanies.length, state.companyPage)
+  const pageCompanies = filteredCompanies.slice(pagination.start, pagination.end)
   const invoiceProfileOptions = state.invoiceProfiles.map(normalizeInvoiceProfile).filter((profile) => profile.razonSocial).sort((a, b) => a.razonSocial.localeCompare(b.razonSocial))
   return `
     <datalist id="invoiceProfileList">
       ${invoiceProfileOptions.map((profile) => `<option value="${attr(profile.razonSocial)}"></option>`).join('')}
     </datalist>
-    ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas', sticky: true })}
+    <div class="table-toolbar company-table-toolbar">
+      <label class="search-box">${icon('search')}<input id="companySearchInput" value="${attr(state.companyQuery)}" placeholder="Buscar empresa, razon social, RFC, grupo o contacto"></label>
+      <span>${filteredCompanies.length} de ${companies.length} empresas</span>
+    </div>
+    ${renderTablePagination(filteredCompanies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas', sticky: true })}
     <section class="company-list">
       ${pageCompanies
         .map((company) => {
@@ -8279,7 +8294,7 @@ function renderEmpresas(companies) {
         })
         .join('')}
     </section>
-    ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas' })}
+    ${renderTablePagination(filteredCompanies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas' })}
   `
 }
 
@@ -8288,11 +8303,14 @@ function renderEquipos() {
   const pagination = equipmentPaginationState(devices.length)
   const pageDevices = devices.slice(pagination.start, pagination.end)
   const companyOptions = equipmentCompanyOptions()
-  const billingGroupOptions = allBillingGroups()
   const equipmentGroupCompany = textValue(state.equipmentBillingGroupCompany || state.equipmentCompanyFilter || state.newDevice.company)
   const equipmentGroupEntity = equipmentGroupCompany ? billingEntityNameForCompany(equipmentGroupCompany) : ''
   const equipmentGroupList = equipmentGroupEntity ? billingGroupsForEntity(equipmentGroupEntity) : [defaultBillingGroupName]
   const d = state.newDevice
+  const newDeviceGroupEntity = d.company ? billingEntityNameForCompany(d.company) : equipmentGroupEntity
+  const billingGroupOptions = newDeviceGroupEntity
+    ? sortBillingGroupNames([...billingGroupsForEntity(newDeviceGroupEntity), cleanBillingGroupName(d.billingGroup || defaultBillingGroupName)])
+    : [defaultBillingGroupName]
   return `
     <section>
       ${renderEquipmentPagination(devices.length, pagination, { sticky: true })}
@@ -8969,12 +8987,8 @@ function renderCobros(companies) {
   const pagination = tablePaginationState(devices.length, state.cobrosPage)
   const pageDevices = devices.slice(pagination.start, pagination.end)
   const groups = cobrosGroups()
-  const billingGroupOptions = allBillingGroups()
   return `
     <section class="client-layout">
-      <datalist id="billingGroupList">
-        ${billingGroupOptions.map((group) => `<option value="${attr(group)}"></option>`).join('')}
-      </datalist>
       ${renderTablePagination(devices.length, pagination, { label: 'equipos', dataAttr: 'data-cobros-page', ariaLabel: 'Paginacion de cobros', sticky: true })}
       <div class="billing-filters">
         <label>
@@ -9010,8 +9024,10 @@ function renderCobros(companies) {
           </thead>
           <tbody>
             ${pageDevices
-              .map(
-                (device) => `
+              .map((device, index) => {
+                const billingGroupListId = `billingGroupBillingList-${slug(device.id || device.uid || device.unitName || index)}-${index}`
+                const rowBillingGroupOptions = billingGroupOptionsForDevice(device)
+                return `
                   <tr>
                     <td><input value="${attr(device.company)}" data-device-billing="${attr(device.id)}" data-billing-field="company"></td>
                     <td><input value="${attr((device.groups.length ? device.groups : ['Sin grupo']).join(', '))}" data-device-billing="${attr(device.id)}" data-billing-field="groups"></td>
@@ -9028,7 +9044,12 @@ function renderCobros(companies) {
                         <span>${isDeviceBillingEnabled(device) ? 'Si' : 'No'}</span>
                       </label>
                     </td>
-                    <td><input list="billingGroupList" value="${attr(deviceBillingGroup(device))}" data-device-billing="${attr(device.id)}" data-billing-field="billingGroup"></td>
+                    <td>
+                      <datalist id="${attr(billingGroupListId)}">
+                        ${rowBillingGroupOptions.map((group) => `<option value="${attr(group)}"></option>`).join('')}
+                      </datalist>
+                      <input list="${attr(billingGroupListId)}" value="${attr(deviceBillingGroup(device))}" data-device-billing="${attr(device.id)}" data-billing-field="billingGroup">
+                    </td>
                     <td>
                       <select data-device-billing="${attr(device.id)}" data-billing-field="billingCycle">
                         <option value="mensual" ${deviceBillingCycle(device) === 'mensual' ? 'selected' : ''}>Mensual</option>
@@ -9043,7 +9064,7 @@ function renderCobros(companies) {
                     <td><input value="${attr(device.priceNote || '')}" data-device-billing="${attr(device.id)}" data-billing-field="priceNote"></td>
                     <td><span class="pill ${esc(device.recordState)}">${esc(device.recordState.replace('_', ' '))}</span></td>
                   </tr>`
-              )
+              })
               .join('')}
           </tbody>
         </table>
@@ -9508,6 +9529,12 @@ function bindEvents() {
       state.selectedCompany = details.dataset.companyDetail || state.selectedCompany
       persistState()
     })
+  })
+
+  document.getElementById('companySearchInput')?.addEventListener('input', (event) => {
+    state.companyQuery = event.target.value
+    state.companyPage = 1
+    renderPreservingInput('#companySearchInput')
   })
 
   document.querySelectorAll('[data-company-page]').forEach((button) => {
@@ -10389,6 +10416,7 @@ function applySavedState(parsed = {}) {
       equipmentBillingGroupCompany: parsed.equipmentBillingGroupCompany || '',
       equipmentBillingGroupName: parsed.equipmentBillingGroupName || '',
       equipmentPage: Math.max(1, Number(parsed.equipmentPage || 1)),
+      companyQuery: parsed.companyQuery || '',
       companyPage: Math.max(1, Number(parsed.companyPage || 1)),
       cobrosPage: Math.max(1, Number(parsed.cobrosPage || 1)),
       billingPage: Math.max(1, Number(parsed.billingPage || 1)),
