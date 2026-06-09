@@ -56,6 +56,8 @@ let deviceMatchIndexCache = { devices: null, index: null }
 let lineForDeviceIndexCache = { lines: null, devices: null, index: null }
 let invoiceProfileCompanyIndexCache = { profiles: null, companyMeta: null, devices: null, lines: null, index: null }
 let lineMatchInfoIndexCache = { lines: null, devices: null, index: null }
+let filteredLinesCache = { lines: null, devices: null, key: '', result: null }
+let filteredDevicesCache = { devices: null, lines: null, key: '', result: null }
 let billingRowsCache = { devices: null, lines: null, companyMeta: null, invoiceProfiles: null, billing: null, key: '', rows: null }
 let prefactReportCache = { devices: null, lines: null, companyMeta: null, invoiceProfiles: null, billing: null, key: '', report: null }
 let companiesCache = { devices: null, companyMeta: null, invoiceProfiles: null, companies: null }
@@ -822,9 +824,11 @@ function blankMeta(company) {
       primary: { name: '', email: '', phone: '' },
       secondary: { name: '', email: '', phone: '' }
     },
+    billingGroupRecipients: {},
     lastInvoice: null,
     billingCycle: 'mensual',
     annualMonth: String(new Date().getMonth() + 1),
+    contacts: [],
     contact: '',
     phone: '',
     contactEmail: '',
@@ -838,6 +842,167 @@ function blankMeta(company) {
 
 function getCompanyMeta(company) {
   return { ...blankMeta(company), ...(state.companyMeta[company] || {}) }
+}
+
+function normalizeCompanyContact(contact = {}, index = 0) {
+  const sendAsKey = normalizeHeader(contact.sendAs || contact.tipoEnvio || contact.envio)
+  return {
+    id: textValue(contact.id) || `contact-${Date.now()}-${index}`,
+    name: textValue(contact.name || contact.nombre || contact.contact || contact.responsable),
+    email: textValue(contact.email || contact.correo || contact.contactEmail || contact.mail),
+    phone: textValue(contact.phone || contact.telefono || contact.number),
+    role: textValue(contact.role || contact.rol || contact.puesto || 'Responsable'),
+    sendAs: ['bcc', 'cco', 'copia oculta', 'oculto'].includes(sendAsKey)
+      ? 'bcc'
+      : ['cc', 'copia'].includes(sendAsKey)
+        ? 'cc'
+        : 'para'
+  }
+}
+
+function companyContacts(meta = {}) {
+  const contacts = Array.isArray(meta.contacts) ? meta.contacts.map(normalizeCompanyContact) : []
+  const legacyContacts = [
+    normalizeCompanyContact({
+      id: 'legacy-primary',
+      name: meta.contact,
+      email: meta.contactEmail,
+      phone: meta.phone,
+      role: 'Responsable',
+      sendAs: 'para'
+    }),
+    normalizeCompanyContact({
+      id: 'legacy-secondary',
+      name: meta.secondaryContact,
+      email: meta.secondaryEmail,
+      phone: meta.secondaryPhone,
+      role: 'Responsable',
+      sendAs: 'cc'
+    })
+  ].filter((contact) => contact.name || contact.email || contact.phone)
+  const byKey = new Map()
+  ;[...contacts, ...legacyContacts].forEach((contact, index) => {
+    const normalized = normalizeCompanyContact(contact, index)
+    const key = normalizeHeader(normalized.email || normalized.name || normalized.phone || normalized.id)
+    if (!key || byKey.has(key)) return
+    byKey.set(key, normalized)
+  })
+  return Array.from(byKey.values())
+}
+
+function setCompanyContacts(companyName, contacts = []) {
+  const meta = getCompanyMeta(companyName)
+  const normalizedContacts = contacts.map(normalizeCompanyContact).filter((contact) => contact.name || contact.email || contact.phone)
+  state.companyMeta = {
+    ...state.companyMeta,
+    [companyName]: {
+      ...meta,
+      contacts: normalizedContacts,
+      contact: normalizedContacts[0]?.name || '',
+      contactEmail: normalizedContacts[0]?.email || '',
+      phone: normalizedContacts[0]?.phone || '',
+      secondaryContact: normalizedContacts[1]?.name || '',
+      secondaryEmail: normalizedContacts[1]?.email || '',
+      secondaryPhone: normalizedContacts[1]?.phone || ''
+    }
+  }
+}
+
+function normalizeEmailList(value) {
+  const values = Array.isArray(value) ? value.flat(Infinity) : String(value || '').split(/[;,\s]+/g)
+  return unique(values.map((item) => textValue(item).toLowerCase()).filter(isValidEmail))
+}
+
+function contactReference(contact = {}) {
+  return textValue(contact.id) || textValue(contact.email).toLowerCase() || textValue(contact.name)
+}
+
+function normalizeRecipientBucket(value) {
+  const key = normalizeHeader(value)
+  if (['bcc', 'cco', 'copia oculta', 'oculto'].includes(key)) return 'bcc'
+  if (['cc', 'copia'].includes(key)) return 'cc'
+  return 'to'
+}
+
+function recipientBucketLabel(bucket) {
+  if (bucket === 'bcc') return 'CCO'
+  if (bucket === 'cc') return 'CC'
+  return 'Para'
+}
+
+function normalizeBillingGroupRecipients(settings = {}) {
+  return {
+    to: unique([...(Array.isArray(settings.to) ? settings.to : []), ...(Array.isArray(settings.para) ? settings.para : [])].map(textValue).filter(Boolean)),
+    cc: unique([...(Array.isArray(settings.cc) ? settings.cc : []), ...(Array.isArray(settings.copia) ? settings.copia : [])].map(textValue).filter(Boolean)),
+    bcc: unique([...(Array.isArray(settings.bcc) ? settings.bcc : []), ...(Array.isArray(settings.cco) ? settings.cco : [])].map(textValue).filter(Boolean))
+  }
+}
+
+function billingGroupRecipientSettings(entityName, groupName) {
+  const meta = getCompanyMeta(entityName)
+  const recipients = meta.billingGroupRecipients || {}
+  const groupKey = normalizeHeader(cleanBillingGroupName(groupName))
+  const savedKey = Object.keys(recipients).find((key) => normalizeHeader(key) === groupKey)
+  return normalizeBillingGroupRecipients(savedKey ? recipients[savedKey] : {})
+}
+
+function billingGroupHasSavedRecipients(entityName, groupName) {
+  const recipients = getCompanyMeta(entityName).billingGroupRecipients || {}
+  const groupKey = normalizeHeader(cleanBillingGroupName(groupName))
+  return Object.keys(recipients).some((key) => normalizeHeader(key) === groupKey)
+}
+
+function contactEmailByReference(contacts = [], reference = '') {
+  const cleanReference = textValue(reference)
+  const normalizedReference = normalizeHeader(cleanReference)
+  const match = contacts.find((contact) => {
+    const contactId = normalizeHeader(contactReference(contact))
+    const contactEmail = textValue(contact.email).toLowerCase()
+    return contactId === normalizedReference || contactEmail === cleanReference.toLowerCase()
+  })
+  return textValue(match?.email || (isValidEmail(cleanReference) ? cleanReference : '')).toLowerCase()
+}
+
+function billingRecipientsForEntityGroup(entityName, groupName, fallbackEmail = '') {
+  const cleanEntity = textValue(entityName)
+  const cleanGroup = cleanBillingGroupName(groupName)
+  const contacts = companyContacts(getCompanyMeta(cleanEntity)).filter((contact) => isValidEmail(contact.email))
+  const settings = billingGroupRecipientSettings(cleanEntity, cleanGroup)
+  const hasSaved = billingGroupHasSavedRecipients(cleanEntity, cleanGroup)
+  const buckets = { to: [], cc: [], bcc: [] }
+
+  if (hasSaved) {
+    ;['to', 'cc', 'bcc'].forEach((bucket) => {
+      settings[bucket].forEach((reference) => {
+        const email = contactEmailByReference(contacts, reference)
+        if (email) buckets[bucket].push(email)
+      })
+    })
+  } else {
+    contacts.forEach((contact) => {
+      buckets[normalizeRecipientBucket(contact.sendAs)].push(textValue(contact.email).toLowerCase())
+    })
+  }
+
+  if (!buckets.to.length && isValidEmail(fallbackEmail)) buckets.to.push(textValue(fallbackEmail).toLowerCase())
+  return {
+    to: unique(buckets.to),
+    cc: unique(buckets.cc).filter((email) => !buckets.to.includes(email)),
+    bcc: unique(buckets.bcc).filter((email) => !buckets.to.includes(email) && !buckets.cc.includes(email))
+  }
+}
+
+function billingRecipientsForRow(row = {}) {
+  return billingRecipientsForEntityGroup(row.company, row.billingGroup, row.email)
+}
+
+function formatRecipientSummary(recipients = {}) {
+  const parts = [
+    recipients.to?.length ? `Para: ${recipients.to.join(', ')}` : '',
+    recipients.cc?.length ? `CC: ${recipients.cc.join(', ')}` : '',
+    recipients.bcc?.length ? `CCO: ${recipients.bcc.join(', ')}` : ''
+  ].filter(Boolean)
+  return parts.join(' | ')
 }
 
 function invoiceProfileNameSet(profiles = state.invoiceProfiles) {
@@ -973,6 +1138,7 @@ function normalizeInvoiceProfile(profile = {}, index = 0) {
   const rfc = textValue(profile.rfc || profile.rfc_receptor)
   const id = textValue(profile.id) || slug(`${rfc || razonSocial}-${razonSocial}`) || `factura-${index + 1}`
   const contactEmail = textValue(profile.contactEmail || profile.contact_email || profile.email || profile.correo || profile.correoContacto || profile.correo_contacto)
+  const contacts = Array.isArray(profile.contacts) ? profile.contacts.map(normalizeCompanyContact).filter((contact) => contact.name || contact.email || contact.phone) : []
   const parentGroup = textValue(profile.parentGroup || profile.parent_group || profile.fiscalParent || profile.fiscal_parent || profile.grupoPadre || profile.grupo_padre)
   const linkedCompanies = cleanInvoiceLinkedCompanies(
     [
@@ -994,6 +1160,7 @@ function normalizeInvoiceProfile(profile = {}, index = 0) {
     folio: textValue(profile.folio),
     uuid: textValue(profile.uuid),
     contactEmail,
+    contacts,
     subtotal: Number(profile.subtotal || 0),
     ivaTrasladado: Number(profile.ivaTrasladado ?? profile.iva_trasladado ?? 0),
     total: Number(profile.total || 0),
@@ -1081,6 +1248,7 @@ function syncInvoiceProfilesToCompanyMeta(profiles = state.invoiceProfiles) {
       legalName: profile.razonSocial,
       rfc: profile.rfc || existing.rfc,
       email: profile.contactEmail || existing.email || '',
+      contacts: profile.contacts?.length ? profile.contacts.map(normalizeCompanyContact) : companyContacts(existing),
       linkedCompanies,
       parentGroup: profile.parentGroup || existing.parentGroup || '',
       lastInvoice: {
@@ -1099,7 +1267,8 @@ function syncInvoiceProfilesToCompanyMeta(profiles = state.invoiceProfiles) {
         ...existingCompanyMeta,
         legalName: profile.razonSocial,
         rfc: profile.rfc || existingCompanyMeta.rfc || '',
-        fiscalProfileId: profile.id
+        fiscalProfileId: profile.id,
+        contacts: profile.contacts?.length ? profile.contacts.map(normalizeCompanyContact) : companyContacts(existingCompanyMeta)
       }
     })
   })
@@ -1402,6 +1571,70 @@ function addBillingGroupForSelectedCompany() {
     view: 'facturacion',
     notice: `Grupo de facturacion creado: ${groupName}`
   })
+}
+
+function renderBillingGroupRecipientsPanel(entityName, groups = []) {
+  const cleanEntity = textValue(entityName)
+  if (!cleanEntity) return ''
+  const selectedGroup = cleanBillingGroupName(state.billingGroup || defaultBillingGroupName)
+  const availableGroups = sortBillingGroupNames([...groups, selectedGroup])
+  const contacts = companyContacts(getCompanyMeta(cleanEntity)).filter((contact) => contact.name || contact.email || contact.phone)
+  const settings = billingGroupRecipientSettings(cleanEntity, selectedGroup)
+  const hasSaved = billingGroupHasSavedRecipients(cleanEntity, selectedGroup)
+  const recipients = billingRecipientsForEntityGroup(cleanEntity, selectedGroup, getCompanyMeta(cleanEntity).email)
+
+  const isChecked = (contact, bucket) => {
+    const ref = contactReference(contact)
+    if (hasSaved) return settings[bucket].some((item) => normalizeHeader(item) === normalizeHeader(ref) || textValue(item).toLowerCase() === textValue(contact.email).toLowerCase())
+    return normalizeRecipientBucket(contact.sendAs) === bucket
+  }
+
+  return `
+    <div class="billing-recipient-panel">
+      <div class="recipient-panel-head">
+        <div>
+          <span>Destinatarios del grupo</span>
+          <strong>${esc(cleanEntity)} / ${esc(selectedGroup)}</strong>
+          <small>Cada grupo de facturacion genera su propia factura y puede tener correos distintos.</small>
+        </div>
+        <label>
+          <span>Editar grupo</span>
+          <select id="billingRecipientGroup">
+            ${availableGroups.map((group) => `<option value="${attr(group)}" ${group === selectedGroup ? 'selected' : ''}>${esc(group)}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+      ${
+        contacts.length
+          ? `<div class="recipient-grid recipient-grid-head">
+              <span>Responsable</span><span>Email</span><span>Telefono</span><span>Rol</span><span>Para</span><span>CC</span><span>CCO</span>
+            </div>
+            ${contacts
+              .map((contact) => {
+                const ref = contactReference(contact)
+                return `
+                  <div class="recipient-grid">
+                    <strong>${esc(contact.name || '-')}</strong>
+                    <span>${esc(contact.email || '-')}</span>
+                    <span>${esc(contact.phone || '-')}</span>
+                    <span>${esc(contact.role || 'Responsable')}</span>
+                    ${['to', 'cc', 'bcc']
+                      .map(
+                        (bucket) => `
+                          <label class="center-check" title="${esc(recipientBucketLabel(bucket))}">
+                            <input type="checkbox" data-billing-recipient="${attr(cleanEntity)}" data-billing-recipient-group="${attr(selectedGroup)}" data-contact-ref="${attr(ref)}" data-recipient-bucket="${bucket}" ${isChecked(contact, bucket) ? 'checked' : ''}>
+                          </label>`
+                      )
+                      .join('')}
+                  </div>
+                `
+              })
+              .join('')}`
+          : '<div class="empty-state slim">Sin responsables capturados para esta razon social/empresa. Agregalos en Empresas para poder seleccionar Para, CC o CCO.</div>'
+      }
+      <div class="recipient-summary">${esc(formatRecipientSummary(recipients) || 'Este grupo aun no tiene correo Para.')}</div>
+    </div>
+  `
 }
 
 async function loadInvoiceProfilesFromPrivate() {
@@ -3650,12 +3883,14 @@ function lineMatchInfoIndex(lines = state.lines, devices = state.devices) {
     return lineMatchInfoIndexCache.index
   }
   const byObject = new Map()
+  const byId = new Map()
   lines.forEach((line, index) => {
     const normalized = line?.id ? line : normalizeLine(line, index)
     const info = buildLineMatchInfo(normalized, devices)
     byObject.set(line, info)
+    if (normalized.id) byId.set(normalized.id, info)
   })
-  const index = { byObject }
+  const index = { byObject, byId }
   lineMatchInfoIndexCache = { lines, devices, index }
   return index
 }
@@ -3663,7 +3898,7 @@ function lineMatchInfoIndex(lines = state.lines, devices = state.devices) {
 function lineMatchInfo(line, devices = state.devices) {
   if (devices === state.devices) {
     const index = lineMatchInfoIndex(state.lines, devices)
-    return index.byObject.get(line) || buildLineMatchInfo(line, devices)
+    return index.byObject.get(line) || (line?.id ? index.byId.get(line.id) : null) || buildLineMatchInfo(line, devices)
   }
   return buildLineMatchInfo(line, devices)
 }
@@ -3989,27 +4224,6 @@ function lineStats(lines = state.lines, devices = state.devices) {
     clientOnly: 0,
     exempt: 0,
     unmatched: 0
-  })
-}
-
-function filteredLines() {
-  const query = normalizeHeader(state.lineQuery)
-  const iccQuery = normalizeIdentifier(state.lineIccQuery)
-  return state.lines.filter((line) => {
-    const matchInfo = lineMatchInfo(line)
-    const matchType = matchInfo.type
-    const statusMatches =
-      !state.lineStatusFilter ||
-      (state.lineStatusFilter === 'activa' ? isActiveLine(line) : state.lineStatusFilter === 'desactivada' ? !isActiveLine(line) : normalizeLineStatus(line.status) === state.lineStatusFilter)
-    const matchMatches = !state.lineMatchFilter || matchType === state.lineMatchFilter
-    const typeMatches = !state.lineTypeFilter || normalizeLineType(line.lineType) === state.lineTypeFilter
-    const queryMatches =
-      !query ||
-      normalizeHeader(
-        `${line.company} ${line.phone} ${line.iccid} ${line.imei} ${line.imeiLong} ${line.imeiShort} ${lineTypeLabel(line.lineType)} ${line.carrier} ${line.plan} ${line.notes} ${lineSeller(line)} ${matchInfo.label}`
-      ).includes(query)
-    const iccMatches = !iccQuery || normalizeIdentifier(line.iccid).includes(iccQuery)
-    return statusMatches && matchMatches && typeMatches && queryMatches && iccMatches
   })
 }
 
@@ -4913,23 +5127,38 @@ function buildCompanies() {
 function filteredDevices() {
   const query = normalizeHeader(state.query)
   const companyFilter = normalizeHeader(state.equipmentCompanyFilter)
-  return state.devices.filter((device) => {
+  const key = [
+    query,
+    companyFilter,
+    state.equipmentCycleFilter || ''
+  ].join('|')
+  if (
+    filteredDevicesCache.devices === state.devices &&
+    filteredDevicesCache.lines === state.lines &&
+    filteredDevicesCache.key === key &&
+    filteredDevicesCache.result
+  ) {
+    return filteredDevicesCache.result
+  }
+  const result = state.devices.filter((device) => {
+    const companyMatches = !companyFilter || normalizeHeader(device.company).includes(companyFilter)
+    const cycleMatches = !state.equipmentCycleFilter || deviceBillingCycle(device) === state.equipmentCycleFilter
+    if (!companyMatches || !cycleMatches) return false
+    if (!query) return true
+
     const line = lineForDevice(device)
     const lineIccid = deviceLineIccid(device, line)
     const lineOperator = deviceLineOperator(device, line)
     const lineCarrier = deviceLineCarrier(device, line)
     const linePhone = deviceLinePhone(device, line)
-    const companyMatches = !companyFilter || normalizeHeader(device.company).includes(companyFilter)
-    const cycleMatches = !state.equipmentCycleFilter || deviceBillingCycle(device) === state.equipmentCycleFilter
-    const queryMatches =
-      !query ||
-      normalizeHeader(
-        `${device.company} ${device.groups.join(' ')} ${deviceBillingGroup(device)} ${isDeviceBillingEnabled(device) ? 'facturable' : 'no facturable efectivo sin iva'} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType} ${
-          lineIccid || ''
-        } ${lineOperator || ''} ${lineCarrier || ''} ${linePhone || ''} ${deviceSeller(device)}`
-      ).includes(query)
-    return companyMatches && cycleMatches && queryMatches
+    return normalizeHeader(
+      `${device.company} ${device.groups.join(' ')} ${deviceBillingGroup(device)} ${isDeviceBillingEnabled(device) ? 'facturable' : 'no facturable efectivo sin iva'} ${device.unitName} ${deviceIdentifierValues(device).join(' ')} ${device.phone} ${device.deviceType} ${
+        lineIccid || ''
+      } ${lineOperator || ''} ${lineCarrier || ''} ${linePhone || ''} ${deviceSeller(device)}`
+    ).includes(query)
   })
+  filteredDevicesCache = { devices: state.devices, lines: state.lines, key, result }
+  return result
 }
 
 function filteredCobrosDevices() {
@@ -4946,6 +5175,61 @@ function filteredCobrosDevices() {
       ).includes(query)
     return companyMatches && groupMatches && cycleMatches && queryMatches
   })
+}
+
+function lineSearchText(line, matchInfo = null) {
+  return normalizeHeader(
+    `${line.company} ${line.phone} ${line.iccid} ${line.imei} ${line.imeiLong} ${line.imeiShort} ${lineTypeLabel(line.lineType)} ${line.carrier} ${line.plan} ${line.notes} ${lineSeller(line)} ${matchInfo?.label || ''}`
+  )
+}
+
+function lineMatchesSearch(line, query) {
+  if (!query) return true
+  const baseText = lineSearchText(line)
+  if (baseText.includes(query)) return true
+  return lineSearchText(line, lineMatchInfo(line)).includes(query)
+}
+
+function filteredLines() {
+  const query = normalizeHeader(state.lineQuery)
+  const iccQuery = normalizeIdentifier(state.lineIccQuery)
+  const key = [
+    query,
+    iccQuery,
+    state.lineStatusFilter || '',
+    state.lineMatchFilter || '',
+    state.lineTypeFilter || ''
+  ].join('|')
+  if (
+    filteredLinesCache.lines === state.lines &&
+    filteredLinesCache.devices === state.devices &&
+    filteredLinesCache.key === key &&
+    filteredLinesCache.result
+  ) {
+    return filteredLinesCache.result
+  }
+  const result = state.lines.filter((line) => {
+    const statusMatches =
+      !state.lineStatusFilter ||
+      (state.lineStatusFilter === 'activa' ? isActiveLine(line) : state.lineStatusFilter === 'desactivada' ? !isActiveLine(line) : normalizeLineStatus(line.status) === state.lineStatusFilter)
+    if (!statusMatches) return false
+
+    const typeMatches = !state.lineTypeFilter || normalizeLineType(line.lineType) === state.lineTypeFilter
+    if (!typeMatches) return false
+
+    const iccMatches = !iccQuery || normalizeIdentifier(line.iccid).includes(iccQuery)
+    if (!iccMatches) return false
+
+    if (state.lineMatchFilter) {
+      const matchInfo = lineMatchInfo(line)
+      if (matchInfo.type !== state.lineMatchFilter) return false
+      return lineMatchesSearch(line, query)
+    }
+
+    return lineMatchesSearch(line, query)
+  })
+  filteredLinesCache = { lines: state.lines, devices: state.devices, key, result }
+  return result
 }
 
 function cobrosGroups(companies) {
@@ -5310,6 +5594,7 @@ function ensureBillingRow(rows, companyName, period, billingGroup = defaultBilli
   if (!companyName || companyName === 'Sin empresa') return null
   const entity = billingEntityForCompany(companyName)
   const groupName = cleanBillingGroupName(billingGroup)
+  const recipients = billingRecipientsForEntityGroup(entity.name, groupName, entity.email)
   const rowKey = `${normalizeHeader(entity.name)}::${normalizeHeader(groupName)}`
   if (!rows.has(rowKey)) {
     rows.set(rowKey, {
@@ -5318,7 +5603,8 @@ function ensureBillingRow(rows, companyName, period, billingGroup = defaultBilli
       legalName: entity.legalName || entity.name,
       billingGroup: groupName,
       rfc: entity.rfc,
-      email: entity.email,
+      email: recipients.to[0] || entity.email,
+      recipients,
       billingType: entity.isFiscalProfile ? 'razon_social' : 'empresa',
       sourceCompanies: new Set(),
       periodLabel: period.label,
@@ -5340,6 +5626,8 @@ function ensureBillingRow(rows, companyName, period, billingGroup = defaultBilli
     })
   }
   const row = rows.get(rowKey)
+  row.recipients = billingRecipientsForEntityGroup(row.company, row.billingGroup, row.email)
+  row.email = row.recipients.to[0] || row.email || ''
   row.sourceCompanies.add(companyName)
   return row
 }
@@ -5521,6 +5809,7 @@ function buildNextMonthPrefactReport() {
           billingType: row.billingType,
           rfc: row.rfc,
           email: row.email,
+          recipients: billingRecipientsForRow(row),
           sourceCompanies: row.sourceCompanies || []
         }))
     )
@@ -5541,6 +5830,7 @@ function buildNextMonthPrefactReport() {
         billingGroup,
         rfc: item.rfc,
         email: item.email,
+        recipients: item.recipients,
         sourceCompanies: new Set(),
         monthlyCount: 0,
         annualCount: 0,
@@ -5563,6 +5853,8 @@ function buildNextMonthPrefactReport() {
     .map((row) => ({
       ...row,
       sourceCompanies: Array.from(row.sourceCompanies).filter(Boolean).sort((a, b) => a.localeCompare(b)),
+      recipients: row.recipients || billingRecipientsForEntityGroup(row.company, row.billingGroup, row.email),
+      email: (row.recipients?.to || [])[0] || row.email || '',
       subtotal: Number(row.subtotal || 0),
       tax: Number(row.subtotal || 0) * ivaRate,
       total: Number(row.subtotal || 0) * (1 + ivaRate)
@@ -5745,14 +6037,16 @@ function buildBillingEmailMessages(report = cachedNextMonthPrefactReport()) {
   const messages = report.summaryRows
     .filter((row) => Number(row.total || 0) > 0)
     .map((row) => {
-      const to = textValue(row.email)
-      if (!isValidEmail(to)) {
-        skipped.push(row.company)
+      const recipients = billingRecipientsForRow(row)
+      if (!recipients.to.length) {
+        skipped.push(`${row.company} / ${cleanBillingGroupName(row.billingGroup)}`)
         return null
       }
       return {
-        to,
-        subject: `KLIFNET - Resumen a facturar ${report.period.label} - ${row.company}`,
+        to: recipients.to,
+        cc: recipients.cc,
+        bcc: recipients.bcc,
+        subject: `KLIFNET - Resumen a facturar ${report.period.label} - ${row.company} - ${cleanBillingGroupName(row.billingGroup)}`,
         text: billingEmailBody(report, row)
       }
     })
@@ -5767,7 +6061,7 @@ async function sendBillingEmails() {
     setUiState({ notice: `No hay correos de facturacion capturados para ${report.period.label}. Faltan: ${skipped.length}.`, view: 'facturacion' })
     return
   }
-  const confirmed = window.confirm(`Enviar ${messages.length} correos de prefacturacion para ${report.period.label}? ${skipped.length ? `${skipped.length} razones/empresas no tienen correo y se omitiran.` : ''}`)
+  const confirmed = window.confirm(`Enviar ${messages.length} correos de prefacturacion para ${report.period.label}? ${skipped.length ? `${skipped.length} grupos no tienen correo Para y se omitiran.` : ''}`)
   if (!confirmed) return
 
   setUiState({ notice: `Enviando ${messages.length} correos de facturacion...`, view: 'facturacion' })
@@ -5842,9 +6136,10 @@ function buildInvoiceApiDrafts() {
           }
         })
       const missing = []
+      const recipients = billingRecipientsForRow(row)
       if (!textValue(row.company)) missing.push('razon social / cliente')
       if (!textValue(row.rfc)) missing.push('RFC')
-      if (!isValidEmail(row.email)) missing.push('correo facturas')
+      if (!recipients.to.length) missing.push('correo facturas')
       if (!items.length) missing.push('partidas')
       if (Number(row.total || 0) <= 0) missing.push('importe')
 
@@ -5856,7 +6151,9 @@ function buildInvoiceApiDrafts() {
         razonSocial: row.company,
         legalName: row.legalName || row.company,
         rfc: row.rfc || '',
-        correoFacturas: row.email || '',
+        correoFacturas: recipients.to.join(', '),
+        ccFacturas: recipients.cc.join(', '),
+        bccFacturas: recipients.bcc.join(', '),
         billingType: row.billingType || 'empresa',
         billingGroup: cleanBillingGroupName(row.billingGroup),
         empresasCrm: row.sourceCompanies || [],
@@ -6731,7 +7028,9 @@ async function exportBillingXlsx() {
       'Empresas CRM ligadas',
       'Razon social',
       'RFC',
-      'Email',
+      'Correos Para',
+      'Correos CC',
+      'Correos CCO',
       'Periodo',
       'Mensuales',
       'Anualidades periodo',
@@ -6754,7 +7053,9 @@ async function exportBillingXlsx() {
       (row.sourceCompanies || []).join(', '),
       row.legalName,
       row.rfc,
-      row.email,
+      billingRecipientsForRow(row).to.join(', '),
+      billingRecipientsForRow(row).cc.join(', '),
+      billingRecipientsForRow(row).bcc.join(', '),
       row.periodLabel,
       row.monthlyCount,
       row.annualCount,
@@ -6853,7 +7154,9 @@ async function exportNextMonthBillingSummaryXlsx() {
       'Grupo facturacion',
       'Empresas CRM ligadas',
       'RFC',
-      'Email',
+      'Correos Para',
+      'Correos CC',
+      'Correos CCO',
       'Periodo',
       'Mensuales',
       'Anualidades equipos',
@@ -6873,7 +7176,9 @@ async function exportNextMonthBillingSummaryXlsx() {
       cleanBillingGroupName(row.billingGroup),
       (row.sourceCompanies || []).join(', '),
       row.rfc,
-      row.email,
+      billingRecipientsForRow(row).to.join(', '),
+      billingRecipientsForRow(row).cc.join(', '),
+      billingRecipientsForRow(row).bcc.join(', '),
       row.periodLabel,
       row.monthlyCount,
       row.annualCount,
@@ -7203,7 +7508,7 @@ function billingTable(rows = state.billingRows) {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Razon social / Empresa</th><th>Grupo facturacion</th><th>Empresas CRM</th><th>Periodo</th><th>Mensuales</th><th>Anuales</th><th>Semestrales</th><th>Equipos</th><th>Lineas</th><th>Total partidas</th><th>Mensualidad Felipe</th><th>Mensualidad Isaac</th><th>Subtotal</th><th>IVA</th><th>Total</th><th>Estado</th></tr>
+          <tr><th>Razon social / Empresa</th><th>Grupo facturacion</th><th>Empresas CRM</th><th>Destinatarios</th><th>Periodo</th><th>Mensuales</th><th>Anuales</th><th>Semestrales</th><th>Equipos</th><th>Lineas</th><th>Total partidas</th><th>Mensualidad Felipe</th><th>Mensualidad Isaac</th><th>Subtotal</th><th>IVA</th><th>Total</th><th>Estado</th></tr>
         </thead>
         <tbody>
           ${pageRows
@@ -7213,6 +7518,7 @@ function billingTable(rows = state.billingRows) {
                   <td><strong>${esc(row.company)}</strong><small>${row.billingType === 'razon_social' ? 'Razon social' : 'Empresa sin razon social'}</small></td>
                   <td><span class="pill">${esc(cleanBillingGroupName(row.billingGroup))}</span></td>
                   <td>${esc((row.sourceCompanies || []).join(', ') || '-')}</td>
+                  <td><small>${esc(formatRecipientSummary(billingRecipientsForRow(row)) || 'Sin correo Para')}</small></td>
                   <td>${esc(row.periodLabel)}</td>
                   <td>${row.monthlyCount}</td>
                   <td>${row.annualCount}</td>
@@ -7260,7 +7566,7 @@ function renderPrefactSummaryTab(report) {
       <div class="table-wrap prefact-table-wrap">
         <table>
           <thead>
-            <tr><th>Razon social / Empresa</th><th>Tipo</th><th>Grupo facturacion</th><th>Empresas CRM</th><th>Equipos</th><th>Mensuales</th><th>Anuales</th><th>Semestrales</th><th>Subtotal</th><th>IVA</th><th>Total</th></tr>
+            <tr><th>Razon social / Empresa</th><th>Tipo</th><th>Grupo facturacion</th><th>Empresas CRM</th><th>Destinatarios</th><th>Equipos</th><th>Mensuales</th><th>Anuales</th><th>Semestrales</th><th>Subtotal</th><th>IVA</th><th>Total</th></tr>
           </thead>
           <tbody>
             ${
@@ -7273,6 +7579,7 @@ function renderPrefactSummaryTab(report) {
                           <td>${row.billingType === 'razon_social' ? 'Razon social' : 'Empresa sin razon social'}</td>
                           <td><span class="pill">${esc(row.billingGroup)}</span></td>
                           <td>${esc((row.sourceCompanies || []).join(', ') || '-')}</td>
+                          <td><small>${esc(formatRecipientSummary(billingRecipientsForRow(row)) || 'Sin correo Para')}</small></td>
                           <td>${row.equipmentCount}</td>
                           <td>${row.monthlyCount}</td>
                           <td>${row.annualCount}</td>
@@ -7283,7 +7590,7 @@ function renderPrefactSummaryTab(report) {
                         </tr>`
                     )
                     .join('')
-                : '<tr><td colspan="11">Sin razones para el periodo.</td></tr>'
+                : '<tr><td colspan="12">Sin razones para el periodo.</td></tr>'
             }
           </tbody>
         </table>
@@ -7617,6 +7924,7 @@ function renderEmpresas(companies) {
         .map((company) => {
           const linkedProfiles = invoiceProfilesForCompany(company.name)
           const meta = getCompanyMeta(company.name)
+          const contacts = companyContacts(meta)
           return `
             <details class="company-row">
               <summary>
@@ -7636,18 +7944,6 @@ function renderEmpresas(companies) {
                   </div>
                   <div class="company-data-grid">
                     <label>
-                      <span>Responsable</span>
-                      <input value="${attr(meta.contact || '')}" data-company-meta="${attr(company.name)}" data-meta-field="contact" placeholder="Nombre de contacto">
-                    </label>
-                    <label>
-                      <span>Telefono</span>
-                      <input value="${attr(meta.phone || '')}" data-company-meta="${attr(company.name)}" data-meta-field="phone" placeholder="Numero directo o WhatsApp">
-                    </label>
-                    <label>
-                      <span>Correo contacto</span>
-                      <input type="email" value="${attr(meta.contactEmail || '')}" data-company-meta="${attr(company.name)}" data-meta-field="contactEmail" placeholder="contacto@empresa.com">
-                    </label>
-                    <label>
                       <span>RFC manual</span>
                       <input value="${attr(meta.rfc || '')}" data-company-meta="${attr(company.name)}" data-meta-field="rfc" placeholder="RFC si aplica">
                     </label>
@@ -7659,6 +7955,36 @@ function renderEmpresas(companies) {
                       <span>Notas</span>
                       <input value="${attr(meta.notes || '')}" data-company-meta="${attr(company.name)}" data-meta-field="notes" placeholder="Acuerdos, condiciones o pendientes">
                     </label>
+                  </div>
+                  <div class="company-contact-list">
+                    <div class="compact-head">
+                      <span>Responsables</span>
+                      <button class="button small-button" data-add-company-contact="${attr(company.name)}" type="button">${icon('plus')}Agregar responsable</button>
+                    </div>
+                    <div class="contact-grid contact-grid-head">
+                      <span>Nombre</span><span>Email</span><span>Telefono</span><span>Rol</span><span>Envio</span><span></span>
+                    </div>
+                    ${
+                      contacts.length
+                        ? contacts
+                            .map(
+                              (contact) => `
+                                <div class="contact-grid">
+                                  <input value="${attr(contact.name)}" data-company-contact="${attr(company.name)}" data-contact-id="${attr(contact.id)}" data-contact-field="name" placeholder="Nombre">
+                                  <input type="email" value="${attr(contact.email)}" data-company-contact="${attr(company.name)}" data-contact-id="${attr(contact.id)}" data-contact-field="email" placeholder="correo@empresa.com">
+                                  <input value="${attr(contact.phone)}" data-company-contact="${attr(company.name)}" data-contact-id="${attr(contact.id)}" data-contact-field="phone" placeholder="Telefono">
+                                  <input value="${attr(contact.role)}" data-company-contact="${attr(company.name)}" data-contact-id="${attr(contact.id)}" data-contact-field="role" placeholder="Compras, operaciones...">
+                                  <select data-company-contact="${attr(company.name)}" data-contact-id="${attr(contact.id)}" data-contact-field="sendAs">
+                                    <option value="para" ${contact.sendAs === 'para' ? 'selected' : ''}>Para</option>
+                                    <option value="cc" ${contact.sendAs === 'cc' ? 'selected' : ''}>CC</option>
+                                    <option value="bcc" ${contact.sendAs === 'bcc' ? 'selected' : ''}>CCO</option>
+                                  </select>
+                                  <button class="icon-button mini-button" data-remove-company-contact="${attr(company.name)}" data-contact-id="${attr(contact.id)}" title="Quitar responsable" type="button">${icon('x')}</button>
+                                </div>`
+                            )
+                            .join('')
+                        : '<div class="empty-state slim">Sin responsables capturados. Agrega los correos de contacto de esta empresa.</div>'
+                    }
                   </div>
                 </div>
                 <div class="company-data-card">
@@ -7910,6 +8236,7 @@ function renderLineas(companies) {
           <button class="button primary" id="uploadLineFile">${icon('upload')}Importar lineas XLSX</button>
           <button class="button" id="uploadEmnifyFile">${icon('cloud-upload')}Importar Emnify</button>
           <button class="button" id="loadRelationLines">${icon('database')}Base cifrada</button>
+          <button class="button" id="revalidateLinesButton">${icon('refresh-ccw')}Revalidar lineas</button>
           <button class="button" id="exportLinesXlsx">${icon('download')}Exportar</button>
           <button class="button" id="exportLineMatchReportXlsx">${icon('file-text')}Reporte match</button>
         </div>
@@ -8003,6 +8330,7 @@ function renderFacturacion(stats, companies) {
         </label>
         <button class="button" id="addBillingGroup" ${selectedBillingCompany ? '' : 'disabled'}>${icon('plus')}Crear grupo</button>
       </div>
+      ${renderBillingGroupRecipientsPanel(selectedBillingCompany, groups)}
       <div class="notice">Facturacion agrupa por razon social cuando la empresa esta ligada; si no, conserva la empresa del CRM. El grupo de facturacion es manual por equipo: Principal, obra, sucursal o el nombre que captures.</div>
       <section class="metric-grid billing-metrics">
         ${metric('Mensuales', periodStats.monthly)}
@@ -8604,31 +8932,47 @@ function render() {
     if (window.lucide) window.lucide.createIcons()
     return
   }
-  const companies = buildCompanies()
-  if (!state.selectedCompany && companies.length) state.selectedCompany = companies[0].name
-
-  const activeGroups = new Set()
-  state.devices.forEach((device) => {
-    if (!isBillableDevice(device)) return
-    ;(device.groups.length ? device.groups : ['Sin grupo']).forEach((group) => activeGroups.add(group))
-  })
-
-  const stats = {
-    companies: companies.length,
-    devices: state.devices.length,
-    billable: state.devices.filter((device) => isBillableDevice(device) && isImportedWialonDevice(device)).length,
-    groups: activeGroups.size,
-    missing: state.devices.filter((device) => device.recordState === 'no_encontrado').length,
-    newOrUpdated: state.devices.filter((device) => device.recordState === 'nuevo' || device.recordState === 'actualizado').length
+  let companies = null
+  let stats = null
+  const getCompanies = () => {
+    if (!companies) {
+      companies = buildCompanies()
+      if (!state.selectedCompany && companies.length) state.selectedCompany = companies[0].name
+    }
+    return companies
+  }
+  const getStats = () => {
+    if (stats) return stats
+    const activeGroups = new Set()
+    let billable = 0
+    let missing = 0
+    let newOrUpdated = 0
+    state.devices.forEach((device) => {
+      if (isBillableDevice(device)) {
+        if (isImportedWialonDevice(device)) billable += 1
+        ;(device.groups.length ? device.groups : ['Sin grupo']).forEach((group) => activeGroups.add(group))
+      }
+      if (device.recordState === 'no_encontrado') missing += 1
+      if (device.recordState === 'nuevo' || device.recordState === 'actualizado') newOrUpdated += 1
+    })
+    stats = {
+      companies: getCompanies().length,
+      devices: state.devices.length,
+      billable,
+      groups: activeGroups.size,
+      missing,
+      newOrUpdated
+    }
+    return stats
   }
 
   const body =
     state.view === 'resumen'
-      ? renderResumen(companies, stats)
+      ? renderResumen(getCompanies(), getStats())
       : state.view === 'empresas'
-        ? renderEmpresas(companies)
+        ? renderEmpresas(getCompanies())
         : state.view === 'razones-sociales'
-          ? renderRazonesSociales(companies)
+          ? renderRazonesSociales(getCompanies())
         : state.view === 'usuarios'
           ? state.auth.user.role === 'admin'
             ? renderUsersAdmin()
@@ -8636,12 +8980,12 @@ function render() {
           : state.view === 'equipos'
           ? renderEquipos()
           : state.view === 'lineas'
-            ? renderLineas(companies)
+            ? renderLineas(getCompanies())
             : state.view === 'facturacion'
-              ? renderFacturacion(stats, companies)
+              ? renderFacturacion(getStats(), getCompanies())
               : state.view === 'cotizaciones'
-                ? renderCotizaciones(companies)
-                : renderCobros(companies)
+                ? renderCotizaciones(getCompanies())
+                : renderCobros(getCompanies())
 
   root.innerHTML = `
     <div class="app-shell view-${attr(state.view)}">
@@ -8837,12 +9181,7 @@ function bindEvents() {
   document.querySelectorAll('[data-view]').forEach((button) => {
     button.addEventListener('click', async () => {
       if (button.dataset.view !== state.view) window.scrollTo({ top: 0, left: 0 })
-      if (button.dataset.view === 'lineas') {
-        setUiState({ view: 'lineas', notice: state.notice || 'Revalidando lineas en segundo plano...' })
-        revalidateLineasPage({ notice: true })
-        return
-      }
-      setState({ view: button.dataset.view })
+      setUiState({ view: button.dataset.view })
     })
   })
 
@@ -8860,7 +9199,7 @@ function bindEvents() {
   document.querySelectorAll('[data-delete-user]').forEach((button) => {
     button.addEventListener('click', () => deleteUser(button.dataset.deleteUser))
   })
-  document.getElementById('showUsersButton')?.addEventListener('click', () => setState({ view: 'usuarios' }))
+  document.getElementById('showUsersButton')?.addEventListener('click', () => setUiState({ view: 'usuarios' }))
   document.getElementById('logoutButton')?.addEventListener('click', logoutUser)
   document.getElementById('saveChangesButton')?.addEventListener('click', saveChangesNow)
   document.getElementById('uploadButton')?.addEventListener('click', () => document.getElementById('fileInput')?.click())
@@ -8900,7 +9239,7 @@ function bindEvents() {
 
   document.querySelectorAll('[data-company]').forEach((button) => {
     button.addEventListener('click', () =>
-      setState({ selectedCompany: button.dataset.company, cobrosCompany: button.dataset.company, cobrosGroup: '', query: '', cobrosPage: 1, view: 'cobros' })
+      setUiState({ selectedCompany: button.dataset.company, cobrosCompany: button.dataset.company, cobrosGroup: '', query: '', cobrosPage: 1, view: 'cobros' })
     )
   })
 
@@ -9130,7 +9469,11 @@ function bindEvents() {
   document.getElementById('uploadEmnifyFile')?.addEventListener('click', () => document.getElementById('emnifyFileInput')?.click())
   document.getElementById('loadRelationLines')?.addEventListener('click', async () => {
     const loaded = await loadLineRelationBase()
-    setState({ view: 'lineas', notice: loaded ? 'Base cifrada de lineas cargada limpia, sin mezclar operadores anteriores.' : 'No se pudo cargar la base cifrada de lineas.' })
+    setUiState({ view: 'lineas', notice: loaded ? 'Base cifrada de lineas cargada limpia, sin mezclar operadores anteriores.' : 'No se pudo cargar la base cifrada de lineas.' })
+  })
+  document.getElementById('revalidateLinesButton')?.addEventListener('click', async () => {
+    setUiState({ view: 'lineas', notice: 'Revalidando lineas contra Wialon...' })
+    await revalidateLineasPage({ notice: true })
   })
   document.getElementById('exportLinesXlsx')?.addEventListener('click', exportLinesXlsx)
   document.getElementById('exportLineMatchReportXlsx')?.addEventListener('click', exportLineMatchReportXlsx)
@@ -9514,7 +9857,7 @@ function bindEvents() {
   })
 
   document.getElementById('selectedCompany')?.addEventListener('change', (event) => {
-    setState({ selectedCompany: event.target.value })
+    setUiState({ selectedCompany: event.target.value })
   })
 
   document.querySelectorAll('[data-meta]').forEach((input) => {
@@ -9540,6 +9883,88 @@ function bindEvents() {
         [company]: { ...existing, [field]: input.value }
       }
       persistState()
+    })
+  })
+
+  document.querySelectorAll('[data-add-company-contact]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const company = button.dataset.addCompanyContact
+      const contacts = companyContacts(getCompanyMeta(company))
+      setCompanyContacts(company, [
+        ...contacts,
+        normalizeCompanyContact({
+          id: `contact-${Date.now()}`,
+          role: 'Responsable',
+          sendAs: 'para'
+        })
+      ])
+      persistState()
+      render()
+    })
+  })
+
+  document.querySelectorAll('[data-remove-company-contact]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const company = button.dataset.removeCompanyContact
+      const contactId = button.dataset.contactId
+      setCompanyContacts(
+        company,
+        companyContacts(getCompanyMeta(company)).filter((contact) => contact.id !== contactId)
+      )
+      persistState()
+      render()
+    })
+  })
+
+  document.querySelectorAll('[data-company-contact]').forEach((input) => {
+    const saveCompanyContact = (shouldRender = false) => {
+      const company = input.dataset.companyContact
+      const contactId = input.dataset.contactId
+      const field = input.dataset.contactField
+      const contacts = companyContacts(getCompanyMeta(company))
+      const nextContacts = contacts.map((contact) => (contact.id === contactId ? normalizeCompanyContact({ ...contact, [field]: input.value }) : contact))
+      setCompanyContacts(company, nextContacts)
+      persistState()
+      if (shouldRender) render()
+    }
+    if (input.tagName === 'SELECT') {
+      input.addEventListener('change', () => saveCompanyContact(true))
+    } else {
+      input.addEventListener('input', () => saveCompanyContact(false))
+      input.addEventListener('change', () => saveCompanyContact(false))
+    }
+  })
+
+  document.getElementById('billingRecipientGroup')?.addEventListener('change', (event) => {
+    setUiState({ billingGroup: event.target.value, billingPage: 1, billingReportSummaryPage: 1 })
+  })
+
+  document.querySelectorAll('[data-billing-recipient]').forEach((input) => {
+    input.addEventListener('change', () => {
+      const entityName = input.dataset.billingRecipient
+      const groupName = cleanBillingGroupName(input.dataset.billingRecipientGroup)
+      const contactRef = textValue(input.dataset.contactRef)
+      const bucket = normalizeRecipientBucket(input.dataset.recipientBucket)
+      const meta = getCompanyMeta(entityName)
+      const recipients = {
+        ...(meta.billingGroupRecipients || {}),
+        [groupName]: normalizeBillingGroupRecipients(meta.billingGroupRecipients?.[groupName] || {})
+      }
+      const nextGroup = { ...recipients[groupName] }
+      ;['to', 'cc', 'bcc'].forEach((key) => {
+        nextGroup[key] = (nextGroup[key] || []).filter((item) => normalizeHeader(item) !== normalizeHeader(contactRef))
+      })
+      if (input.checked) nextGroup[bucket] = unique([...(nextGroup[bucket] || []), contactRef])
+      recipients[groupName] = normalizeBillingGroupRecipients(nextGroup)
+      state.companyMeta = {
+        ...state.companyMeta,
+        [entityName]: {
+          ...meta,
+          billingGroupRecipients: recipients
+        }
+      }
+      persistState()
+      render()
     })
   })
 
@@ -9701,7 +10126,7 @@ async function refreshStateFromServer() {
 
 function startServerStatePolling() {
   if (serverPollTimer) return
-  serverPollTimer = setInterval(refreshStateFromServer, 15000)
+  serverPollTimer = setInterval(refreshStateFromServer, 60000)
 }
 
 function migrateStandardMonthlyPrices() {

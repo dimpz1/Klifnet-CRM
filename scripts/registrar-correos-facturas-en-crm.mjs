@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import XLSX from 'xlsx'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const secretKeyFile = path.join(repoRoot, 'data', 'secret.key')
@@ -91,12 +92,74 @@ function validExternalEmails(value) {
     })
 }
 
-function emailCandidatesFromReport(reportFile) {
+function slug(value) {
+  return normalizeHeader(value).replace(/\s+/g, '-') || crypto.randomUUID()
+}
+
+function rowValue(row, aliases = []) {
+  const normalized = new Map(Object.keys(row || {}).map((key) => [normalizeHeader(key), key]))
+  for (const alias of aliases) {
+    const key = normalized.get(normalizeHeader(alias))
+    if (key) return row[key]
+  }
+  return ''
+}
+
+function rowsFromReport(reportFile) {
+  const ext = path.extname(reportFile).toLowerCase()
+  if (['.xlsx', '.xls', '.xlsm'].includes(ext)) {
+    const workbook = XLSX.readFile(reportFile, { cellText: false, cellDates: true })
+    const sheetName = workbook.SheetNames.find((name) => normalizeHeader(name).includes('facturas')) || workbook.SheetNames[0]
+    return XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '' }).map((row) => ({
+      rfc: rowValue(row, ['RFC Empresa/ PF', 'RFC Empresa/PF', 'RFC', 'RFC Receptor', 'rfcReceptor']),
+      razonSocial: rowValue(row, ['Razon social empresa/ PF', 'Razon social empresa/PF', 'Razon social', 'Razon Social', 'razonSocial']),
+      para: rowValue(row, ['Correo prioridad', 'Correo principal', 'Para', 'Destinatario', 'Email']),
+      cc: rowValue(row, ['Copiados', 'Copiados ', 'CC', 'Copia', 'Copias']),
+      bcc: rowValue(row, ['Copia oculta', 'CCO', 'BCC']),
+      factura: rowValue(row, ['Factura', 'Folio'])
+    }))
+  }
   const payload = JSON.parse(fs.readFileSync(reportFile, 'utf8'))
+  return (payload.records || []).map((record) => ({
+    rfc: record.rfcReceptor || record.rfc,
+    razonSocial: record.razonSocial,
+    para: record.para,
+    cc: record.cc || record.copias || record.copiados,
+    bcc: record.bcc || record.cco,
+    factura: record.factura || record.folio
+  }))
+}
+
+function contactFromEmail(email, sendAs, index = 0) {
+  return {
+    id: `factura-${sendAs}-${slug(email)}`,
+    name: '',
+    email,
+    phone: '',
+    role: sendAs === 'para' ? 'Responsable facturacion' : sendAs === 'cc' ? 'Responsable secundario' : 'Copia oculta',
+    sendAs
+  }
+}
+
+function mergeContacts(current = [], emails = [], sendAs = 'para') {
+  const next = [...current]
+  emails.forEach((email, index) => {
+    const cleanEmail = String(email || '').toLowerCase()
+    const existing = next.find((contact) => contact.email === cleanEmail)
+    if (existing) {
+      existing.sendAs = existing.sendAs === 'para' ? 'para' : sendAs
+      return
+    }
+    next.push(contactFromEmail(cleanEmail, sendAs, index))
+  })
+  return next
+}
+
+function emailCandidatesFromReport(reportFile) {
   const candidates = new Map()
   const ignored = { ownRfc: 0, noEmail: 0, internalEmail: 0, missingRfc: 0 }
-  for (const record of payload.records || []) {
-    const rfc = normalizeRfc(record.rfcReceptor)
+  for (const record of rowsFromReport(reportFile)) {
+    const rfc = normalizeRfc(record.rfc)
     if (!rfc) {
       ignored.missingRfc += 1
       continue
@@ -105,9 +168,11 @@ function emailCandidatesFromReport(reportFile) {
       ignored.ownRfc += 1
       continue
     }
-    const rawEmails = String(record.para || '').split(/[;,\s]+/g).filter(Boolean)
+    const rawEmails = `${record.para || ''} ${record.cc || ''} ${record.bcc || ''}`.split(/[;,\s]+/g).filter(Boolean)
     const emails = validExternalEmails(record.para)
-    if (!emails.length) {
+    const ccEmails = validExternalEmails(record.cc)
+    const bccEmails = validExternalEmails(record.bcc)
+    if (!emails.length && !ccEmails.length && !bccEmails.length) {
       if (rawEmails.length) ignored.internalEmail += 1
       else ignored.noEmail += 1
       continue
@@ -116,7 +181,7 @@ function emailCandidatesFromReport(reportFile) {
       candidates.set(rfc, {
         rfc,
         razonSocial: text(record.razonSocial),
-        emails: new Map(),
+        contacts: [],
         facturas: new Set(),
         destinatariosOriginales: new Set()
       })
@@ -125,15 +190,18 @@ function emailCandidatesFromReport(reportFile) {
     if (record.razonSocial && !item.razonSocial) item.razonSocial = text(record.razonSocial)
     if (record.factura) item.facturas.add(String(record.factura))
     rawEmails.forEach((email) => item.destinatariosOriginales.add(email))
-    emails.forEach((email) => item.emails.set(email, Number(item.emails.get(email) || 0) + 1))
+    item.contacts = mergeContacts(item.contacts, emails, 'para')
+    item.contacts = mergeContacts(item.contacts, ccEmails, 'cc')
+    item.contacts = mergeContacts(item.contacts, bccEmails, 'bcc')
   }
   const rows = Array.from(candidates.values()).map((item) => {
-    const selectedEmail = Array.from(item.emails.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] || ''
+    const selectedEmail = item.contacts.find((contact) => contact.sendAs === 'para')?.email || item.contacts[0]?.email || ''
     return {
       rfc: item.rfc,
       razonSocial: item.razonSocial,
       email: selectedEmail,
-      emailAlternos: Array.from(item.emails.keys()).filter((email) => email !== selectedEmail).join(', '),
+      contacts: item.contacts,
+      emailAlternos: item.contacts.map((contact) => contact.email).filter((email) => email !== selectedEmail).join(', '),
       facturas: Array.from(item.facturas).join(', '),
       destinatariosOriginales: Array.from(item.destinatariosOriginales).join(', ')
     }
@@ -147,60 +215,102 @@ function blankMeta(company) {
     rfc: '',
     email: '',
     contactEmail: '',
+    contacts: [],
     linkedCompanies: []
+  }
+}
+
+function clearEmailFields(meta = {}) {
+  const next = { ...meta }
+  next.email = ''
+  next.contactEmail = ''
+  next.contact = ''
+  next.phone = ''
+  next.secondaryContact = ''
+  next.secondaryEmail = ''
+  next.secondaryPhone = ''
+  next.contacts = []
+  return next
+}
+
+function setMetaContacts(state, companyName, candidate) {
+  const cleanName = text(companyName)
+  if (!cleanName) return
+  const currentMeta = { ...blankMeta(cleanName), ...(state.companyMeta?.[cleanName] || {}) }
+  state.companyMeta = {
+    ...(state.companyMeta || {}),
+    [cleanName]: {
+      ...currentMeta,
+      legalName: currentMeta.legalName || candidate.razonSocial || cleanName,
+      rfc: candidate.rfc || currentMeta.rfc || '',
+      email: candidate.email || '',
+      contactEmail: candidate.email || '',
+      contacts: candidate.contacts || []
+    }
   }
 }
 
 function updateStatePayload(payload, candidates) {
   const state = payload.state || payload
-  const profiles = Array.isArray(state.invoiceProfiles) ? state.invoiceProfiles : []
+  state.companyMeta = state.companyMeta || {}
+  Object.keys(state.companyMeta).forEach((companyName) => {
+    state.companyMeta[companyName] = clearEmailFields(state.companyMeta[companyName])
+  })
+
+  const profiles = (Array.isArray(state.invoiceProfiles) ? state.invoiceProfiles : []).map((profile) => ({
+    ...profile,
+    contactEmail: '',
+    contacts: [],
+    emailSource: '',
+    emailUpdatedAt: ''
+  }))
   const profileByRfc = new Map(profiles.map((profile, index) => [normalizeRfc(profile.rfc), { profile, index }]).filter(([rfc]) => rfc))
+  const profileByName = new Map(profiles.map((profile, index) => [normalizeHeader(profile.razonSocial), { profile, index }]).filter(([name]) => name))
   const result = {
     candidates: candidates.length,
     updated: [],
-    existing: [],
+    created: [],
     missingProfile: []
   }
   for (const candidate of candidates) {
-    const match = profileByRfc.get(candidate.rfc)
+    const match = profileByRfc.get(candidate.rfc) || profileByName.get(normalizeHeader(candidate.razonSocial))
     if (!match) {
-      result.missingProfile.push(candidate)
-      continue
-    }
-    const currentEmail = text(match.profile.contactEmail || match.profile.email || match.profile.correo)
-    if (currentEmail) {
-      result.existing.push({ ...candidate, currentEmail })
+      const createdProfile = {
+        id: `factura-${candidate.rfc || slug(candidate.razonSocial)}`,
+        razonSocial: candidate.razonSocial,
+        rfc: candidate.rfc,
+        contactEmail: candidate.email,
+        contacts: candidate.contacts || [],
+        linkedCompanies: [],
+        emailSource: path.basename(argValue('--report', defaultReportFile)),
+        emailUpdatedAt: new Date().toISOString()
+      }
+      profiles.push(createdProfile)
+      setMetaContacts(state, candidate.razonSocial, candidate)
+      result.created.push(candidate)
       continue
     }
     const nextProfile = {
       ...match.profile,
       contactEmail: candidate.email,
+      contacts: candidate.contacts || [],
       emailSource: 'facturas_enviadas_2026-06-01',
       emailUpdatedAt: new Date().toISOString()
     }
     profiles[match.index] = nextProfile
     const razonSocial = text(nextProfile.razonSocial || candidate.razonSocial)
-    if (razonSocial) {
-      const currentMeta = { ...blankMeta(razonSocial), ...(state.companyMeta?.[razonSocial] || {}) }
-      state.companyMeta = {
-        ...(state.companyMeta || {}),
-        [razonSocial]: {
-          ...currentMeta,
-          legalName: razonSocial,
-          rfc: normalizeRfc(nextProfile.rfc) || currentMeta.rfc || '',
-          email: candidate.email,
-          contactEmail: currentMeta.contactEmail || candidate.email
-        }
-      }
-    }
+    setMetaContacts(state, razonSocial, { ...candidate, razonSocial, rfc: normalizeRfc(nextProfile.rfc) || candidate.rfc })
+    ;(Array.isArray(nextProfile.linkedCompanies) ? nextProfile.linkedCompanies : []).forEach((companyName) => {
+      setMetaContacts(state, companyName, { ...candidate, razonSocial, rfc: normalizeRfc(nextProfile.rfc) || candidate.rfc })
+    })
     result.updated.push(candidate)
   }
   state.invoiceProfiles = profiles
   state.invoiceEmailImport = {
-    source: 'relacion_facturas_enviadas_2026-06-01.json',
+    source: path.basename(argValue('--report', defaultReportFile)),
     appliedAt: new Date().toISOString(),
     updated: result.updated.length,
-    existing: result.existing.length,
+    created: result.created.length,
     missingProfile: result.missingProfile.length
   }
   if (payload.state) payload.state = state
@@ -237,7 +347,7 @@ function main() {
   console.log(`Auditoria: ${auditFile}`)
   console.log(`Candidatos: ${result.candidates}`)
   console.log(`Correos registrados: ${result.updated.length}`)
-  console.log(`Ya tenian correo: ${result.existing.length}`)
+  console.log(`Perfiles creados: ${result.created.length}`)
   console.log(`Sin perfil fiscal: ${result.missingProfile.length}`)
   console.log(`Ignorados RFC propio (${Array.from(ownRfcs).join(', ')}): ${ignored.ownRfc}`)
   console.log(`Ignorados internos/sin correo: ${ignored.internalEmail + ignored.noEmail}`)

@@ -529,7 +529,16 @@ async function upgradeSmtpToTls(client, host) {
   client.replaceSocket(secureSocket)
 }
 
-async function sendSmtpMail({ to, subject, text }) {
+function normalizeEmailList(value) {
+  const values = Array.isArray(value) ? value.flat(Infinity) : String(value || '').split(/[;,\s]+/g)
+  return Array.from(new Set(values.map(normalizeEmail).filter(isValidEmail)))
+}
+
+function formatMailAddressList(emails = []) {
+  return emails.map((email) => formatMailAddress('', email)).join(', ')
+}
+
+async function sendSmtpMail({ to, cc = [], bcc = [], subject, text }) {
   const config = smtpConfig()
   if (!config) return false
   const client = await connectSmtp(config)
@@ -546,11 +555,16 @@ async function sendSmtpMail({ to, subject, text }) {
       await smtpCommand(client, Buffer.from(config.pass, 'utf8').toString('base64'), [235])
     }
     const fromAddress = cleanSmtpAddress(config.from)
-    const toAddress = cleanSmtpAddress(to)
+    const toAddresses = normalizeEmailList(to).map(cleanSmtpAddress)
+    const ccAddresses = normalizeEmailList(cc).map(cleanSmtpAddress)
+    const bccAddresses = normalizeEmailList(bcc).map(cleanSmtpAddress)
+    const allRecipients = Array.from(new Set([...toAddresses, ...ccAddresses, ...bccAddresses]))
+    if (!toAddresses.length || !allRecipients.length) throw new Error('Correo sin destinatario Para valido.')
     const domain = fromAddress.split('@')[1] || 'klifnet.local'
     const headers = [
       `From: ${formatMailAddress(config.name, fromAddress)}`,
-      `To: ${formatMailAddress('', toAddress)}`,
+      `To: ${formatMailAddressList(toAddresses)}`,
+      ...(ccAddresses.length ? [`Cc: ${formatMailAddressList(ccAddresses)}`] : []),
       `Subject: ${encodeMailHeader(subject)}`,
       'MIME-Version: 1.0',
       'Content-Type: text/plain; charset=UTF-8',
@@ -559,7 +573,9 @@ async function sendSmtpMail({ to, subject, text }) {
       `Message-ID: <${crypto.randomUUID()}@${domain}>`
     ]
     await smtpCommand(client, `MAIL FROM:<${fromAddress}>`, [250])
-    await smtpCommand(client, `RCPT TO:<${toAddress}>`, [250, 251])
+    for (const recipient of allRecipients) {
+      await smtpCommand(client, `RCPT TO:<${recipient}>`, [250, 251])
+    }
     await smtpCommand(client, 'DATA', [354])
     await smtpCommand(client, `${dotStuff(`${headers.join('\r\n')}\r\n\r\n${text}`)}\r\n.`, [250])
     await smtpCommand(client, 'QUIT', [221])
@@ -601,13 +617,13 @@ async function deliverResetToken(email, token) {
   return { sent: false, via: 'local', path: passwordResetOutboxFile, error: deliveryError }
 }
 
-function normalizeEmail(value) {
-  return String(value || '').trim().toLowerCase()
-}
-
 function isValidEmail(value) {
   const email = normalizeEmail(value)
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+}
+
+function normalizeEmail(value) {
+  return String(value || '').trim().toLowerCase()
 }
 
 async function sendBillingEmailBatch(messages = []) {
@@ -615,18 +631,20 @@ async function sendBillingEmailBatch(messages = []) {
   const cleanMessages = messages
     .slice(0, 100)
     .map((message) => ({
-      to: normalizeEmail(message.to),
+      to: normalizeEmailList(message.to),
+      cc: normalizeEmailList(message.cc),
+      bcc: normalizeEmailList(message.bcc),
       subject: cleanHeader(message.subject || 'KLIFNET CRM - Facturacion'),
       text: String(message.text || '').trim()
     }))
-    .filter((message) => isValidEmail(message.to) && message.subject && message.text)
+    .filter((message) => message.to.length && message.subject && message.text)
   const results = []
   for (const message of cleanMessages) {
     try {
       const sent = await sendSmtpMail(message)
-      results.push({ to: message.to, sent: Boolean(sent), error: sent ? '' : 'SMTP no configurado.' })
+      results.push({ to: message.to.join(', '), cc: message.cc.join(', '), bcc: message.bcc.length, sent: Boolean(sent), error: sent ? '' : 'SMTP no configurado.' })
     } catch (error) {
-      results.push({ to: message.to, sent: false, error: error.message || 'Error SMTP.' })
+      results.push({ to: message.to.join(', '), cc: message.cc.join(', '), bcc: message.bcc.length, sent: false, error: error.message || 'Error SMTP.' })
     }
   }
   return {

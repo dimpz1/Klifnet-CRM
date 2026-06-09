@@ -801,6 +801,100 @@ tbody tr:focus-within {
   min-width: 300px;
 }
 
+.company-contact-list,
+.billing-recipient-panel {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.company-contact-head,
+.recipient-panel-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.company-contact-head span,
+.recipient-panel-head span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.recipient-panel-head label {
+  min-width: 220px;
+  display: grid;
+  gap: 5px;
+}
+
+.contact-grid,
+.recipient-grid {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(190px, 1.25fr) minmax(120px, 0.75fr) minmax(140px, 0.85fr) 90px 40px;
+  gap: 8px;
+  align-items: center;
+}
+
+.recipient-grid {
+  grid-template-columns: minmax(140px, 1fr) minmax(190px, 1.2fr) minmax(110px, 0.75fr) minmax(120px, 0.8fr) 56px 56px 56px;
+}
+
+.contact-grid-head,
+.recipient-grid-head {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.center-check {
+  min-height: 38px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.recipient-summary {
+  padding: 8px 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 750;
+}
+
+.empty-state.slim {
+  min-height: 0;
+  padding: 10px;
+}
+
+@media (max-width: 980px) {
+  .company-contact-head,
+  .recipient-panel-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .contact-grid,
+  .recipient-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .contact-grid-head,
+  .recipient-grid-head {
+    display: none;
+  }
+}
+
 .suggestion-row,
 .linked-company-tags,
 .company-fiscal-tags {
