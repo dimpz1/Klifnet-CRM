@@ -803,6 +803,9 @@ tbody tr:focus-within {
 
 .company-contact-list,
 .billing-recipient-panel {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
   display: grid;
   gap: 8px;
   padding: 10px;
@@ -835,6 +838,7 @@ tbody tr:focus-within {
 
 .contact-grid,
 .recipient-grid {
+  min-width: 760px;
   display: grid;
   grid-template-columns: minmax(140px, 1fr) minmax(190px, 1.25fr) minmax(120px, 0.75fr) minmax(140px, 0.85fr) 90px 40px;
   gap: 8px;
@@ -842,6 +846,7 @@ tbody tr:focus-within {
 }
 
 .recipient-grid {
+  min-width: 820px;
   grid-template-columns: minmax(140px, 1fr) minmax(190px, 1.2fr) minmax(110px, 0.75fr) minmax(120px, 0.8fr) 56px 56px 56px;
 }
 
@@ -924,7 +929,9 @@ tbody tr:focus-within {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  max-width: 260px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .linked-company-tag .mini-button {
@@ -933,7 +940,7 @@ tbody tr:focus-within {
 
 .invoice-link-add-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
 }
@@ -1127,12 +1134,14 @@ tbody tr:focus-within {
 .company-settings {
   padding: 0 14px 12px;
   display: grid;
-  grid-template-columns: minmax(220px, 0.8fr) minmax(360px, 1.2fr);
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.35fr);
   gap: 12px;
   align-items: start;
 }
 
 .company-data-card {
+  min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
@@ -1850,6 +1859,35 @@ tbody tr:focus-within {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
+}
+
+.billing-group-pill {
+  padding-right: 4px;
+}
+
+.chip-remove-button {
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.08);
+  color: inherit;
+  cursor: pointer;
+}
+
+.chip-remove-button:hover {
+  background: var(--brand);
+  color: #fff;
+}
+
+.chip-remove-button i {
+  width: 13px;
+  height: 13px;
 }
 
 .prefact-report {

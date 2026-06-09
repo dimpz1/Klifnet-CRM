@@ -1603,6 +1603,67 @@ function registerBillingGroupForEntity(entityName, rawGroupName) {
   return { ok: true, entityName: cleanEntity, groupName, created }
 }
 
+function deleteBillingGroupForEntity(entityName, rawGroupName, view = state.view) {
+  const cleanEntity = textValue(entityName)
+  const groupName = cleanBillingGroupName(rawGroupName)
+  if (!cleanEntity || groupName === defaultBillingGroupName) {
+    setState({ notice: 'El grupo Principal no se puede borrar.', view })
+    return
+  }
+  const entityKey = normalizeHeader(cleanEntity)
+  const groupKey = normalizeHeader(groupName)
+  const existing = getCompanyMeta(cleanEntity)
+  const recipients = { ...(existing.billingGroupRecipients || {}) }
+  delete recipients[groupName]
+  const nextGroups = sortBillingGroupNames((existing.billingGroups || []).filter((group) => normalizeHeader(group) !== groupKey))
+  let movedDevices = 0
+  const nextDevices = state.devices.map((device) => {
+    const deviceEntityKey = normalizeHeader(billingEntityNameForCompany(device.company))
+    if (deviceEntityKey !== entityKey || normalizeHeader(deviceBillingGroup(device)) !== groupKey) return device
+    movedDevices += 1
+    return { ...device, billingGroup: defaultBillingGroupName }
+  })
+  setState({
+    devices: nextDevices,
+    companyMeta: {
+      ...state.companyMeta,
+      [cleanEntity]: {
+        ...existing,
+        legalName: existing.legalName || cleanEntity,
+        billingGroups: nextGroups,
+        billingGroupRecipients: recipients
+      }
+    },
+    billingGroup: normalizeHeader(state.billingGroup) === groupKey ? '' : state.billingGroup,
+    newDevice: normalizeHeader(state.newDevice.billingGroup) === groupKey ? { ...state.newDevice, billingGroup: defaultBillingGroupName } : state.newDevice,
+    view,
+    notice: `Grupo de facturacion borrado: ${groupName}${movedDevices ? `. ${movedDevices} equipo(s) regresaron a Principal.` : ''}`
+  })
+}
+
+function renderBillingGroupChipList(entityName, groups = [], options = {}) {
+  const cleanEntity = textValue(entityName)
+  const view = options.view || state.view
+  return `
+    <div class="billing-group-chip-list">
+      ${sortBillingGroupNames(groups)
+        .map((group) => {
+          const isDefault = group === defaultBillingGroupName
+          const isActive = options.activeGroup && normalizeHeader(options.activeGroup) === normalizeHeader(group)
+          return `
+            <span class="pill billing-group-pill ${isDefault || isActive ? 'ok' : ''}">
+              ${esc(group)}
+              ${
+                !isDefault && cleanEntity
+                  ? `<button class="chip-remove-button" title="Borrar grupo" data-delete-billing-group="${attr(cleanEntity)}" data-group="${attr(group)}" data-view="${attr(view)}">${icon('x')}</button>`
+                  : ''
+              }
+            </span>`
+        })
+        .join('')}
+    </div>`
+}
+
 function addBillingGroupForSelectedCompany() {
   const entityName = state.billingCompany ? billingEntityNameForCompany(state.billingCompany) : ''
   const groupName = cleanBillingGroupName(state.newBillingGroupName)
@@ -8152,9 +8213,7 @@ function renderEmpresas(companies) {
                     </label>
                     <div class="company-billing-groups">
                       <span>Grupos de facturacion</span>
-                      <div class="billing-group-chip-list">
-                        ${billingGroupList.map((group) => `<span class="pill ${group === defaultBillingGroupName ? 'ok' : ''}">${esc(group)}</span>`).join('')}
-                      </div>
+                      ${renderBillingGroupChipList(billingEntity, billingGroupList, { view: 'empresas' })}
                       <div class="invoice-link-add-row">
                         <input data-company-billing-group-input="${attr(company.name)}" placeholder="Nombre del grupo: Obra, sucursal, flotilla...">
                         <button class="button small-button" data-company-billing-group-add="${attr(company.name)}">${icon('plus')}Crear grupo</button>
@@ -8249,9 +8308,7 @@ function renderEquipos() {
           <input id="equipmentBillingGroupName" value="${attr(state.equipmentBillingGroupName || '')}" placeholder="Ej. Obra norte, Sucursal GDL">
         </label>
         <button class="button" id="addEquipmentBillingGroup" ${equipmentGroupCompany ? '' : 'disabled'}>${icon('plus')}Crear grupo</button>
-        <div class="billing-group-chip-list">
-          ${equipmentGroupList.map((group) => `<span class="pill ${group === defaultBillingGroupName ? 'ok' : ''}">${esc(group)}</span>`).join('')}
-        </div>
+        ${renderBillingGroupChipList(equipmentGroupEntity, equipmentGroupList, { view: 'equipos' })}
       </div>
       <details class="compact-panel">
         <summary>${icon('plus')}Alta manual de equipo</summary>
@@ -8504,9 +8561,7 @@ function renderFacturacion(stats, companies) {
           <span>Grupos de facturacion</span>
           <strong>${esc(selectedBillingCompany || 'Selecciona una razon social / empresa')}</strong>
           <small>Todo equipo inicia en Principal; puedes crear grupos y asignarlos equipo por equipo.</small>
-          <div class="billing-group-chip-list">
-            ${groups.map((group) => `<span class="pill ${state.billingGroup === group ? 'ok' : ''}">${esc(group)}</span>`).join('')}
-          </div>
+          ${renderBillingGroupChipList(selectedBillingCompany, groups, { view: 'facturacion', activeGroup: state.billingGroup })}
         </div>
         <label>
           <span>Nuevo grupo</span>
@@ -9639,6 +9694,12 @@ function bindEvents() {
     })
   })
 
+  document.querySelectorAll('[data-delete-billing-group]').forEach((button) => {
+    button.addEventListener('click', () => {
+      deleteBillingGroupForEntity(button.dataset.deleteBillingGroup, button.dataset.group, button.dataset.view || state.view)
+    })
+  })
+
   document.querySelectorAll('[data-new-device]').forEach((input) => {
     const saveNewDeviceDraft = () => {
       const field = input.dataset.newDevice
@@ -9890,9 +9951,10 @@ function bindEvents() {
       const value = input.type === 'checkbox' ? input.checked : input.value
       state.devices = state.devices.map((device) => {
         if (device.id !== id) return device
+        if (!shouldRender && (field === 'company' || field === 'billingGroup')) return device
         if (field === 'company') {
           const nextDevice = { ...device, company: value }
-          registerBillingGroupForEntity(billingEntityNameForCompany(value), deviceBillingGroup(nextDevice))
+          if (shouldRender && textValue(value)) registerBillingGroupForEntity(billingEntityNameForCompany(value), deviceBillingGroup(nextDevice))
           return nextDevice
         }
         if (field === 'groups') return { ...device, groups: splitGroups(value) }
@@ -9900,7 +9962,7 @@ function bindEvents() {
         if (field === 'billingCycle' && value === 'mensual') return { ...device, billingCycle: value, paymentMonths: [], agreedPrice: deviceAgreedPriceValue({ ...device, billingCycle: 'mensual' }) }
         if (field === 'billingGroup') {
           const groupName = cleanBillingGroupName(value)
-          registerBillingGroupForEntity(billingEntityNameForCompany(device.company), groupName)
+          if (shouldRender) registerBillingGroupForEntity(billingEntityNameForCompany(device.company), groupName)
           return { ...device, billingGroup: groupName }
         }
         if (field === 'billable') return { ...device, billable: Boolean(value) }
@@ -10199,9 +10261,10 @@ function bindEvents() {
       const value = input.type === 'checkbox' ? input.checked : input.value
       state.devices = state.devices.map((device) => {
         if (device.id !== id) return device
+        if (!shouldRender && (field === 'company' || field === 'billingGroup')) return device
         if (field === 'company') {
           const nextDevice = { ...device, company: value }
-          registerBillingGroupForEntity(billingEntityNameForCompany(value), deviceBillingGroup(nextDevice))
+          if (shouldRender && textValue(value)) registerBillingGroupForEntity(billingEntityNameForCompany(value), deviceBillingGroup(nextDevice))
           return nextDevice
         }
         if (field === 'groups') return { ...device, groups: splitGroups(value) }
@@ -10209,7 +10272,7 @@ function bindEvents() {
         if (field === 'billingCycle' && value === 'mensual') return { ...device, billingCycle: value, paymentMonths: [], agreedPrice: deviceAgreedPriceValue({ ...device, billingCycle: 'mensual' }) }
         if (field === 'billingGroup') {
           const groupName = cleanBillingGroupName(value)
-          registerBillingGroupForEntity(billingEntityNameForCompany(device.company), groupName)
+          if (shouldRender) registerBillingGroupForEntity(billingEntityNameForCompany(device.company), groupName)
           return { ...device, billingGroup: groupName }
         }
         if (field === 'billable') return { ...device, billable: Boolean(value) }
@@ -10225,7 +10288,7 @@ function bindEvents() {
       input.addEventListener('change', () => saveDeviceBilling(true))
     } else {
       input.addEventListener('input', () => saveDeviceBilling(false))
-      input.addEventListener('change', () => saveDeviceBilling(false))
+      input.addEventListener('change', () => saveDeviceBilling(true))
     }
   })
 }
