@@ -58,9 +58,14 @@ let invoiceProfileCompanyIndexCache = { profiles: null, companyMeta: null, devic
 let lineMatchInfoIndexCache = { lines: null, devices: null, index: null }
 let filteredLinesCache = { lines: null, devices: null, key: '', result: null }
 let filteredDevicesCache = { devices: null, lines: null, key: '', result: null }
+let filteredCobrosDevicesCache = { devices: null, key: '', result: null }
 let billingRowsCache = { devices: null, lines: null, companyMeta: null, invoiceProfiles: null, billing: null, key: '', rows: null }
 let prefactReportCache = { devices: null, lines: null, companyMeta: null, invoiceProfiles: null, billing: null, key: '', report: null }
 let companiesCache = { devices: null, companyMeta: null, invoiceProfiles: null, companies: null }
+let billingGroupsForEntityCache = { devices: null, lines: null, companyMeta: null, invoiceProfiles: null, map: new Map() }
+let billingGroupsCache = { devices: null, lines: null, companyMeta: null, invoiceProfiles: null, companyKey: '', result: null }
+let lineCompanyOptionsCache = { companies: null, lines: null, companyMeta: null, result: null }
+let equipmentCompanyOptionsCache = { companies: null, devices: null, companyMeta: null, result: null }
 
 const hardwarePresets = [
   {
@@ -389,6 +394,8 @@ const state = {
   query: '',
   equipmentCompanyFilter: '',
   equipmentCycleFilter: '',
+  equipmentBillingGroupCompany: '',
+  equipmentBillingGroupName: '',
   equipmentPage: 1,
   companyPage: 1,
   cobrosCompany: '',
@@ -701,6 +708,7 @@ function createManualDevice() {
     setState({ notice: 'Ya existe un equipo con ese UID, IMEI largo o IMEI corto.', view: 'equipos' })
     return
   }
+  registerBillingGroupForEntity(billingEntityNameForCompany(company), deviceBillingGroup(device))
 
   setState({
     devices: [...state.devices, device],
@@ -1296,6 +1304,15 @@ function invoiceProfileLinkedCompanies(profile) {
 }
 
 function invoiceProfileCompanyIndex() {
+  if (
+    invoiceProfileCompanyIndexCache.profiles === state.invoiceProfiles &&
+    invoiceProfileCompanyIndexCache.companyMeta === state.companyMeta &&
+    invoiceProfileCompanyIndexCache.devices === state.devices &&
+    invoiceProfileCompanyIndexCache.lines === state.lines &&
+    invoiceProfileCompanyIndexCache.index
+  ) {
+    return invoiceProfileCompanyIndexCache.index
+  }
   const operationalCompanyKeys = new Set(
     unique([...state.devices.map((device) => device.company), ...state.lines.map((line) => line.company)])
       .map((companyName) => normalizeHeader(companyName))
@@ -1533,19 +1550,57 @@ function billingGroupsForEntity(entityName) {
   const cleanEntity = textValue(entityName)
   const groups = [defaultBillingGroupName]
   if (!cleanEntity) return groups
+  if (
+    billingGroupsForEntityCache.devices !== state.devices ||
+    billingGroupsForEntityCache.lines !== state.lines ||
+    billingGroupsForEntityCache.companyMeta !== state.companyMeta ||
+    billingGroupsForEntityCache.invoiceProfiles !== state.invoiceProfiles
+  ) {
+    billingGroupsForEntityCache = {
+      devices: state.devices,
+      lines: state.lines,
+      companyMeta: state.companyMeta,
+      invoiceProfiles: state.invoiceProfiles,
+      map: new Map()
+    }
+  }
   const entityKey = normalizeHeader(cleanEntity)
+  if (billingGroupsForEntityCache.map.has(entityKey)) return billingGroupsForEntityCache.map.get(entityKey)
   const rawMetaGroups = getCompanyMeta(cleanEntity).billingGroups
   const metaGroups = Array.isArray(rawMetaGroups) ? rawMetaGroups : []
   groups.push(...metaGroups)
   state.devices.forEach((device) => {
     if (normalizeHeader(billingEntityNameForCompany(device.company)) === entityKey) groups.push(deviceBillingGroup(device))
   })
-  return sortBillingGroupNames(groups)
+  const result = sortBillingGroupNames(groups)
+  billingGroupsForEntityCache.map.set(entityKey, result)
+  return result
 }
 
 function billingGroupOptionsForDevice(device) {
   const entityName = billingEntityNameForCompany(device.company)
   return sortBillingGroupNames([...billingGroupsForEntity(entityName), deviceBillingGroup(device)])
+}
+
+function registerBillingGroupForEntity(entityName, rawGroupName) {
+  const cleanEntity = textValue(entityName)
+  const groupName = cleanBillingGroupName(rawGroupName)
+  if (!cleanEntity || groupName === defaultBillingGroupName) {
+    return { ok: false, entityName: cleanEntity, groupName, created: false }
+  }
+  const existing = getCompanyMeta(cleanEntity)
+  const previousGroups = Array.isArray(existing.billingGroups) ? existing.billingGroups.map(cleanBillingGroupName) : []
+  const nextGroups = sortBillingGroupNames([...previousGroups, groupName])
+  const created = !previousGroups.some((group) => normalizeHeader(group) === normalizeHeader(groupName))
+  state.companyMeta = {
+    ...state.companyMeta,
+    [cleanEntity]: {
+      ...existing,
+      legalName: existing.legalName || cleanEntity,
+      billingGroups: nextGroups
+    }
+  }
+  return { ok: true, entityName: cleanEntity, groupName, created }
 }
 
 function addBillingGroupForSelectedCompany() {
@@ -1559,17 +1614,53 @@ function addBillingGroupForSelectedCompany() {
     setState({ notice: 'Principal ya existe como grupo base.', view: 'facturacion', newBillingGroupName: '' })
     return
   }
-  const existing = getCompanyMeta(entityName)
-  const nextGroups = sortBillingGroupNames([...(existing.billingGroups || []), groupName])
+  const result = registerBillingGroupForEntity(entityName, groupName)
   setState({
-    companyMeta: {
-      ...state.companyMeta,
-      [entityName]: { ...existing, legalName: existing.legalName || entityName, billingGroups: nextGroups }
-    },
+    companyMeta: state.companyMeta,
     billingGroup: groupName,
     newBillingGroupName: '',
     view: 'facturacion',
-    notice: `Grupo de facturacion creado: ${groupName}`
+    notice: result.created ? `Grupo de facturacion creado: ${groupName}` : `Grupo de facturacion seleccionado: ${groupName}`
+  })
+}
+
+function addEquipmentBillingGroup() {
+  const sourceCompany = textValue(state.equipmentBillingGroupCompany || state.equipmentCompanyFilter || state.newDevice.company)
+  const groupName = cleanBillingGroupName(state.equipmentBillingGroupName)
+  if (!sourceCompany) {
+    setState({ notice: 'Selecciona una empresa para crear su grupo de facturacion.', view: 'equipos' })
+    return
+  }
+  if (groupName === defaultBillingGroupName) {
+    setState({ notice: 'Principal ya existe como grupo base.', view: 'equipos', equipmentBillingGroupName: '' })
+    return
+  }
+  const entityName = billingEntityNameForCompany(sourceCompany)
+  const result = registerBillingGroupForEntity(entityName, groupName)
+  setState({
+    companyMeta: state.companyMeta,
+    equipmentBillingGroupCompany: sourceCompany,
+    equipmentBillingGroupName: '',
+    newDevice: { ...state.newDevice, company: state.newDevice.company || sourceCompany, billingGroup: groupName },
+    view: 'equipos',
+    notice: result.created ? `Grupo de facturacion creado para ${entityName}: ${groupName}` : `Grupo de facturacion ya existia para ${entityName}: ${groupName}`
+  })
+}
+
+function addCompanyBillingGroup(companyName, rawGroupName) {
+  const cleanCompany = textValue(companyName)
+  const groupName = cleanBillingGroupName(rawGroupName)
+  if (!cleanCompany) return
+  if (groupName === defaultBillingGroupName) {
+    setState({ notice: 'Principal ya existe como grupo base.', view: 'empresas' })
+    return
+  }
+  const entityName = billingEntityNameForCompany(cleanCompany)
+  const result = registerBillingGroupForEntity(entityName, groupName)
+  setState({
+    companyMeta: state.companyMeta,
+    view: 'empresas',
+    notice: result.created ? `Grupo de facturacion creado para ${entityName}: ${groupName}` : `Grupo de facturacion ya existia para ${entityName}: ${groupName}`
   })
 }
 
@@ -4386,9 +4477,19 @@ function lineProviderStatusSummary(group) {
 }
 
 function lineCompanyOptions(companies) {
-  return unique([...defaultLineClients, ...companies.map((company) => company.name), ...state.lines.map((line) => line.company), ...Object.keys(state.companyMeta)]).sort(
+  if (
+    lineCompanyOptionsCache.companies === companies &&
+    lineCompanyOptionsCache.lines === state.lines &&
+    lineCompanyOptionsCache.companyMeta === state.companyMeta &&
+    lineCompanyOptionsCache.result
+  ) {
+    return lineCompanyOptionsCache.result
+  }
+  const result = unique([...defaultLineClients, ...companies.map((company) => company.name), ...state.lines.map((line) => line.company), ...Object.keys(state.companyMeta)]).sort(
     (a, b) => a.localeCompare(b)
   )
+  lineCompanyOptionsCache = { companies, lines: state.lines, companyMeta: state.companyMeta, result }
+  return result
 }
 
 function lineClientProfiles(companies) {
@@ -5163,7 +5264,20 @@ function filteredDevices() {
 
 function filteredCobrosDevices() {
   const query = normalizeHeader(state.query)
-  return state.devices.filter((device) => {
+  const key = [
+    query,
+    state.cobrosCompany || '',
+    state.cobrosGroup || '',
+    state.cobrosCycleFilter || ''
+  ].join('|')
+  if (
+    filteredCobrosDevicesCache.devices === state.devices &&
+    filteredCobrosDevicesCache.key === key &&
+    filteredCobrosDevicesCache.result
+  ) {
+    return filteredCobrosDevicesCache.result
+  }
+  const result = state.devices.filter((device) => {
     const deviceGroups = device.groups.length ? device.groups : ['Sin grupo']
     const companyMatches = !state.cobrosCompany || device.company === state.cobrosCompany
     const groupMatches = !state.cobrosGroup || deviceGroups.includes(state.cobrosGroup)
@@ -5175,6 +5289,8 @@ function filteredCobrosDevices() {
       ).includes(query)
     return companyMatches && groupMatches && cycleMatches && queryMatches
   })
+  filteredCobrosDevicesCache = { devices: state.devices, key, result }
+  return result
 }
 
 function lineSearchText(line, matchInfo = null) {
@@ -5256,17 +5372,36 @@ function billingFilterMatches(device) {
 }
 
 function billingGroups() {
+  const companyKey = billingCompanyFilterKey()
+  if (
+    billingGroupsCache.devices === state.devices &&
+    billingGroupsCache.lines === state.lines &&
+    billingGroupsCache.companyMeta === state.companyMeta &&
+    billingGroupsCache.invoiceProfiles === state.invoiceProfiles &&
+    billingGroupsCache.companyKey === companyKey &&
+    billingGroupsCache.result
+  ) {
+    return billingGroupsCache.result
+  }
   const groups = [defaultBillingGroupName]
-  const companyFilterKey = billingCompanyFilterKey()
   if (state.billingCompany) groups.push(...billingGroupsForEntity(billingEntityNameForCompany(state.billingCompany)))
   state.devices.forEach((device) => {
-    if (state.billingCompany && normalizeHeader(billingEntityNameForCompany(device.company)) !== companyFilterKey) return
+    if (state.billingCompany && normalizeHeader(billingEntityNameForCompany(device.company)) !== companyKey) return
     groups.push(deviceBillingGroup(device))
   })
   if (!state.billingCompany) {
     Object.values(state.companyMeta || {}).forEach((meta) => groups.push(...(Array.isArray(meta.billingGroups) ? meta.billingGroups : [])))
   }
-  return sortBillingGroupNames(groups)
+  const result = sortBillingGroupNames(groups)
+  billingGroupsCache = {
+    devices: state.devices,
+    lines: state.lines,
+    companyMeta: state.companyMeta,
+    invoiceProfiles: state.invoiceProfiles,
+    companyKey,
+    result
+  }
+  return result
 }
 
 function billingFilterStats(rows) {
@@ -5289,6 +5424,22 @@ function companyOptions(companies) {
   return Array.from(new Set([...companies.map((company) => company.name), ...Object.keys(state.companyMeta)]))
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b))
+}
+
+function equipmentCompanyOptions(companies = buildCompanies()) {
+  if (
+    equipmentCompanyOptionsCache.companies === companies &&
+    equipmentCompanyOptionsCache.devices === state.devices &&
+    equipmentCompanyOptionsCache.companyMeta === state.companyMeta &&
+    equipmentCompanyOptionsCache.result
+  ) {
+    return equipmentCompanyOptionsCache.result
+  }
+  const result = unique([...companies.map((company) => company.name), ...state.devices.map((device) => device.company), ...Object.keys(state.companyMeta)]).sort((a, b) =>
+    a.localeCompare(b)
+  )
+  equipmentCompanyOptionsCache = { companies, devices: state.devices, companyMeta: state.companyMeta, result }
+  return result
 }
 
 function addCompanyFromQuote() {
@@ -7925,6 +8076,8 @@ function renderEmpresas(companies) {
           const linkedProfiles = invoiceProfilesForCompany(company.name)
           const meta = getCompanyMeta(company.name)
           const contacts = companyContacts(meta)
+          const billingEntity = billingEntityNameForCompany(company.name)
+          const billingGroupList = billingGroupsForEntity(billingEntity)
           return `
             <details class="company-row">
               <summary>
@@ -7997,6 +8150,17 @@ function renderEmpresas(companies) {
                       <span>Email de facturacion</span>
                       <input type="email" value="${attr(meta.email || '')}" data-company-meta="${attr(company.name)}" data-meta-field="email" placeholder="facturas@empresa.com">
                     </label>
+                    <div class="company-billing-groups">
+                      <span>Grupos de facturacion</span>
+                      <div class="billing-group-chip-list">
+                        ${billingGroupList.map((group) => `<span class="pill ${group === defaultBillingGroupName ? 'ok' : ''}">${esc(group)}</span>`).join('')}
+                      </div>
+                      <div class="invoice-link-add-row">
+                        <input data-company-billing-group-input="${attr(company.name)}" placeholder="Nombre del grupo: Obra, sucursal, flotilla...">
+                        <button class="button small-button" data-company-billing-group-add="${attr(company.name)}">${icon('plus')}Crear grupo</button>
+                      </div>
+                      <small>Se guarda en ${esc(billingEntity)} y despues puedes asignar equipos a ese grupo.</small>
+                    </div>
                     <span>Razones sociales ligadas</span>
                     <div class="company-fiscal-tags">
                       ${
@@ -8044,10 +8208,11 @@ function renderEquipos() {
   const devices = filteredDevices()
   const pagination = equipmentPaginationState(devices.length)
   const pageDevices = devices.slice(pagination.start, pagination.end)
-  const companyOptions = unique([...buildCompanies().map((company) => company.name), ...state.devices.map((device) => device.company), ...Object.keys(state.companyMeta)]).sort((a, b) =>
-    a.localeCompare(b)
-  )
+  const companyOptions = equipmentCompanyOptions()
   const billingGroupOptions = billingGroups()
+  const equipmentGroupCompany = textValue(state.equipmentBillingGroupCompany || state.equipmentCompanyFilter || state.newDevice.company)
+  const equipmentGroupEntity = equipmentGroupCompany ? billingEntityNameForCompany(equipmentGroupCompany) : ''
+  const equipmentGroupList = equipmentGroupEntity ? billingGroupsForEntity(equipmentGroupEntity) : [defaultBillingGroupName]
   const d = state.newDevice
   return `
     <section>
@@ -8068,6 +8233,25 @@ function renderEquipos() {
           <option value="anual" ${state.equipmentCycleFilter === 'anual' ? 'selected' : ''}>Anual</option>
         </select>
         <span>${devices.length} equipos</span>
+      </div>
+      <div class="equipment-billing-group-panel">
+        <div>
+          <span>Grupos de facturacion</span>
+          <strong>${equipmentGroupEntity ? esc(equipmentGroupEntity) : 'Selecciona empresa'}</strong>
+          <small>Crea un grupo y asignalo en la columna Grupo facturacion de cada equipo.</small>
+        </div>
+        <label>
+          <span>Empresa</span>
+          <input id="equipmentBillingGroupCompany" list="equipmentCompanyList" value="${attr(equipmentGroupCompany)}" placeholder="Empresa o razon social">
+        </label>
+        <label>
+          <span>Nuevo grupo</span>
+          <input id="equipmentBillingGroupName" value="${attr(state.equipmentBillingGroupName || '')}" placeholder="Ej. Obra norte, Sucursal GDL">
+        </label>
+        <button class="button" id="addEquipmentBillingGroup" ${equipmentGroupCompany ? '' : 'disabled'}>${icon('plus')}Crear grupo</button>
+        <div class="billing-group-chip-list">
+          ${equipmentGroupList.map((group) => `<span class="pill ${group === defaultBillingGroupName ? 'ok' : ''}">${esc(group)}</span>`).join('')}
+        </div>
       </div>
       <details class="compact-panel">
         <summary>${icon('plus')}Alta manual de equipo</summary>
@@ -9440,6 +9624,21 @@ function bindEvents() {
     })
   })
 
+  document.querySelectorAll('[data-company-billing-group-add]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const companyName = textValue(button.dataset.companyBillingGroupAdd)
+      const input =
+        button.closest('.company-billing-groups')?.querySelector('[data-company-billing-group-input]') ||
+        Array.from(document.querySelectorAll('[data-company-billing-group-input]')).find((node) => node.dataset.companyBillingGroupInput === companyName)
+      const groupName = textValue(input?.value)
+      if (!groupName) {
+        setState({ notice: 'Escribe el nombre del grupo de facturacion.', view: 'empresas' })
+        return
+      }
+      addCompanyBillingGroup(companyName, groupName)
+    })
+  })
+
   document.querySelectorAll('[data-new-device]').forEach((input) => {
     const saveNewDeviceDraft = () => {
       const field = input.dataset.newDevice
@@ -9631,6 +9830,22 @@ function bindEvents() {
 
   document.getElementById('addBillingGroup')?.addEventListener('click', addBillingGroupForSelectedCompany)
 
+  document.getElementById('equipmentBillingGroupCompany')?.addEventListener('input', (event) => {
+    state.equipmentBillingGroupCompany = event.target.value
+    persistState()
+  })
+
+  document.getElementById('equipmentBillingGroupCompany')?.addEventListener('change', (event) => {
+    setUiState({ equipmentBillingGroupCompany: event.target.value })
+  })
+
+  document.getElementById('equipmentBillingGroupName')?.addEventListener('input', (event) => {
+    state.equipmentBillingGroupName = event.target.value
+    persistState()
+  })
+
+  document.getElementById('addEquipmentBillingGroup')?.addEventListener('click', addEquipmentBillingGroup)
+
   document.getElementById('billingSearchInput')?.addEventListener('input', (event) => {
     state.billingQuery = event.target.value
     state.billingPage = 1
@@ -9675,10 +9890,19 @@ function bindEvents() {
       const value = input.type === 'checkbox' ? input.checked : input.value
       state.devices = state.devices.map((device) => {
         if (device.id !== id) return device
+        if (field === 'company') {
+          const nextDevice = { ...device, company: value }
+          registerBillingGroupForEntity(billingEntityNameForCompany(value), deviceBillingGroup(nextDevice))
+          return nextDevice
+        }
         if (field === 'groups') return { ...device, groups: splitGroups(value) }
         if (field === 'paymentMonths') return { ...device, paymentMonths: parsePaymentMonths(value) }
         if (field === 'billingCycle' && value === 'mensual') return { ...device, billingCycle: value, paymentMonths: [], agreedPrice: deviceAgreedPriceValue({ ...device, billingCycle: 'mensual' }) }
-        if (field === 'billingGroup') return { ...device, billingGroup: cleanBillingGroupName(value) }
+        if (field === 'billingGroup') {
+          const groupName = cleanBillingGroupName(value)
+          registerBillingGroupForEntity(billingEntityNameForCompany(device.company), groupName)
+          return { ...device, billingGroup: groupName }
+        }
         if (field === 'billable') return { ...device, billable: Boolean(value) }
         if (field === 'uid') return normalizeDeviceIdentifiers({ ...device, uid: value })
         if (field === 'imei') return normalizeDeviceIdentifiers({ ...device, imei: value, imeiLong: value || device.imeiLong })
@@ -9975,10 +10199,19 @@ function bindEvents() {
       const value = input.type === 'checkbox' ? input.checked : input.value
       state.devices = state.devices.map((device) => {
         if (device.id !== id) return device
+        if (field === 'company') {
+          const nextDevice = { ...device, company: value }
+          registerBillingGroupForEntity(billingEntityNameForCompany(value), deviceBillingGroup(nextDevice))
+          return nextDevice
+        }
         if (field === 'groups') return { ...device, groups: splitGroups(value) }
         if (field === 'paymentMonths') return { ...device, paymentMonths: parsePaymentMonths(value) }
         if (field === 'billingCycle' && value === 'mensual') return { ...device, billingCycle: value, paymentMonths: [], agreedPrice: deviceAgreedPriceValue({ ...device, billingCycle: 'mensual' }) }
-        if (field === 'billingGroup') return { ...device, billingGroup: cleanBillingGroupName(value) }
+        if (field === 'billingGroup') {
+          const groupName = cleanBillingGroupName(value)
+          registerBillingGroupForEntity(billingEntityNameForCompany(device.company), groupName)
+          return { ...device, billingGroup: groupName }
+        }
         if (field === 'billable') return { ...device, billable: Boolean(value) }
         if (field === 'imeiLong') return normalizeDeviceIdentifiers({ ...device, imeiLong: value, imei: value || device.imei })
         if (field === 'imeiShort') return normalizeDeviceIdentifiers({ ...device, imeiShort: value })
@@ -10061,6 +10294,8 @@ function applySavedState(parsed = {}) {
       lastImportAt: parsed.lastImportAt || '',
       equipmentCompanyFilter: parsed.equipmentCompanyFilter || '',
       equipmentCycleFilter: parsed.equipmentCycleFilter || '',
+      equipmentBillingGroupCompany: parsed.equipmentBillingGroupCompany || '',
+      equipmentBillingGroupName: parsed.equipmentBillingGroupName || '',
       equipmentPage: Math.max(1, Number(parsed.equipmentPage || 1)),
       companyPage: Math.max(1, Number(parsed.companyPage || 1)),
       cobrosPage: Math.max(1, Number(parsed.cobrosPage || 1)),

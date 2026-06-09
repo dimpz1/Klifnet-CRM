@@ -1808,21 +1808,41 @@ tbody tr:focus-within {
   align-items: end;
 }
 
+.equipment-billing-group-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 8px;
+  margin-bottom: 8px;
+  display: grid;
+  grid-template-columns: minmax(220px, 1.1fr) minmax(200px, 0.9fr) minmax(200px, 0.9fr) auto minmax(180px, 1fr);
+  gap: 8px;
+  align-items: end;
+}
+
 .billing-group-manager > div,
-.billing-group-manager label {
+.billing-group-manager label,
+.equipment-billing-group-panel > div,
+.equipment-billing-group-panel label,
+.company-billing-groups {
   display: grid;
   gap: 5px;
 }
 
 .billing-group-manager span,
-.billing-group-manager label span {
+.billing-group-manager label span,
+.equipment-billing-group-panel span,
+.equipment-billing-group-panel label span,
+.company-billing-groups > span {
   color: var(--muted);
   font-size: 0.72rem;
   font-weight: 900;
   text-transform: uppercase;
 }
 
-.billing-group-manager small {
+.billing-group-manager small,
+.equipment-billing-group-panel small,
+.company-billing-groups small {
   color: var(--muted);
 }
 
@@ -2099,6 +2119,7 @@ small {
   .billing-settings,
   .billing-filters,
   .billing-group-manager,
+  .equipment-billing-group-panel,
   .company-form,
   .company-settings,
   .company-data-grid,
@@ -2142,6 +2163,7 @@ small {
   .billing-settings,
   .billing-filters,
   .billing-group-manager,
+  .equipment-billing-group-panel,
   .company-form,
   .company-settings,
   .company-data-grid,
