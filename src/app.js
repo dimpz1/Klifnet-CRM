@@ -11,6 +11,7 @@ const authSetupInfoUrl = '/api/auth/setup-info'
 const authSetupTokenUrl = '/api/auth/setup-token'
 const authSetupUrl = '/api/auth/setup'
 const billingMailUrl = '/api/billing/send-emails'
+const billingInvoiceCreateUrl = '/api/billing/create-invoices'
 let setupTokenRequestInFlight = false
 let setupUserRequestInFlight = false
 let resetPasswordRequestInFlight = false
@@ -6363,13 +6364,19 @@ function buildInvoiceApiDrafts() {
         id: row.id || `${slug(row.company)}-${slug(row.billingGroup)}-${period.key}`,
         ready: missing.length === 0,
         missing,
-        invoiceAction: 'draft_only_no_external_api_call',
+        invoiceAction: missing.length === 0 ? 'ready_to_create_invoice' : 'blocked_missing_data',
+        externalReference: `KLIFNET-${period.key}-${slug(row.company)}-${slug(cleanBillingGroupName(row.billingGroup))}`,
         razonSocial: row.company,
         legalName: row.legalName || row.company,
         rfc: row.rfc || '',
         correoFacturas: recipients.to.join(', '),
         ccFacturas: recipients.cc.join(', '),
         bccFacturas: recipients.bcc.join(', '),
+        recipients: {
+          to: recipients.to,
+          cc: recipients.cc,
+          bcc: recipients.bcc
+        },
         billingType: row.billingType || 'empresa',
         billingGroup: cleanBillingGroupName(row.billingGroup),
         empresasCrm: row.sourceCompanies || [],
@@ -6392,7 +6399,9 @@ function buildInvoiceApiDrafts() {
   return {
     createdAt: new Date().toISOString(),
     apiCallEnabled: false,
-    nextStep: 'Conectar este payload al endpoint real de crear factura cuando este autorizado.',
+    nextStep: 'Revisar y presionar Crear facturas API. Si no hay URL configurada en el servidor, queda en modo simulacion.',
+    sourceSystem: 'klifnet-crm',
+    invoiceRule: 'Una factura por razon social/empresa y grupo de facturacion. Cada partida representa un equipo o linea facturada con su precio pactado.',
     period,
     summary: {
       total: drafts.length,
@@ -6420,28 +6429,80 @@ function downloadInvoiceApiDraftJson() {
   setUiState({ notice: 'Payload de facturacion descargado para revision. Sin llamada externa.', view: 'facturacion' })
 }
 
+function readyInvoiceApiDrafts(draft) {
+  return (draft?.drafts || []).filter((item) => item.ready && Number(item.total || 0) > 0 && Array.isArray(item.items) && item.items.length)
+}
+
+async function createInvoiceApiDrafts() {
+  const draft = state.invoiceApiDraft || buildInvoiceApiDrafts()
+  const readyDrafts = readyInvoiceApiDrafts(draft)
+  if (!readyDrafts.length) {
+    setState({
+      invoiceApiDraft: draft,
+      view: 'facturacion',
+      notice: 'No hay facturas listas para crear. Revisa RFC, correo de facturacion, partidas y totales.'
+    })
+    return
+  }
+  const blocked = (draft.drafts || []).filter((item) => !item.ready).length
+  const confirmed = window.confirm(
+    `Crear ${readyDrafts.length} factura(s) para ${draft.period?.label || 'el periodo'}?${blocked ? ` ${blocked} quedan bloqueadas por faltantes.` : ''}`
+  )
+  if (!confirmed) return
+
+  setUiState({ invoiceApiDraft: draft, notice: `Enviando ${readyDrafts.length} factura(s) al conector API...`, view: 'facturacion' })
+  try {
+    const result = await apiJson(billingInvoiceCreateUrl, {
+      method: 'POST',
+      body: JSON.stringify({ batch: draft })
+    })
+    setUiState({
+      invoiceApiDraft: {
+        ...draft,
+        apiCallEnabled: result.mode !== 'dry-run',
+        apiResult: result,
+        lastApiCallAt: new Date().toISOString()
+      },
+      view: 'facturacion',
+      notice:
+        result.mode === 'dry-run'
+          ? `Simulacion de facturas lista: ${result.accepted || 0} facturas validadas. Configura la API real para emitir.`
+          : `Facturas enviadas al API: ${result.sent || result.accepted || 0}. Fallidas: ${result.failed || 0}.`
+    })
+  } catch (error) {
+    setUiState({ invoiceApiDraft: draft, notice: `No se pudieron crear las facturas: ${error.message}`, view: 'facturacion' })
+  }
+}
+
 function renderInvoiceApiDraftPanel() {
   const draft = state.invoiceApiDraft
   if (!draft?.drafts?.length) return ''
   const blocked = draft.drafts.filter((item) => !item.ready).slice(0, 8)
   const periodText = draft.period?.label || 'sin periodo'
+  const apiResult = draft.apiResult || null
   return `
     <section class="compact-panel invoice-api-panel">
       <div class="invoice-api-head">
         <div>
           <span>Preparacion API facturas</span>
           <strong>${esc(draft.summary.ready)} listas / ${esc(draft.summary.blocked)} con faltantes</strong>
-          <small>${esc(periodText)} · Payload local listo, sin llamada externa.</small>
+          <small>${esc(periodText)} - Una factura por grupo de facturacion, con partidas equipo por equipo.</small>
         </div>
         <div class="invoice-api-actions">
           <strong>${money(draft.summary.totalAmount, state.billing.currency)}</strong>
+          <button class="button primary" id="createInvoiceApiDrafts">${icon('send')}Crear facturas API</button>
           <button class="button" id="downloadInvoiceApiDraft">${icon('download')}Payload JSON</button>
         </div>
       </div>
       ${
         blocked.length
-          ? `<div class="notice">Pendientes antes de crear factura: ${blocked.map((item) => `${esc(item.razonSocial)} (${esc(item.missing.join(', '))})`).join(' · ')}</div>`
-          : '<div class="notice ok">Todo listo para conectar el API real de crear factura cuando lo autorices.</div>'
+          ? `<div class="notice">Pendientes antes de crear factura: ${blocked.map((item) => `${esc(item.razonSocial)} (${esc(item.missing.join(', '))})`).join(' - ')}</div>`
+          : '<div class="notice ok">Todo listo para crear facturas. Si el servidor no tiene API externa configurada, se ejecuta en simulacion.</div>'
+      }
+      ${
+        apiResult
+          ? `<div class="notice ${apiResult.ok ? 'ok' : ''}">Ultimo resultado API: ${esc(apiResult.mode || 'api')} - aceptadas ${esc(apiResult.accepted || 0)}, bloqueadas ${esc(apiResult.blocked || 0)}, fallidas ${esc(apiResult.failed || 0)}.</div>`
+          : ''
       }
     </section>
   `
@@ -8641,6 +8702,7 @@ function renderFacturacion(stats, companies) {
         <label class="wide"><span>Concepto</span><input value="${attr(state.billing.concept)}" data-billing="concept"></label>
         <button class="button primary" id="generateBilling">${icon('file-spreadsheet')}Generar prefactura</button>
         <button class="button" id="prepareInvoiceApiDrafts">${icon('file-check-2')}Preparar facturas API</button>
+        <button class="button primary" id="createInvoiceApiDraftsMain">${icon('send')}Crear facturas API</button>
         <button class="button" id="sendBillingEmails">${icon('mail')}Enviar por correo</button>
         <button class="button" id="exportNextMonthBillingSummary">${icon('calendar-days')}Resumen mes siguiente</button>
         <button class="button" id="exportBillingXlsx">${icon('download')}Exportar XLSX</button>
@@ -10067,6 +10129,8 @@ function bindEvents() {
 
   document.getElementById('generateBilling')?.addEventListener('click', generateBillingList)
   document.getElementById('prepareInvoiceApiDrafts')?.addEventListener('click', prepareInvoiceApiDrafts)
+  document.getElementById('createInvoiceApiDrafts')?.addEventListener('click', createInvoiceApiDrafts)
+  document.getElementById('createInvoiceApiDraftsMain')?.addEventListener('click', createInvoiceApiDrafts)
   document.getElementById('downloadInvoiceApiDraft')?.addEventListener('click', downloadInvoiceApiDraftJson)
   document.getElementById('sendBillingEmails')?.addEventListener('click', sendBillingEmails)
   document.getElementById('exportNextMonthBillingSummary')?.addEventListener('click', exportNextMonthBillingSummaryXlsx)

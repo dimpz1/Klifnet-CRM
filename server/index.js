@@ -656,6 +656,122 @@ async function sendBillingEmailBatch(messages = []) {
   }
 }
 
+function invoiceApiConfig() {
+  const apiUrl = String(process.env.KLIFNET_INVOICE_API_URL || '').trim()
+  if (!apiUrl) return null
+  return {
+    url: apiUrl,
+    token: String(process.env.KLIFNET_INVOICE_API_TOKEN || '').trim(),
+    timeoutMs: Number(process.env.KLIFNET_INVOICE_API_TIMEOUT_MS || 60000)
+  }
+}
+
+function validateInvoiceDraftForCreate(draft = {}) {
+  const missing = []
+  if (!draft.razonSocial && !draft.legalName) missing.push('razon social')
+  if (!draft.rfc) missing.push('RFC')
+  if (!normalizeEmailList(draft.recipients?.to || draft.correoFacturas).length) missing.push('correo facturas')
+  if (!Array.isArray(draft.items) || !draft.items.length) missing.push('partidas')
+  if (Number(draft.total || 0) <= 0) missing.push('total')
+  ;(Array.isArray(draft.items) ? draft.items : []).forEach((item, index) => {
+    if (Number(item.quantity || 0) <= 0) missing.push(`partida ${index + 1} cantidad`)
+    if (Number(item.unitPrice || 0) <= 0) missing.push(`partida ${index + 1} precio`)
+    if (!String(item.description || '').trim()) missing.push(`partida ${index + 1} descripcion`)
+  })
+  return Array.from(new Set([...(Array.isArray(draft.missing) ? draft.missing : []), ...missing].filter(Boolean)))
+}
+
+function invoiceBatchPayload(batch = {}, invoices = [], session = {}) {
+  return {
+    sourceSystem: 'klifnet-crm',
+    requestedBy: session.email || '',
+    requestedAt: new Date().toISOString(),
+    period: batch.period || {},
+    summary: {
+      ...(batch.summary || {}),
+      total: invoices.length,
+      ready: invoices.length,
+      items: invoices.reduce((sum, invoice) => sum + (Array.isArray(invoice.items) ? invoice.items.length : 0), 0),
+      totalAmount: Number(invoices.reduce((sum, invoice) => sum + Number(invoice.total || 0), 0).toFixed(2))
+    },
+    invoiceRule: batch.invoiceRule || 'Una factura por razon social/empresa y grupo de facturacion.',
+    invoices
+  }
+}
+
+async function createInvoiceBatch(batch = {}, session = {}) {
+  const drafts = Array.isArray(batch.drafts) ? batch.drafts : []
+  const validated = drafts.map((draft) => ({
+    ...draft,
+    missing: validateInvoiceDraftForCreate(draft)
+  }))
+  const invoices = validated.filter((draft) => !draft.missing.length)
+  const blockedDrafts = validated.filter((draft) => draft.missing.length)
+  const payload = invoiceBatchPayload(batch, invoices, session)
+  const config = invoiceApiConfig()
+
+  if (!config) {
+    return {
+      ok: true,
+      mode: 'dry-run',
+      message: `Simulacion lista: ${invoices.length} factura(s) validada(s). Configura KLIFNET_INVOICE_API_URL para emitir.`,
+      accepted: invoices.length,
+      blocked: blockedDrafts.length,
+      failed: 0,
+      apiConfigured: false,
+      payload
+    }
+  }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), config.timeoutMs)
+  try {
+    const response = await fetch(config.url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(config.token ? { Authorization: `Bearer ${config.token}` } : {})
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    })
+    const text = await response.text()
+    let externalResponse = text
+    try {
+      externalResponse = text ? JSON.parse(text) : {}
+    } catch {
+      externalResponse = text
+    }
+    if (!response.ok) {
+      return {
+        ok: false,
+        mode: 'external-api',
+        message: `API de facturacion respondio ${response.status}.`,
+        accepted: invoices.length,
+        blocked: blockedDrafts.length,
+        failed: invoices.length,
+        apiConfigured: true,
+        externalStatus: response.status,
+        externalResponse
+      }
+    }
+    return {
+      ok: true,
+      mode: 'external-api',
+      message: `API de facturacion recibio ${invoices.length} factura(s).`,
+      accepted: invoices.length,
+      sent: invoices.length,
+      blocked: blockedDrafts.length,
+      failed: 0,
+      apiConfigured: true,
+      externalStatus: response.status,
+      externalResponse
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 function publicUser(user) {
   return {
     id: user.id,
@@ -1066,6 +1182,13 @@ async function handleApi(req, res, url) {
         message: `Correos enviados: ${batch.sent}. Fallidos: ${batch.failed}.`,
         ...batch
       })
+      return
+    }
+
+    if (url.pathname === '/api/billing/create-invoices' && req.method === 'POST') {
+      const body = JSON.parse(await readBody(req))
+      const result = await createInvoiceBatch(body.batch || body, session)
+      sendJson(res, result.ok ? 200 : 502, result)
       return
     }
 

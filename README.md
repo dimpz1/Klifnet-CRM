@@ -124,6 +124,25 @@ Las lineas pueden ligarse a equipos por IMEI o manejarse como venta independient
 
 Las lineas celulares con renovacion del periodo tambien entran a la prefacturacion. Bernardo queda preparado a `$550` por linea anual.
 
+### Preparacion API de facturas
+
+En `Facturacion`, usa `Preparar facturas API` para revisar el lote y `Crear facturas API` para mandarlo al conector interno.
+
+La regla del payload es:
+
+- 1 factura por `razon social / empresa + grupo de facturacion`.
+- Cada factura incluye sus destinatarios, RFC, periodo, subtotal, IVA y total.
+- Cada partida corresponde a un equipo o linea facturada con su precio pactado, IMEI, UID, ICCID, ciclo, vendedor y grupo de facturacion.
+- Si falta RFC, correo, partidas o total, esa factura queda bloqueada y no se envia al API.
+
+Mientras no exista API externa configurada, el servidor responde en modo simulacion y valida el lote sin emitir facturas. Para activar el llamado real, agrega al `.env` del servidor:
+
+```env
+KLIFNET_INVOICE_API_URL=https://tu-api-de-facturas/crear
+KLIFNET_INVOICE_API_TOKEN=token-opcional
+KLIFNET_INVOICE_API_TIMEOUT_MS=60000
+```
+
 ## Cotizaciones
 
 En `Cotizaciones`, captura cliente/prospecto, cantidad manual, precios y notas. No busca equipos Wialon porque la venta aun no esta instalada.
