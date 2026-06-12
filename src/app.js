@@ -2253,7 +2253,7 @@ function quoteAccessoryRows(quote) {
       installationSubtotal: row.quantity * Number(row.installationPrice || 0),
       subtotal: row.quantity * accessorySalePrice(row.cost, row.discount, row.margin, row.unitPrice)
     }))
-    .filter((row) => row.quantity > 0 && row.unitPrice > 0)
+    .filter((row) => row.quantity > 0 && (row.unitPrice > 0 || row.installationPrice > 0))
 }
 
 function quoteServicePresetOptions(selectedId) {
@@ -8981,7 +8981,7 @@ function renderAccessoryManager(quoteDraft, quote) {
     <div class="table-wrap accessory-table">
       <table>
         <thead>
-          <tr><th>Tipo</th><th>Modelo</th><th>Cantidad</th><th>Precio venta</th><th>Instalacion</th><th>Subtotal</th><th></th></tr>
+          <tr><th>Tipo</th><th>Modelo</th><th>Cantidad</th><th>Desc. %</th><th>Precio venta</th><th>Instalacion</th><th>Subtotal</th><th></th></tr>
         </thead>
         <tbody>
           ${accessories
@@ -8992,6 +8992,7 @@ function renderAccessoryManager(quoteDraft, quote) {
                   <td><input value="${attr(accessory.category)}" data-accessory-id="${attr(accessory.id)}" data-accessory-field="category"></td>
                   <td><input value="${attr(accessory.model)}" data-accessory-id="${attr(accessory.id)}" data-accessory-field="model"></td>
                   <td><input type="number" min="0" step="1" value="${attr(accessory.quantity)}" data-accessory-id="${attr(accessory.id)}" data-accessory-field="quantity"></td>
+                  <td><input type="number" min="0" step="0.01" value="${attr(accessory.discount)}" data-accessory-id="${attr(accessory.id)}" data-accessory-field="discount"></td>
                   <td><input type="number" min="0" step="0.01" value="${attr(unitPrice)}" data-accessory-id="${attr(accessory.id)}" data-accessory-field="unitPrice"></td>
                   <td><input type="number" min="0" step="0.01" value="${attr(accessory.installationPrice || 0)}" data-accessory-id="${attr(accessory.id)}" data-accessory-field="installationPrice"></td>
                   <td><strong>${money(accessory.quantity * unitPrice + accessory.quantity * Number(accessory.installationPrice || 0), quote.currency)}</strong></td>
