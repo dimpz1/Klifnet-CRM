@@ -836,6 +836,26 @@ tbody tr:focus-within {
   gap: 5px;
 }
 
+.recipient-combo-row {
+  min-width: 760px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.recipient-combo-row label {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.recipient-combo-row span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
 .contact-grid,
 .recipient-grid {
   min-width: 760px;

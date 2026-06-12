@@ -1032,6 +1032,19 @@ function formatRecipientSummary(recipients = {}) {
   return parts.join(' | ')
 }
 
+function recipientContactSelectOptions(contacts = [], selected = '') {
+  return [
+    '<option value="">Seleccionar responsable</option>',
+    ...contacts
+      .filter((contact) => isValidEmail(contact.email))
+      .map((contact) => {
+        const ref = contactReference(contact)
+        const label = `${contact.name || contact.email} - ${contact.email}`
+        return `<option value="${attr(ref)}" ${normalizeHeader(selected) === normalizeHeader(ref) ? 'selected' : ''}>${esc(label)}</option>`
+      })
+  ].join('')
+}
+
 function invoiceProfileNameSet(profiles = state.invoiceProfiles) {
   return new Set(profiles.map((profile, index) => normalizeHeader(normalizeInvoiceProfile(profile, index).razonSocial)).filter(Boolean))
 }
@@ -1829,7 +1842,20 @@ function renderBillingGroupRecipientsPanel(entityName, groups = []) {
       </div>
       ${
         contacts.length
-          ? `<div class="recipient-grid recipient-grid-head">
+          ? `<div class="recipient-combo-row">
+              ${['to', 'cc', 'bcc']
+                .map(
+                  (bucket) => `
+                    <label>
+                      <span>${esc(recipientBucketLabel(bucket))}</span>
+                      <select data-billing-recipient-add="${attr(cleanEntity)}" data-billing-recipient-group="${attr(selectedGroup)}" data-recipient-bucket="${bucket}">
+                        ${recipientContactSelectOptions(contacts)}
+                      </select>
+                    </label>`
+                )
+                .join('')}
+            </div>
+            <div class="recipient-grid recipient-grid-head">
               <span>Responsable</span><span>Email</span><span>Telefono</span><span>Rol</span><span>Para</span><span>CC</span><span>CCO</span>
             </div>
             ${contacts
@@ -11221,6 +11247,36 @@ function bindEvents() {
 
   document.getElementById('billingRecipientGroup')?.addEventListener('change', (event) => {
     setUiState({ billingGroup: event.target.value, billingPage: 1, billingReportSummaryPage: 1 })
+  })
+
+  document.querySelectorAll('[data-billing-recipient-add]').forEach((select) => {
+    select.addEventListener('change', () => {
+      const contactRef = textValue(select.value)
+      if (!contactRef) return
+      const entityName = select.dataset.billingRecipientAdd
+      const groupName = cleanBillingGroupName(select.dataset.billingRecipientGroup)
+      const bucket = normalizeRecipientBucket(select.dataset.recipientBucket)
+      const meta = getCompanyMeta(entityName)
+      const recipients = {
+        ...(meta.billingGroupRecipients || {}),
+        [groupName]: normalizeBillingGroupRecipients(meta.billingGroupRecipients?.[groupName] || {})
+      }
+      const nextGroup = { ...recipients[groupName] }
+      ;['to', 'cc', 'bcc'].forEach((key) => {
+        nextGroup[key] = (nextGroup[key] || []).filter((item) => normalizeHeader(item) !== normalizeHeader(contactRef))
+      })
+      nextGroup[bucket] = unique([...(nextGroup[bucket] || []), contactRef])
+      recipients[groupName] = normalizeBillingGroupRecipients(nextGroup)
+      state.companyMeta = {
+        ...state.companyMeta,
+        [entityName]: {
+          ...meta,
+          billingGroupRecipients: recipients
+        }
+      }
+      persistState()
+      render()
+    })
   })
 
   document.querySelectorAll('[data-billing-recipient]').forEach((input) => {
