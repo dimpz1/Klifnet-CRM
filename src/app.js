@@ -307,6 +307,9 @@ const defaultQuote = {
   hardwareDiscountPercent: 0,
   hardwareMarginPercent: 30,
   hardwarePricePerDevice: standardHardwarePrice,
+  customHardwareName: '',
+  customHardwarePrice: '',
+  customHardwarePresets: [],
   defaultsVersion: quoteDefaultsVersion,
   fuelSensorCount: '',
   fuelSensorModel: 'Escort TDBLE1000',
@@ -1889,6 +1892,23 @@ function createHardwareItemId(item = {}, index = 0) {
 }
 
 function hardwareItemFromQuote(quote = state.quote, index = 0) {
+  if (quote.hardwarePreset === 'custom') {
+    return normalizeQuoteHardwareItem(
+      {
+        id: quote.hardwareItemId || 'gps-custom-pendiente',
+        model: textValue(quote.customHardwareName) || 'GPS personalizado',
+        supplier: '',
+        url: '',
+        quantity: quote.equipmentCount || 1,
+        cost: 0,
+        discount: 0,
+        margin: 30,
+        unitPrice: Number(quote.customHardwarePrice || 0),
+        unitPriceManual: true
+      },
+      index
+    )
+  }
   return normalizeQuoteHardwareItem(
     {
       id: quote.hardwareItemId || 'gps-principal',
@@ -1929,7 +1949,8 @@ function normalizeQuoteHardwareItem(item = {}, index = 0) {
 
 function normalizedQuoteHardwareItems(quote = state.quote) {
   const explicitItems = Array.isArray(quote.hardwareItems) ? quote.hardwareItems : []
-  const source = explicitItems.length ? explicitItems : Number(quote.equipmentCount || 0) > 0 ? [hardwareItemFromQuote(quote)] : []
+  const hasPendingHardware = Number(quote.equipmentCount || 0) > 0 || (quote.hardwarePreset === 'custom' && textValue(quote.customHardwareName))
+  const source = explicitItems.length ? explicitItems : hasPendingHardware ? [hardwareItemFromQuote(quote)] : []
   return source.map(normalizeQuoteHardwareItem)
 }
 
@@ -1948,6 +1969,21 @@ function quoteHardwareRows(quote = state.quote) {
 
 function hardwareItemFromPreset(model, quantity = 1) {
   const preset = hardwarePresets.find((item) => item.model === model)
+  const customPreset = customHardwarePresets().find((item) => normalizeHeader(item.model) === normalizeHeader(model))
+  if (customPreset) {
+    return normalizeQuoteHardwareItem({
+      id: `gps-${slug(customPreset.model)}-${Date.now()}`,
+      model: customPreset.model,
+      supplier: customPreset.supplier,
+      quantity,
+      cost: customPreset.cost,
+      discount: customPreset.discount,
+      margin: customPreset.margin,
+      unitPrice: customPreset.unitPrice,
+      unitPriceManual: true,
+      url: customPreset.url
+    })
+  }
   if (!preset) {
     return normalizeQuoteHardwareItem({
       id: `gps-custom-${Date.now()}`,
@@ -1974,17 +2010,84 @@ function hardwareItemFromPreset(model, quantity = 1) {
   })
 }
 
-function hardwarePresetOptions(selectedModel) {
-  return hardwarePresets
+function normalizeCustomHardwarePreset(item = {}) {
+  const model = textValue(item.model || item.name)
+  if (!model) return null
+  return {
+    model,
+    supplier: textValue(item.supplier),
+    cost: Number(item.cost || 0) || 0,
+    discount: Number(item.discount || 0) || 0,
+    margin: Number(item.margin ?? 30) || 30,
+    unitPrice: Number(item.unitPrice ?? item.price ?? 0) || 0,
+    url: textValue(item.url)
+  }
+}
+
+function customHardwarePresets(quote = state.quote) {
+  const presets = Array.isArray(quote.customHardwarePresets) ? quote.customHardwarePresets : []
+  const byName = new Map()
+  presets.map(normalizeCustomHardwarePreset).filter(Boolean).forEach((preset) => byName.set(normalizeHeader(preset.model), preset))
+  return Array.from(byName.values()).sort((a, b) => a.model.localeCompare(b.model))
+}
+
+function upsertCustomHardwarePreset(presets = [], item = {}) {
+  const preset = normalizeCustomHardwarePreset(item)
+  if (!preset) return customHardwarePresets({ customHardwarePresets: presets })
+  const next = customHardwarePresets({ customHardwarePresets: presets }).filter((existing) => normalizeHeader(existing.model) !== normalizeHeader(preset.model))
+  return [...next, preset].sort((a, b) => a.model.localeCompare(b.model))
+}
+
+function savePendingCustomHardwarePreset() {
+  if (state.quote.hardwarePreset !== 'custom') return false
+  const model = textValue(state.quote.customHardwareName)
+  if (!model) return false
+  state.quote = {
+    ...state.quote,
+    customHardwarePresets: upsertCustomHardwarePreset(state.quote.customHardwarePresets, {
+      model,
+      unitPrice: Number(state.quote.customHardwarePrice || 0),
+      supplier: '',
+      cost: 0,
+      discount: 0,
+      margin: 30,
+      url: ''
+    })
+  }
+  persistState()
+  return true
+}
+
+function hardwarePresetOptions(selectedModel, quote = state.quote) {
+  const standardOptions = hardwarePresets
     .map((preset) => `<option value="${attr(preset.model)}" ${selectedModel === preset.model ? 'selected' : ''}>${esc(preset.model)}</option>`)
     .join('')
+  const customOptions = customHardwarePresets(quote)
+    .map((preset) => `<option value="${attr(preset.model)}" ${selectedModel === preset.model ? 'selected' : ''}>Custom - ${esc(preset.model)}</option>`)
+    .join('')
+  return `${standardOptions}${customOptions}`
 }
 
 function applyHardwarePreset(model, baseQuote = state.quote) {
   const preset = hardwarePresets.find((item) => item.model === model)
-  if (!preset) return { hardwareModel: model }
+  const customPreset = customHardwarePresets(baseQuote).find((item) => normalizeHeader(item.model) === normalizeHeader(model))
+  if (customPreset) {
+    return {
+      ...baseQuote,
+      hardwarePreset: customPreset.model,
+      hardwareModel: customPreset.model,
+      hardwareSupplier: customPreset.supplier,
+      hardwareSyscomUrl: customPreset.url,
+      hardwareCostPerDevice: customPreset.cost,
+      hardwareDiscountPercent: customPreset.discount,
+      hardwareMarginPercent: customPreset.margin,
+      hardwarePricePerDevice: customPreset.unitPrice
+    }
+  }
+  if (!preset) return { ...baseQuote, hardwareModel: model }
   const nextQuote = {
     ...baseQuote,
+    hardwarePreset: preset.model,
     hardwareModel: preset.model,
     hardwareSupplier: preset.supplier,
     hardwareSyscomUrl: preset.url,
@@ -2186,6 +2289,7 @@ function normalizeQuoteDefaults(parsedQuote = {}) {
     serviceQuantity: Number(baseQuote.serviceQuantity ?? defaultQuote.serviceQuantity) || defaultQuote.serviceQuantity,
     services,
     hardwareItems,
+    customHardwarePresets: customHardwarePresets(baseQuote),
     equipmentCount: hardwareItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0) || baseQuote.equipmentCount || '',
     firstMonthFree: baseQuote.firstMonthFree !== false,
     monthlyPricePerDevice: Number(baseQuote.monthlyPricePerDevice ?? defaultQuote.monthlyPricePerDevice) || defaultQuote.monthlyPricePerDevice,
@@ -5722,14 +5826,43 @@ function removeAccessoryFromQuote(accessoryId) {
 }
 
 function addHardwareToQuote() {
-  const model = state.quote.hardwarePreset === 'custom' ? 'custom' : state.quote.hardwareModel || defaultQuote.hardwareModel
+  const isCustomHardware = state.quote.hardwarePreset === 'custom'
+  const model = isCustomHardware ? 'custom' : state.quote.hardwareModel || defaultQuote.hardwareModel
   const quantity = Number(state.quote.equipmentCount || 1) > 0 ? Number(state.quote.equipmentCount) : 1
-  const hardwareItem = hardwareItemFromPreset(model, quantity)
+  const customModel = textValue(state.quote.customHardwareName) || 'GPS personalizado'
+  const customUnitPrice = Number(state.quote.customHardwarePrice || 0)
+  const hardwareItem = isCustomHardware
+    ? normalizeQuoteHardwareItem({
+        id: `gps-custom-${Date.now()}`,
+        model: customModel,
+        supplier: '',
+        quantity,
+        cost: 0,
+        discount: 0,
+        margin: 30,
+        unitPrice: customUnitPrice,
+        unitPriceManual: true,
+        url: ''
+      })
+    : hardwareItemFromPreset(model, quantity)
+  const customHardwarePresets = isCustomHardware
+    ? upsertCustomHardwarePreset(state.quote.customHardwarePresets, {
+        model: customModel,
+        unitPrice: customUnitPrice,
+        supplier: '',
+        cost: 0,
+        discount: 0,
+        margin: 30,
+        url: ''
+      })
+    : state.quote.customHardwarePresets
   setState({
     quote: {
       ...state.quote,
       hardwareItems: [...normalizedQuoteHardwareItems(state.quote), hardwareItem],
-      equipmentCount: ''
+      customHardwarePresets,
+      equipmentCount: '',
+      ...(isCustomHardware ? { customHardwareName: '', customHardwarePrice: '' } : {})
     },
     notice: '',
     view: 'cotizaciones'
@@ -7810,6 +7943,7 @@ async function exportNextMonthBillingSummaryXlsx() {
 }
 
 async function exportQuoteXlsx() {
+  savePendingCustomHardwarePreset()
   const quote = buildQuote()
   const quoteHasAmount = quote.quantity > 0 || quote.lineQuantity > 0 || quote.accessoryRows.length > 0 || quote.serviceRows.length > 0 || quote.travelFee > 0
   if (!quoteHasAmount || quote.total <= 0) {
@@ -9028,7 +9162,7 @@ function renderHardwareManager(quoteDraft, quote) {
                   <td>
                     <select data-hardware-id="${attr(item.id)}" data-hardware-field="preset">
                       ${hardwarePresetOptions(item.model)}
-                      <option value="custom" ${hardwarePresets.some((preset) => preset.model === item.model) ? '' : 'selected'}>GPS custom</option>
+                      <option value="custom" ${!hardwarePresets.some((preset) => preset.model === item.model) && !customHardwarePresets(quoteDraft).some((preset) => preset.model === item.model) ? 'selected' : ''}>GPS custom</option>
                     </select>
                     <input value="${attr(item.model)}" data-hardware-id="${attr(item.id)}" data-hardware-field="model" placeholder="Modelo GPS">
                   </td>
@@ -9224,10 +9358,18 @@ function renderCotizaciones(companies) {
             <span>Agregar GPS</span>
             <select data-quote="hardwarePreset">
               ${hardwarePresetOptions(q.hardwareModel)}
-              <option value="custom" ${q.hardwarePreset === 'custom' || !hardwarePresets.some((preset) => preset.model === q.hardwareModel) ? 'selected' : ''}>GPS custom</option>
+              <option value="custom" ${q.hardwarePreset === 'custom' || (!hardwarePresets.some((preset) => preset.model === q.hardwareModel) && !customHardwarePresets(q).some((preset) => preset.model === q.hardwareModel)) ? 'selected' : ''}>GPS custom</option>
             </select>
           </label>
           <label><span>Cantidad</span><input type="number" min="1" step="1" value="${attr(q.equipmentCount || 1)}" data-quote="equipmentCount" placeholder="1"></label>
+          ${
+            q.hardwarePreset === 'custom'
+              ? `
+                <label><span>Nombre GPS custom</span><input value="${attr(q.customHardwareName)}" data-quote="customHardwareName" placeholder="Ej. Queclink, Concox, otro"></label>
+                <label><span>Precio GPS custom</span><input type="number" min="0" step="0.01" value="${attr(q.customHardwarePrice)}" data-quote="customHardwarePrice" placeholder="0.00"></label>
+              `
+              : ''
+          }
           <button class="button" id="addHardwareQuote">${icon('plus')}Agregar equipo</button>
           <div class="quote-total-chip"><span>Equipos cotizados</span><strong>${Number(quote.quantity || 0).toLocaleString('es-MX')}</strong></div>
         </div>
@@ -10530,6 +10672,7 @@ function bindEvents() {
       'hardwareDiscountPercent',
       'hardwareMarginPercent',
       'hardwarePricePerDevice',
+      'customHardwarePrice',
       'fuelSensorCount',
       'fuelSensorCost',
       'fuelSensorDiscountPercent',
