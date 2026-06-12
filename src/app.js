@@ -20,6 +20,8 @@ const privateFileUrl = '/api/private-file'
 const seedFile = 'DispositivosWialon_Abril2026.xlsx'
 const paymentSeedFile = 'Klifnet_Admon_Mensual_Pagos.xlsx'
 const quoteTemplateFile = 'cotizacion_CalidadSP.xlsx'
+const quoteDocumentTitle = 'PRE FACTURA'
+const quoteFilePrefix = 'pre-factura'
 const paymentImportVersion = 4
 const lineAutoImportVersion = 14
 const lineSeedImportVersion = 0
@@ -1533,7 +1535,7 @@ function applyQuoteCompanySelection(selection) {
       rfc: fiscalData.rfc,
       contactEmail: fiscalData.contactEmail
     },
-    notice: selection ? `Cotizacion precargada desde ${fiscalData.sourceLabel}: ${fiscalData.clientName || selection}` : '',
+    notice: selection ? `Pre factura precargada desde ${fiscalData.sourceLabel}: ${fiscalData.clientName || selection}` : '',
     view: 'cotizaciones'
   })
 }
@@ -7451,7 +7453,7 @@ function buildQuotePdfBlob(quote, logo = null) {
   const productRows = quoteTemplateProductRows(quote)
   const recurringRows = quoteRecurringRows(quote)
   const productSubtotal = quote.hardwareSubtotal + quote.accessorySubtotal + quote.installationSubtotal + quote.travelFee + quote.serviceSubtotal + quote.accessoryInstallationSubtotal
-  const documentTitle = pdfTrim(quote.documentTitle || 'COTIZACION', 22)
+  const documentTitle = pdfTrim(quote.documentTitle || quoteDocumentTitle, 22)
   const documentNumberLabel = quote.documentNumberLabel || 'Numero:'
   const documentNumber = quote.documentNumber || quoteNumber()
 
@@ -7486,11 +7488,11 @@ function buildQuotePdfBlob(quote, logo = null) {
   rect(314, 740, 262, 26, red, red)
   text(documentTitle, 445, 748, 14, true, [1, 1, 1], 'center')
   text(documentNumberLabel, 324, 719, 10)
-  text(documentNumber, 444, 719, 10, false, black, 'right')
+  text(documentNumber, 566, 719, 9, false, black, 'right')
   text('Fecha:', 324, 702, 10)
-  text(pdfDateLabel(quote.date), 444, 702, 10, false, black, 'right')
+  text(pdfDateLabel(quote.date), 566, 702, 10, false, black, 'right')
   text('Elaboro:', 324, 685, 10)
-  text('KLIFNET', 444, 685, 10, false, black, 'right')
+  text('KLIFNET', 566, 685, 10, false, black, 'right')
 
   line(margin, 670, pageWidth - margin, 670, border)
   text('EMPRESA:', 42, 650, 10)
@@ -7611,7 +7613,7 @@ async function exportQuotePdf(quote) {
   }
 
   const blob = buildQuotePdfBlob(quote, logo)
-  download(`cotizacion-${slug(quote.clientName)}-${quote.date}.pdf`, blob, 'application/pdf')
+  download(`${quote.documentFilePrefix || quoteFilePrefix}-${slug(quote.clientName)}-${quote.date}.pdf`, blob, 'application/pdf')
 }
 
 async function buildQuoteTemplateXlsxBlob(quote) {
@@ -7621,7 +7623,7 @@ async function buildQuoteTemplateXlsxBlob(quote) {
   const productRows = quoteTemplateProductRows(quote)
   const recurringRows = quoteTemplateRecurringRows(quote)
   const productSubtotal = quote.hardwareSubtotal + quote.accessorySubtotal + quote.installationSubtotal + quote.travelFee + quote.serviceSubtotal + quote.accessoryInstallationSubtotal
-  const documentTitle = quote.documentTitle || 'COTIZACION'
+  const documentTitle = quote.documentTitle || quoteDocumentTitle
   const documentNumber = quote.documentNumber || quoteNumber()
 
   sheetXmlText = sheetXmlText.replace(/<hyperlinks>[\s\S]*?<\/hyperlinks>/, '')
@@ -7692,7 +7694,7 @@ async function buildQuoteTemplateXlsxBlob(quote) {
 
 async function exportQuoteTemplateXlsx(quote) {
   const blob = await buildQuoteTemplateXlsxBlob(quote)
-  download(`cotizacion-${slug(quote.clientName)}-${quote.date}.xlsx`, blob, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  download(`${quote.documentFilePrefix || quoteFilePrefix}-${slug(quote.clientName)}-${quote.date}.xlsx`, blob, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 }
 
 function billingDetailDescription(detail = {}, row = {}) {
@@ -7732,11 +7734,11 @@ function billingRowToQuote(row, period = getBillingPeriod()) {
     group.amount += unitPrice
   })
   const recurringRows = Array.from(groups.values())
-  const documentSlug = slug(row.company).slice(0, 18).toUpperCase() || 'CLIENTE'
   return {
     documentTitle: 'PRE FACTURA',
+    documentFilePrefix: 'prefactura',
     documentNumberLabel: 'Pre factura:',
-    documentNumber: `PF-${period.key}-${documentSlug}`,
+    documentNumber: `PF-${period.key}`,
     clientName: row.legalName || row.company,
     company: row.company,
     rfc: row.rfc || '',
@@ -8137,7 +8139,7 @@ async function exportQuoteXlsx() {
   const quote = buildQuote()
   const quoteHasAmount = quote.quantity > 0 || quote.lineQuantity > 0 || quote.accessoryRows.length > 0 || quote.serviceRows.length > 0 || quote.travelFee > 0
   if (!quoteHasAmount || quote.total <= 0) {
-    setState({ notice: 'Captura cantidad y precio para generar la cotizacion.', view: 'cotizaciones' })
+    setState({ notice: 'Captura cantidad y precio para generar la pre factura.', view: 'cotizaciones' })
     return
   }
 
@@ -8152,11 +8154,11 @@ async function exportQuoteXlsx() {
     return
   } catch (error) {
     console.error(error)
-    setState({ notice: 'No se pudo usar la plantilla; se generara una cotizacion plana de respaldo.', view: 'cotizaciones' })
+    setState({ notice: 'No se pudo usar la plantilla; se generara una pre factura plana de respaldo.', view: 'cotizaciones' })
   }
 
   const summary = [
-    ['KLIFNET', 'Cotizacion'],
+    ['KLIFNET', quoteDocumentTitle],
     ['Fecha', quote.date],
     ['Vigencia hasta', quote.expires],
     ['Cliente', quote.clientName],
@@ -8223,8 +8225,8 @@ async function exportQuoteXlsx() {
     })
   ]
 
-  await exportWorkbookXlsx(`cotizacion-${slug(quote.clientName)}-${quote.date}.xlsx`, [
-    { name: 'Cotizacion', rows: summary },
+  await exportWorkbookXlsx(`${quote.documentFilePrefix || quoteFilePrefix}-${slug(quote.clientName)}-${quote.date}.xlsx`, [
+    { name: 'Pre factura', rows: summary },
     { name: 'Accesorios', rows: accessoryDetails }
   ])
   try {
@@ -9299,7 +9301,7 @@ function renderFacturacion(stats, companies) {
 function renderAccessoryManager(quoteDraft, quote) {
   const accessories = normalizedQuoteAccessories(quoteDraft)
   if (!accessories.length) {
-    return `<div class="accessory-empty">Sin accesorios agregados. Usa el combo para sumar sensores, dashcams, camaras u otros accesorios a la cotizacion.</div>`
+    return `<div class="accessory-empty">Sin accesorios agregados. Usa el combo para sumar sensores, dashcams, camaras u otros accesorios a la pre factura.</div>`
   }
 
   return `
@@ -9453,7 +9455,7 @@ function renderCotizaciones(companies) {
     <section class="billing-layout quote-layout">
       <div class="quote-section">
         <div class="quote-section-head">
-          <div><span>Cliente</span><h2>Datos de cotizacion</h2></div>
+          <div><span>Cliente</span><h2>Datos de pre factura</h2></div>
         </div>
         <div class="quote-section-grid">
           <label>
@@ -9642,7 +9644,7 @@ function renderCotizaciones(companies) {
       <div class="quote-section">
         <div class="quote-section-grid quote-actions-grid">
           <label class="wide"><span>Notas comerciales</span><input value="${attr(q.notes)}" data-quote="notes"></label>
-          <button class="button primary" id="exportQuoteXlsx">${icon('file-spreadsheet')}Generar cotizacion XLSX + PDF</button>
+          <button class="button primary" id="exportQuoteXlsx">${icon('file-spreadsheet')}Generar pre factura XLSX + PDF</button>
         </div>
       </div>
 
@@ -10061,7 +10063,7 @@ function render() {
           ['equipos', 'wrench', 'Equipos'],
           ['lineas', 'sim-card', 'Lineas'],
           ['facturacion', 'circle-dollar-sign', 'Facturacion'],
-          ['cotizaciones', 'file-text', 'Cotizaciones'],
+          ['cotizaciones', 'file-text', 'Pre facturas'],
           ['cobros', 'calendar-days', 'Cobros'],
           ['usuarios', 'user-cog', state.auth.user.role === 'admin' ? 'Usuarios' : 'Cuenta']
         ]
