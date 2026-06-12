@@ -20,8 +20,8 @@ const privateFileUrl = '/api/private-file'
 const seedFile = 'DispositivosWialon_Abril2026.xlsx'
 const paymentSeedFile = 'Klifnet_Admon_Mensual_Pagos.xlsx'
 const quoteTemplateFile = 'cotizacion_CalidadSP.xlsx'
-const quoteDocumentTitle = 'PRE FACTURA'
-const quoteFilePrefix = 'pre-factura'
+const quoteDocumentTitle = 'COTIZACION'
+const quoteFilePrefix = 'cotizacion'
 const paymentImportVersion = 4
 const lineAutoImportVersion = 14
 const lineSeedImportVersion = 0
@@ -1535,7 +1535,7 @@ function applyQuoteCompanySelection(selection) {
       rfc: fiscalData.rfc,
       contactEmail: fiscalData.contactEmail
     },
-    notice: selection ? `Pre factura precargada desde ${fiscalData.sourceLabel}: ${fiscalData.clientName || selection}` : '',
+    notice: selection ? `Cotizacion precargada desde ${fiscalData.sourceLabel}: ${fiscalData.clientName || selection}` : '',
     view: 'cotizaciones'
   })
 }
@@ -7454,6 +7454,7 @@ function buildQuotePdfBlob(quote, logo = null) {
   const recurringRows = quoteRecurringRows(quote)
   const productSubtotal = quote.hardwareSubtotal + quote.accessorySubtotal + quote.installationSubtotal + quote.travelFee + quote.serviceSubtotal + quote.accessoryInstallationSubtotal
   const documentTitle = pdfTrim(quote.documentTitle || quoteDocumentTitle, 22)
+  const isPrefactDocument = normalizeHeader(quote.documentTitle || '') === 'pre factura' || quote.documentFilePrefix === 'prefactura'
   const documentNumberLabel = quote.documentNumberLabel || 'Numero:'
   const documentNumber = quote.documentNumber || quoteNumber()
 
@@ -7505,10 +7506,10 @@ function buildQuotePdfBlob(quote, logo = null) {
   text(pdfTrim(quote.email || '', 34), 400, 614, 10)
 
   const columns = [
-    { label: 'Concepto', x: 36, width: 58 },
+    { label: isPrefactDocument ? 'Concepto' : 'Producto', x: 36, width: 58 },
     { label: 'Cantidad', x: 94, width: 48, align: 'right' },
-    { label: 'Detalle', x: 142, width: 204 },
-    { label: 'Precio base', x: 346, width: 82, align: 'right' },
+    { label: isPrefactDocument ? 'Detalle' : 'Descripcion', x: 142, width: 204 },
+    { label: isPrefactDocument ? 'Precio base' : 'Precio lista', x: 346, width: 82, align: 'right' },
     { label: 'Precio unit.', x: 428, width: 82, align: 'right' },
     { label: 'Importe', x: 510, width: 66, align: 'right' }
   ]
@@ -7535,12 +7536,12 @@ function buildQuotePdfBlob(quote, logo = null) {
 
   y -= 10
   rect(36, y, 540, 22, [0.86, 0.86, 0.86], border)
-  text('TOTAL CARGOS UNICOS', 320, y + 7, 10, true, black, 'center')
+  text(isPrefactDocument ? 'TOTAL CARGOS UNICOS' : 'TOTAL EQUIPO INSTALADO', 320, y + 7, 10, true, black, 'center')
   text(pdfMoney(productSubtotal, quote.currency), 558, y + 7, 9.5, true, black, 'right')
 
   y -= 30
   rect(36, y, 540, 20, [1, 1, 1], border)
-  text('CARGOS DEL PERIODO', 42, y + 6, 10, true)
+  text(isPrefactDocument ? 'CARGOS DEL PERIODO' : 'CARGOS RECURRENTES', 42, y + 6, 10, true)
   y -= 20
   recurringRows.forEach((row) => {
     drawRow(row, y)
@@ -7550,11 +7551,11 @@ function buildQuotePdfBlob(quote, logo = null) {
   y -= 34
   rect(36, y - 96, 540, 118, [1, 1, 1], border)
   rect(36, y, 540, 22, [1, 1, 1], border)
-  text('RESUMEN DE PRE FACTURA', 42, y + 7, 10, true)
+  text(isPrefactDocument ? 'RESUMEN DE PRE FACTURA' : 'RESUMEN DE PAGO DE CONTADO', 42, y + 7, 10, true)
   const summaryY = y - 18
   const summaryRows = [
-    ['SUBTOTAL CARGOS UNICOS', productSubtotal],
-    ['SUBTOTAL CARGOS DEL PERIODO', quote.recurringSubtotal],
+    [isPrefactDocument ? 'SUBTOTAL CARGOS UNICOS' : 'SUBTOTAL EQUIPO', productSubtotal],
+    [isPrefactDocument ? 'SUBTOTAL CARGOS DEL PERIODO' : 'SUBTOTAL CARGOS RECURRENTES', quote.recurringSubtotal],
     ['SUBTOTAL', quote.subtotal],
     ['I.V.A.', quote.tax],
     ['TOTAL', quote.total]
@@ -7624,19 +7625,22 @@ async function buildQuoteTemplateXlsxBlob(quote) {
   const recurringRows = quoteTemplateRecurringRows(quote)
   const productSubtotal = quote.hardwareSubtotal + quote.accessorySubtotal + quote.installationSubtotal + quote.travelFee + quote.serviceSubtotal + quote.accessoryInstallationSubtotal
   const documentTitle = quote.documentTitle || quoteDocumentTitle
+  const isPrefactDocument = normalizeHeader(documentTitle) === 'pre factura' || quote.documentFilePrefix === 'prefactura'
   const documentNumber = quote.documentNumber || quoteNumber()
-  const templateTextReplacements = [
-    ['COTIZACION', documentTitle],
-    ['Cotizacion', documentTitle],
-    ['Producto', 'Concepto'],
-    ['Descripcion', 'Detalle'],
-    ['Precio lista', 'Precio base'],
-    ['TOTAL EQUIPO INSTALADO', 'TOTAL CARGOS UNICOS'],
-    ['CARGOS RECURRENTES', 'CARGOS DEL PERIODO'],
-    ['RESUMEN DE PAGO DE CONTADO', 'RESUMEN DE PRE FACTURA'],
-    ['SUBTOTAL EQUIPO', 'SUBTOTAL CARGOS UNICOS'],
-    ['SUBTOTAL CARGOS RECURRENTES', 'SUBTOTAL CARGOS DEL PERIODO']
-  ]
+  const templateTextReplacements = isPrefactDocument
+    ? [
+        ['COTIZACION', documentTitle],
+        ['Cotizacion', documentTitle],
+        ['Producto', 'Concepto'],
+        ['Descripcion', 'Detalle'],
+        ['Precio lista', 'Precio base'],
+        ['TOTAL EQUIPO INSTALADO', 'TOTAL CARGOS UNICOS'],
+        ['CARGOS RECURRENTES', 'CARGOS DEL PERIODO'],
+        ['RESUMEN DE PAGO DE CONTADO', 'RESUMEN DE PRE FACTURA'],
+        ['SUBTOTAL EQUIPO', 'SUBTOTAL CARGOS UNICOS'],
+        ['SUBTOTAL CARGOS RECURRENTES', 'SUBTOTAL CARGOS DEL PERIODO']
+      ]
+    : []
   const replaceTemplateText = (xmlText) => templateTextReplacements.reduce(
     (textValue, [from, to]) => textValue.replaceAll(from, xmlEscape(to)),
     xmlText
@@ -8151,7 +8155,7 @@ async function exportQuoteXlsx() {
   const quote = buildQuote()
   const quoteHasAmount = quote.quantity > 0 || quote.lineQuantity > 0 || quote.accessoryRows.length > 0 || quote.serviceRows.length > 0 || quote.travelFee > 0
   if (!quoteHasAmount || quote.total <= 0) {
-    setState({ notice: 'Captura cantidad y precio para generar la pre factura.', view: 'cotizaciones' })
+    setState({ notice: 'Captura cantidad y precio para generar la cotizacion.', view: 'cotizaciones' })
     return
   }
 
@@ -8166,7 +8170,7 @@ async function exportQuoteXlsx() {
     return
   } catch (error) {
     console.error(error)
-    setState({ notice: 'No se pudo usar la plantilla; se generara una pre factura plana de respaldo.', view: 'cotizaciones' })
+    setState({ notice: 'No se pudo usar la plantilla; se generara una cotizacion plana de respaldo.', view: 'cotizaciones' })
   }
 
   const summary = [
@@ -8177,7 +8181,7 @@ async function exportQuoteXlsx() {
     ['RFC', quote.rfc],
     ['Atiende', quote.attendant],
     ['Empresa registrada', quote.company || 'Prospecto'],
-    ['Detalle', quote.description],
+    ['Descripcion', quote.description],
     ['Email', quote.email],
     ['Moneda', quote.currency],
     ['Primer mes gratis', quote.firstMonthFree ? 'Si' : 'No'],
@@ -8197,7 +8201,7 @@ async function exportQuoteXlsx() {
     ['Notas traslado', quote.travelNotes],
     [],
     ['Concepto', 'Cantidad', 'Precio unitario', 'Subtotal'],
-    ['Cargos unicos'],
+    ['Equipos'],
     ...quote.hardwareRows.map((row) => [`Equipo GPS - ${row.model}`, row.quantity, row.unitPrice, row.subtotal]),
     ['Accesorios'],
     ...quote.accessoryRows.map((row) => [`${row.label} (${row.margin}% ganancia)`, row.quantity, row.unitPrice, row.subtotal]),
@@ -8206,7 +8210,7 @@ async function exportQuoteXlsx() {
     ...quote.accessoryRows.filter((row) => row.installationSubtotal > 0).map((row) => [`Instalacion accesorio - ${row.label}`, row.quantity, row.installationPrice, row.installationSubtotal]),
     ...(quote.travelFee > 0 ? [['Viaticos traslado tecnico', 1, quote.travelFee, quote.travelFee]] : []),
     ...quote.serviceRows.map((row) => [row.description, row.quantity, row.unitPrice, row.subtotal]),
-    ['Cargos del periodo'],
+    ['Mensualidades'],
     ...quoteRecurringRows(quote).map((row) => [row.description, row.quantity, row.unitPrice, row.amount]),
     [],
     ['Subtotal', '', '', quote.subtotal],
@@ -8238,7 +8242,7 @@ async function exportQuoteXlsx() {
   ]
 
   await exportWorkbookXlsx(`${quote.documentFilePrefix || quoteFilePrefix}-${slug(quote.clientName)}-${quote.date}.xlsx`, [
-    { name: 'Pre factura', rows: summary },
+    { name: 'Cotizacion', rows: summary },
     { name: 'Accesorios', rows: accessoryDetails }
   ])
   try {
@@ -9313,7 +9317,7 @@ function renderFacturacion(stats, companies) {
 function renderAccessoryManager(quoteDraft, quote) {
   const accessories = normalizedQuoteAccessories(quoteDraft)
   if (!accessories.length) {
-    return `<div class="accessory-empty">Sin accesorios agregados. Usa el combo para sumar sensores, dashcams, camaras u otros accesorios a la pre factura.</div>`
+    return `<div class="accessory-empty">Sin accesorios agregados. Usa el combo para sumar sensores, dashcams, camaras u otros accesorios a la cotizacion.</div>`
   }
 
   return `
@@ -9467,7 +9471,7 @@ function renderCotizaciones(companies) {
     <section class="billing-layout quote-layout">
       <div class="quote-section">
         <div class="quote-section-head">
-          <div><span>Cliente</span><h2>Datos de pre factura</h2></div>
+          <div><span>Cliente</span><h2>Datos de cotizacion</h2></div>
         </div>
         <div class="quote-section-grid">
           <label>
@@ -9656,7 +9660,7 @@ function renderCotizaciones(companies) {
       <div class="quote-section">
         <div class="quote-section-grid quote-actions-grid">
           <label class="wide"><span>Notas comerciales</span><input value="${attr(q.notes)}" data-quote="notes"></label>
-          <button class="button primary" id="exportQuoteXlsx">${icon('file-spreadsheet')}Generar pre factura XLSX + PDF</button>
+          <button class="button primary" id="exportQuoteXlsx">${icon('file-spreadsheet')}Generar cotizacion XLSX + PDF</button>
         </div>
       </div>
 
@@ -10075,7 +10079,7 @@ function render() {
           ['equipos', 'wrench', 'Equipos'],
           ['lineas', 'sim-card', 'Lineas'],
           ['facturacion', 'circle-dollar-sign', 'Facturacion'],
-          ['cotizaciones', 'file-text', 'Pre facturas'],
+          ['cotizaciones', 'file-text', 'Cotizaciones'],
           ['cobros', 'calendar-days', 'Cobros'],
           ['usuarios', 'user-cog', state.auth.user.role === 'admin' ? 'Usuarios' : 'Cuenta']
         ]
