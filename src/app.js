@@ -7529,17 +7529,19 @@ function buildQuotePdfBlob(quote, logo = null) {
 
   drawHeader(566)
   let y = 546
-  productRows.forEach((row) => {
-    drawRow(row, y)
-    y -= 20
-  })
+  if (!isPrefactDocument) {
+    productRows.forEach((row) => {
+      drawRow(row, y)
+      y -= 20
+    })
 
-  y -= 10
-  rect(36, y, 540, 22, [0.86, 0.86, 0.86], border)
-  text(isPrefactDocument ? 'TOTAL CARGOS UNICOS' : 'TOTAL EQUIPO INSTALADO', 320, y + 7, 10, true, black, 'center')
-  text(pdfMoney(productSubtotal, quote.currency), 558, y + 7, 9.5, true, black, 'right')
+    y -= 10
+    rect(36, y, 540, 22, [0.86, 0.86, 0.86], border)
+    text('TOTAL EQUIPO INSTALADO', 320, y + 7, 10, true, black, 'center')
+    text(pdfMoney(productSubtotal, quote.currency), 558, y + 7, 9.5, true, black, 'right')
 
-  y -= 30
+    y -= 30
+  }
   rect(36, y, 540, 20, [1, 1, 1], border)
   text(isPrefactDocument ? 'CARGOS DEL PERIODO' : 'CARGOS RECURRENTES', 42, y + 6, 10, true)
   y -= 20
@@ -7553,13 +7555,20 @@ function buildQuotePdfBlob(quote, logo = null) {
   rect(36, y, 540, 22, [1, 1, 1], border)
   text(isPrefactDocument ? 'RESUMEN DE PRE FACTURA' : 'RESUMEN DE PAGO DE CONTADO', 42, y + 7, 10, true)
   const summaryY = y - 18
-  const summaryRows = [
-    [isPrefactDocument ? 'SUBTOTAL CARGOS UNICOS' : 'SUBTOTAL EQUIPO', productSubtotal],
-    [isPrefactDocument ? 'SUBTOTAL CARGOS DEL PERIODO' : 'SUBTOTAL CARGOS RECURRENTES', quote.recurringSubtotal],
-    ['SUBTOTAL', quote.subtotal],
-    ['I.V.A.', quote.tax],
-    ['TOTAL', quote.total]
-  ]
+  const summaryRows = isPrefactDocument
+    ? [
+        ['SUBTOTAL CARGOS DEL PERIODO', quote.recurringSubtotal],
+        ['SUBTOTAL', quote.subtotal],
+        ['I.V.A.', quote.tax],
+        ['TOTAL', quote.total]
+      ]
+    : [
+        ['SUBTOTAL EQUIPO', productSubtotal],
+        ['SUBTOTAL CARGOS RECURRENTES', quote.recurringSubtotal],
+        ['SUBTOTAL', quote.subtotal],
+        ['I.V.A.', quote.tax],
+        ['TOTAL', quote.total]
+      ]
   summaryRows.forEach((row, index) => {
     const rowY = summaryY - index * 17
     text(row[0], 150, rowY, 10, true)
@@ -7634,10 +7643,10 @@ async function buildQuoteTemplateXlsxBlob(quote) {
         ['Producto', 'Concepto'],
         ['Descripcion', 'Detalle'],
         ['Precio lista', 'Precio base'],
-        ['TOTAL EQUIPO INSTALADO', 'TOTAL CARGOS UNICOS'],
+        ['TOTAL EQUIPO INSTALADO', ''],
         ['CARGOS RECURRENTES', 'CARGOS DEL PERIODO'],
         ['RESUMEN DE PAGO DE CONTADO', 'RESUMEN DE PRE FACTURA'],
-        ['SUBTOTAL EQUIPO', 'SUBTOTAL CARGOS UNICOS'],
+        ['SUBTOTAL EQUIPO', ''],
         ['SUBTOTAL CARGOS RECURRENTES', 'SUBTOTAL CARGOS DEL PERIODO']
       ]
     : []
@@ -7660,10 +7669,10 @@ async function buildQuoteTemplateXlsxBlob(quote) {
     ['C8', quote.rfc || ''],
     ['H7', ''],
     ['H8', quote.email || ''],
-    ['I18', productSubtotal],
-    ['I19', productSubtotal],
+    ['I18', isPrefactDocument ? '' : productSubtotal],
+    ['I19', isPrefactDocument ? '' : productSubtotal],
     ['I24', quote.recurringSubtotal],
-    ['I26', productSubtotal],
+    ['I26', isPrefactDocument ? '' : productSubtotal],
     ['I27', quote.recurringSubtotal],
     ['I28', quote.subtotal],
     ['I29', quote.tax],
