@@ -5722,7 +5722,7 @@ function removeAccessoryFromQuote(accessoryId) {
 }
 
 function addHardwareToQuote() {
-  const model = state.quote.hardwareModel || defaultQuote.hardwareModel
+  const model = state.quote.hardwarePreset === 'custom' ? 'custom' : state.quote.hardwareModel || defaultQuote.hardwareModel
   const quantity = Number(state.quote.equipmentCount || 1) > 0 ? Number(state.quote.equipmentCount) : 1
   const hardwareItem = hardwareItemFromPreset(model, quantity)
   setState({
@@ -9028,7 +9028,7 @@ function renderHardwareManager(quoteDraft, quote) {
                   <td>
                     <select data-hardware-id="${attr(item.id)}" data-hardware-field="preset">
                       ${hardwarePresetOptions(item.model)}
-                      <option value="custom" ${hardwarePresets.some((preset) => preset.model === item.model) ? '' : 'selected'}>Otro proveedor/modelo</option>
+                      <option value="custom" ${hardwarePresets.some((preset) => preset.model === item.model) ? '' : 'selected'}>GPS custom</option>
                     </select>
                     <input value="${attr(item.model)}" data-hardware-id="${attr(item.id)}" data-hardware-field="model" placeholder="Modelo GPS">
                   </td>
@@ -9224,7 +9224,7 @@ function renderCotizaciones(companies) {
             <span>Agregar GPS</span>
             <select data-quote="hardwarePreset">
               ${hardwarePresetOptions(q.hardwareModel)}
-              <option value="custom" ${hardwarePresets.some((preset) => preset.model === q.hardwareModel) ? '' : 'selected'}>Otro proveedor/modelo</option>
+              <option value="custom" ${q.hardwarePreset === 'custom' || !hardwarePresets.some((preset) => preset.model === q.hardwareModel) ? 'selected' : ''}>GPS custom</option>
             </select>
           </label>
           <label><span>Cantidad</span><input type="number" min="1" step="1" value="${attr(q.equipmentCount || 1)}" data-quote="equipmentCount" placeholder="1"></label>
@@ -10630,7 +10630,22 @@ function bindEvents() {
         hardwareItems: normalizedQuoteHardwareItems(state.quote).map((item, index) => {
           if (item.id !== hardwareId) return item
           if (field === 'preset') {
-            if (value === 'custom') return item
+            if (value === 'custom') {
+              return normalizeQuoteHardwareItem(
+                {
+                  ...item,
+                  model: 'GPS personalizado',
+                  supplier: '',
+                  cost: 0,
+                  discount: 0,
+                  margin: 30,
+                  unitPrice: 0,
+                  unitPriceManual: true,
+                  url: ''
+                },
+                index
+              )
+            }
             const presetItem = hardwareItemFromPreset(value, item.quantity || 1)
             return normalizeQuoteHardwareItem({ ...presetItem, id: item.id }, index)
           }
