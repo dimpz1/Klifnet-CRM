@@ -1595,9 +1595,44 @@ function billingGroupsForEntity(entityName) {
   return result
 }
 
+function billingGroupEntityNamesForCompany(companyName) {
+  const cleanCompany = textValue(companyName)
+  const entities = [cleanCompany]
+  if (cleanCompany) {
+    entities.push(billingEntityNameForCompany(cleanCompany))
+    invoiceProfilesForCompany(cleanCompany).forEach((profile) => {
+      const normalized = normalizeInvoiceProfile(profile)
+      entities.push(normalized.razonSocial)
+      const parentGroup = invoiceProfileParentGroup(normalized)
+      if (parentGroup) {
+        entities.push(parentGroup)
+        state.invoiceProfiles.map(normalizeInvoiceProfile).forEach((candidate) => {
+          if (normalizeHeader(invoiceProfileParentGroup(candidate)) === normalizeHeader(parentGroup)) entities.push(candidate.razonSocial)
+        })
+      }
+    })
+  }
+  return unique(entities.filter(Boolean))
+}
+
+function billingGroupOptionsForCompany(companyName, currentGroup = '') {
+  const groups = [currentGroup || defaultBillingGroupName]
+  billingGroupEntityNamesForCompany(companyName).forEach((entityName) => {
+    groups.push(...billingGroupsForEntity(entityName))
+  })
+  return sortBillingGroupNames(groups)
+}
+
 function billingGroupOptionsForDevice(device) {
-  const entityName = billingEntityNameForCompany(device.company)
-  return sortBillingGroupNames([...billingGroupsForEntity(entityName), deviceBillingGroup(device)])
+  return billingGroupOptionsForCompany(device.company, deviceBillingGroup(device))
+}
+
+function updateBillingGroupControlOptions(controlId, companyName, currentGroup = '') {
+  const control = controlId ? document.getElementById(controlId) : null
+  if (!control) return
+  control.innerHTML = billingGroupOptionsForCompany(companyName, currentGroup)
+    .map((group) => `<option value="${attr(group)}" ${cleanBillingGroupName(currentGroup) === group ? 'selected' : ''}>${esc(group)}</option>`)
+    .join('')
 }
 
 function registerBillingGroupForEntity(entityName, rawGroupName) {
@@ -8332,11 +8367,11 @@ function deviceTable(devices) {
               const lineCarrierText = deviceLineCarrier(device, line)
               const lineCarrier = lineCarrierText ? `<small>${esc(lineCarrierText)}</small>` : ''
               const matchLabel = deviceLineMatchLabel(device, line)
-              const billingGroupListId = `billingGroupList-${slug(device.id || device.uid || device.unitName || index)}-${index}`
+              const billingGroupControlId = `billingGroupList-${slug(device.id || device.uid || device.unitName || index)}-${index}`
               const rowBillingGroupOptions = billingGroupOptionsForDevice(device)
               return `
                 <tr>
-                  <td><input list="equipmentCompanyList" value="${attr(device.company)}" data-device="${attr(device.id)}" data-field="company"></td>
+                  <td><input list="equipmentCompanyList" value="${attr(device.company)}" data-device="${attr(device.id)}" data-field="company" data-billing-group-list-target="${attr(billingGroupControlId)}" data-current-billing-group="${attr(deviceBillingGroup(device))}"></td>
                   <td><input value="${attr(device.groups.join(', '))}" data-device="${attr(device.id)}" data-field="groups"></td>
                   <td><input value="${attr(device.unitName)}" data-device="${attr(device.id)}" data-field="unitName"></td>
                   <td><input value="${attr(device.uid || '')}" data-device="${attr(device.id)}" data-field="uid"></td>
@@ -8356,10 +8391,9 @@ function deviceTable(devices) {
                     </label>
                   </td>
                   <td>
-                    <datalist id="${attr(billingGroupListId)}">
-                      ${rowBillingGroupOptions.map((group) => `<option value="${attr(group)}"></option>`).join('')}
-                    </datalist>
-                    <input list="${attr(billingGroupListId)}" value="${attr(deviceBillingGroup(device))}" data-device="${attr(device.id)}" data-field="billingGroup">
+                    <select id="${attr(billingGroupControlId)}" data-device="${attr(device.id)}" data-field="billingGroup">
+                      ${rowBillingGroupOptions.map((group) => `<option value="${attr(group)}" ${deviceBillingGroup(device) === group ? 'selected' : ''}>${esc(group)}</option>`).join('')}
+                    </select>
                   </td>
                   <td>
                     <select data-device="${attr(device.id)}" data-field="billingCycle">
@@ -10838,7 +10872,12 @@ function bindEvents() {
       }
       if (shouldRender) render()
     }
-    input.addEventListener('input', () => saveDeviceEdit(false))
+    input.addEventListener('input', () => {
+      if (input.dataset.field === 'company') {
+        updateBillingGroupControlOptions(input.dataset.billingGroupListTarget, input.value, input.dataset.currentBillingGroup)
+      }
+      saveDeviceEdit(false)
+    })
     input.addEventListener('change', () => saveDeviceEdit(true))
   })
 
