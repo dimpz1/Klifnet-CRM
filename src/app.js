@@ -230,6 +230,13 @@ const accessoryPresets = [
   }
 ]
 
+const quoteServicePresets = [
+  { id: 'migration', label: 'Migracion a plataforma', description: 'Migracion de equipo GPS a plataforma KLIFNET', unitPrice: 350 },
+  { id: 'removal', label: 'Retiro de equipo', description: 'Retiro de equipo GPS instalado', unitPrice: 350 },
+  { id: 'technical-review', label: 'Revision tecnica', description: 'Revision tecnica de instalacion o equipo', unitPrice: 350 },
+  { id: 'custom', label: 'Servicio personalizado', description: 'Servicio personalizado', unitPrice: 0 }
+]
+
 const fieldLabels = {
   unitName: 'Equipo',
   creator: 'Creador',
@@ -283,6 +290,7 @@ const defaultQuote = {
   contactEmail: '',
   attendant: quoteAttendantOptions[0],
   equipmentCount: '',
+  hardwareItems: [],
   billingCycle: 'mensual',
   firstMonthFree: true,
   monthlyPricePerDevice: standardMonthlyPrice,
@@ -319,6 +327,9 @@ const defaultQuote = {
   accessoryPreset: '',
   accessoryQuantity: 1,
   accessories: [],
+  servicePreset: '',
+  serviceQuantity: 1,
+  services: [],
   installationZone: 'city',
   installationMode: 'separate',
   installationPricePerDevice: cityInstallationPrice,
@@ -1872,6 +1883,97 @@ function hardwareSalePriceFromQuote(quote) {
   return Number(quote.hardwarePricePerDevice || standardHardwarePrice)
 }
 
+function createHardwareItemId(item = {}, index = 0) {
+  const raw = `${item.model || item.hardwareModel || 'gps'}-${Date.now()}-${index}`
+  return `gps-${slug(raw) || index}`
+}
+
+function hardwareItemFromQuote(quote = state.quote, index = 0) {
+  return normalizeQuoteHardwareItem(
+    {
+      id: quote.hardwareItemId || 'gps-principal',
+      model: quote.hardwareModel || defaultQuote.hardwareModel,
+      supplier: quote.hardwareSupplier || defaultQuote.hardwareSupplier,
+      url: quote.hardwareSyscomUrl || defaultQuote.hardwareSyscomUrl,
+      quantity: quote.equipmentCount ?? '',
+      cost: quote.hardwareCostPerDevice,
+      discount: quote.hardwareDiscountPercent,
+      margin: quote.hardwareMarginPercent,
+      unitPrice: quote.hardwarePricePerDevice
+    },
+    index
+  )
+}
+
+function normalizeQuoteHardwareItem(item = {}, index = 0) {
+  const model = textValue(item.model || item.hardwareModel) || defaultQuote.hardwareModel
+  const preset = hardwarePresets.find((presetItem) => presetItem.model === model)
+  const cost = Number(item.cost ?? item.hardwareCostPerDevice ?? preset?.price ?? defaultQuote.hardwareCostPerDevice) || 0
+  const discount = Number(item.discount ?? item.hardwareDiscountPercent ?? preset?.discount ?? defaultQuote.hardwareDiscountPercent) || 0
+  const margin = Number(item.margin ?? item.hardwareMarginPercent ?? preset?.margin ?? defaultQuote.hardwareMarginPercent) || defaultQuote.hardwareMarginPercent
+  const explicitUnitPrice = Number(item.unitPrice ?? item.hardwarePricePerDevice ?? item.salePrice ?? 0) || 0
+  const unitPrice = explicitUnitPrice > 0 ? explicitUnitPrice : salePriceFromSyscom(cost, discount, margin, standardHardwarePrice)
+  return {
+    id: textValue(item.id) || createHardwareItemId({ ...item, model }, index),
+    model,
+    supplier: textValue(item.supplier || item.hardwareSupplier) || preset?.supplier || defaultQuote.hardwareSupplier,
+    url: textValue(item.url || item.hardwareSyscomUrl) || preset?.url || '',
+    quantity: Number(item.quantity ?? item.equipmentCount ?? 0) || 0,
+    cost,
+    discount,
+    margin,
+    unitPrice,
+    unitPriceManual: Boolean(item.unitPriceManual)
+  }
+}
+
+function normalizedQuoteHardwareItems(quote = state.quote) {
+  const explicitItems = Array.isArray(quote.hardwareItems) ? quote.hardwareItems : []
+  const source = explicitItems.length ? explicitItems : Number(quote.equipmentCount || 0) > 0 ? [hardwareItemFromQuote(quote)] : []
+  return source.map(normalizeQuoteHardwareItem)
+}
+
+function quoteHardwareRows(quote = state.quote) {
+  return normalizedQuoteHardwareItems(quote)
+    .map((row) => ({
+      ...row,
+      key: row.id,
+      label: row.model || 'GPS vehicular',
+      syscomPrice: row.cost,
+      netCost: syscomNetCost(row.cost, row.discount),
+      subtotal: row.quantity * row.unitPrice
+    }))
+    .filter((row) => row.quantity > 0 && (row.unitPrice > 0 || row.installationPrice > 0))
+}
+
+function hardwareItemFromPreset(model, quantity = 1) {
+  const preset = hardwarePresets.find((item) => item.model === model)
+  if (!preset) {
+    return normalizeQuoteHardwareItem({
+      id: `gps-custom-${Date.now()}`,
+      model: 'GPS personalizado',
+      supplier: '',
+      quantity,
+      cost: 0,
+      discount: 0,
+      margin: 30,
+      unitPrice: 0,
+      url: ''
+    })
+  }
+  return normalizeQuoteHardwareItem({
+    id: `gps-${slug(preset.model)}-${Date.now()}`,
+    model: preset.model,
+    supplier: preset.supplier,
+    quantity,
+    cost: preset.price,
+    discount: preset.discount,
+    margin: preset.margin,
+    unitPrice: salePriceFromSyscom(preset.price, preset.discount, preset.margin, standardHardwarePrice),
+    url: preset.url
+  })
+}
+
 function hardwarePresetOptions(selectedModel) {
   return hardwarePresets
     .map((preset) => `<option value="${attr(preset.model)}" ${selectedModel === preset.model ? 'selected' : ''}>${esc(preset.model)}</option>`)
@@ -1964,6 +2066,7 @@ function normalizeQuoteAccessory(accessory = {}, index = 0) {
   const explicitUnitPrice = Number(accessory.unitPrice ?? accessory.salePrice ?? accessory.pricePerUnit ?? 0) || 0
   const unitPrice = explicitUnitPrice > 0 ? explicitUnitPrice : salePriceFromSyscom(cost, discount, margin, 0)
   const quantity = Number(accessory.quantity ?? accessory.count ?? 0) || 0
+  const installationPrice = Number(accessory.installationPrice ?? accessory.installationPricePerUnit ?? 0) || 0
   return {
     id: textValue(accessory.id) || createAccessoryId(accessory, index),
     category,
@@ -1974,8 +2077,10 @@ function normalizeQuoteAccessory(accessory = {}, index = 0) {
     discount,
     margin,
     unitPrice,
+    installationPrice,
     url: textValue(accessory.url),
-    notes: textValue(accessory.notes)
+    notes: textValue(accessory.notes),
+    unitPriceManual: Boolean(accessory.unitPriceManual)
   }
 }
 
@@ -2067,6 +2172,8 @@ function normalizeQuoteDefaults(parsedQuote = {}) {
   if (shouldApplySensorDefault) baseQuote = applyFuelSensorPreset('Escort TDBLE1000', baseQuote)
   if (shouldApplyDashcamDefault) baseQuote = applyDashcamPreset('Streamax XMRDASHCAMADPLUS', baseQuote)
   const accessories = normalizedQuoteAccessories(baseQuote)
+  const hardwareItems = normalizedQuoteHardwareItems(baseQuote)
+  const services = normalizedQuoteServices(baseQuote)
   const migratedFromOlderQuote = parsedQuote.defaultsVersion !== quoteDefaultsVersion
   return {
     ...defaultQuote,
@@ -2075,6 +2182,11 @@ function normalizeQuoteDefaults(parsedQuote = {}) {
     accessoryPreset: migratedFromOlderQuote && !accessories.length ? defaultQuote.accessoryPreset : baseQuote.accessoryPreset || defaultQuote.accessoryPreset,
     accessoryQuantity: Number(baseQuote.accessoryQuantity ?? defaultQuote.accessoryQuantity) || defaultQuote.accessoryQuantity,
     accessories,
+    servicePreset: baseQuote.servicePreset || defaultQuote.servicePreset,
+    serviceQuantity: Number(baseQuote.serviceQuantity ?? defaultQuote.serviceQuantity) || defaultQuote.serviceQuantity,
+    services,
+    hardwareItems,
+    equipmentCount: hardwareItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0) || baseQuote.equipmentCount || '',
     firstMonthFree: baseQuote.firstMonthFree !== false,
     monthlyPricePerDevice: Number(baseQuote.monthlyPricePerDevice ?? defaultQuote.monthlyPricePerDevice) || defaultQuote.monthlyPricePerDevice,
     lineCount: Number(baseQuote.lineCount ?? defaultQuote.lineCount) || 0,
@@ -2138,9 +2250,55 @@ function quoteAccessoryRows(quote) {
       syscomPrice: row.cost,
       netCost: syscomNetCost(row.cost, row.discount),
       unitPrice: accessorySalePrice(row.cost, row.discount, row.margin, row.unitPrice),
+      installationSubtotal: row.quantity * Number(row.installationPrice || 0),
       subtotal: row.quantity * accessorySalePrice(row.cost, row.discount, row.margin, row.unitPrice)
     }))
     .filter((row) => row.quantity > 0 && row.unitPrice > 0)
+}
+
+function quoteServicePresetOptions(selectedId) {
+  return quoteServicePresets
+    .map((preset) => `<option value="${attr(preset.id)}" ${selectedId === preset.id ? 'selected' : ''}>${esc(preset.label)}</option>`)
+    .join('')
+}
+
+function normalizeQuoteService(service = {}, index = 0) {
+  const preset = quoteServicePresets.find((item) => item.id === service.presetId)
+  const description = textValue(service.description) || preset?.description || 'Servicio personalizado'
+  return {
+    id: textValue(service.id) || `srv-${slug(description) || 'servicio'}-${Date.now()}-${index}`,
+    presetId: textValue(service.presetId) || preset?.id || 'custom',
+    description,
+    quantity: Number(service.quantity ?? service.count ?? 0) || 0,
+    unitPrice: Number(service.unitPrice ?? service.price ?? preset?.unitPrice ?? 0) || 0,
+    notes: textValue(service.notes)
+  }
+}
+
+function normalizedQuoteServices(quote = state.quote) {
+  return (Array.isArray(quote.services) ? quote.services : []).map(normalizeQuoteService)
+}
+
+function quoteServiceRows(quote = state.quote) {
+  return normalizedQuoteServices(quote)
+    .map((row) => ({
+      ...row,
+      product: 'SERV',
+      subtotal: row.quantity * row.unitPrice
+    }))
+    .filter((row) => row.quantity > 0 && row.unitPrice > 0)
+}
+
+function serviceFromPreset(presetId, quantity = 1) {
+  const preset = quoteServicePresets.find((item) => item.id === presetId) || quoteServicePresets.find((item) => item.id === 'custom')
+  return normalizeQuoteService({
+    id: `srv-${preset.id}-${Date.now()}`,
+    presetId: preset.id,
+    description: preset.description,
+    quantity,
+    unitPrice: preset.unitPrice,
+    notes: ''
+  })
 }
 
 function deviceAgreedPriceValue(device) {
@@ -5563,9 +5721,66 @@ function removeAccessoryFromQuote(accessoryId) {
   })
 }
 
+function addHardwareToQuote() {
+  const model = state.quote.hardwareModel || defaultQuote.hardwareModel
+  const quantity = Number(state.quote.equipmentCount || 1) > 0 ? Number(state.quote.equipmentCount) : 1
+  const hardwareItem = hardwareItemFromPreset(model, quantity)
+  setState({
+    quote: {
+      ...state.quote,
+      hardwareItems: [...normalizedQuoteHardwareItems(state.quote), hardwareItem],
+      equipmentCount: ''
+    },
+    notice: '',
+    view: 'cotizaciones'
+  })
+}
+
+function removeHardwareFromQuote(hardwareId) {
+  setState({
+    quote: {
+      ...state.quote,
+      hardwareItems: normalizedQuoteHardwareItems(state.quote).filter((item) => item.id !== hardwareId)
+    },
+    notice: '',
+    view: 'cotizaciones'
+  })
+}
+
+function addServiceToQuote() {
+  if (!state.quote.servicePreset) {
+    setState({ notice: 'Selecciona un servicio antes de agregarlo.', view: 'cotizaciones' })
+    return
+  }
+  const quantity = Number(state.quote.serviceQuantity || 1) > 0 ? Number(state.quote.serviceQuantity) : 1
+  const service = serviceFromPreset(state.quote.servicePreset, quantity)
+  setState({
+    quote: {
+      ...state.quote,
+      services: [...normalizedQuoteServices(state.quote), service],
+      serviceQuantity: 1
+    },
+    notice: '',
+    view: 'cotizaciones'
+  })
+}
+
+function removeServiceFromQuote(serviceId) {
+  setState({
+    quote: {
+      ...state.quote,
+      services: normalizedQuoteServices(state.quote).filter((service) => service.id !== serviceId)
+    },
+    notice: '',
+    view: 'cotizaciones'
+  })
+}
+
 function buildQuote() {
   const quote = state.quote
-  const quantity = Number(quote.equipmentCount || 0) > 0 ? Number(quote.equipmentCount) : 0
+  const hardwareRows = quoteHardwareRows(quote)
+  const hardwareItems = normalizedQuoteHardwareItems(quote)
+  const quantity = hardwareRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0)
   const cycle = quote.billingCycle === 'anual' ? 'anual' : quote.billingCycle === 'semestral' ? 'semestral' : 'mensual'
   const lineQuantity = Number(quote.lineCount || 0) > 0 ? Number(quote.lineCount) : 0
   const lineCycle = quote.lineBillingCycle === 'mensual' ? 'mensual' : quote.lineBillingCycle === 'semestral' ? 'semestral' : 'anual'
@@ -5581,12 +5796,11 @@ function buildQuote() {
       : lineCycle === 'semestral'
         ? Number(quote.lineAnnualPrice || 0) / 2
         : Number(quote.lineAnnualPrice || 0)
-  const hardwareUnitPrice = hardwareSalePriceFromQuote(quote)
   const installationMode = normalizeInstallationMode(quote.installationMode)
-  const installationBaseUnitPrice = Number(quote.installationPricePerDevice || quote.setupPricePerDevice || installationPriceForZone(quote.installationZone))
+  const installationBaseUnitPrice = quantity > 0 ? Number(quote.installationPricePerDevice || quote.setupPricePerDevice || installationPriceForZone(quote.installationZone)) : 0
   const installationIncludedAmount = installationMode === 'included' ? installationBaseUnitPrice : 0
-  const hardwareBaseUnitPrice = hardwareUnitPrice
-  const hardwareQuoteUnitPrice = hardwareUnitPrice + installationIncludedAmount
+  const hardwareBaseUnitPrice = quantity > 0 ? hardwareRows.reduce((sum, row) => sum + row.unitPrice * row.quantity, 0) / quantity : hardwareSalePriceFromQuote(quote)
+  const hardwareQuoteUnitPrice = hardwareBaseUnitPrice + installationIncludedAmount
   const installationUnitPrice = installationMode === 'separate' ? installationBaseUnitPrice : 0
   const travelFee = Number(quote.travelFee || 0)
   const monthlyUnitPrice = Number(quote.monthlyPricePerDevice || 0) || Number(state.billing.monthlyPricePerDevice || 0)
@@ -5599,12 +5813,15 @@ function buildQuote() {
   const equipmentRecurringSubtotal = Math.max(0, recurringGrossSubtotal - firstMonthDiscount)
   const lineRecurringSubtotal = Math.max(0, lineRecurringGrossSubtotal - lineFirstMonthDiscount)
   const recurringSubtotal = equipmentRecurringSubtotal + lineRecurringSubtotal
-  const hardwareSubtotal = quantity * hardwareQuoteUnitPrice
+  const hardwareSubtotal = hardwareRows.reduce((sum, row) => sum + row.quantity * (row.unitPrice + installationIncludedAmount), 0)
   const installationSubtotal = quantity * installationUnitPrice
   const accessoryRows = quoteAccessoryRows(quote)
   const accessorySubtotal = accessoryRows.reduce((sum, row) => sum + row.subtotal, 0)
+  const accessoryInstallationSubtotal = accessoryRows.reduce((sum, row) => sum + row.installationSubtotal, 0)
+  const serviceRows = quoteServiceRows(quote)
+  const serviceSubtotal = serviceRows.reduce((sum, row) => sum + row.subtotal, 0)
   const setupUnitPrice = hardwareQuoteUnitPrice + installationUnitPrice
-  const setupSubtotal = hardwareSubtotal + installationSubtotal + travelFee
+  const setupSubtotal = hardwareSubtotal + installationSubtotal + travelFee + serviceSubtotal + accessoryInstallationSubtotal
   const subtotal = recurringSubtotal + setupSubtotal + accessorySubtotal
   const tax = subtotal * Number(quote.ivaRate || 0)
   const total = subtotal + tax
@@ -5638,13 +5855,20 @@ function buildQuote() {
     lineFirstMonthDiscountUnit,
     lineFirstMonthDiscount,
     lineRecurringSubtotal,
-    hardwareModel: quote.hardwareModel || 'GPS vehicular',
-    hardwareSupplier: quote.hardwareSupplier || 'Syscom',
-    hardwareSyscomUrl: quote.hardwareSyscomUrl || '',
-    hardwareCostPerDevice: Number(quote.hardwareCostPerDevice || 0),
-    hardwareDiscountPercent: Number(quote.hardwareDiscountPercent ?? syscomDiscountPercent),
-    hardwareNetCost: syscomNetCost(quote.hardwareCostPerDevice, quote.hardwareDiscountPercent),
-    hardwareMarginPercent: Number(quote.hardwareMarginPercent ?? 30),
+    hardwareItems,
+    hardwareRows: hardwareRows.map((row) => ({
+      ...row,
+      unitPrice: row.unitPrice + installationIncludedAmount,
+      baseUnitPrice: row.unitPrice,
+      subtotal: row.quantity * (row.unitPrice + installationIncludedAmount)
+    })),
+    hardwareModel: hardwareRows.length === 1 ? hardwareRows[0].model : hardwareRows.length > 1 ? 'Varios modelos GPS' : quote.hardwareModel || 'GPS vehicular',
+    hardwareSupplier: hardwareRows.length === 1 ? hardwareRows[0].supplier : quote.hardwareSupplier || 'Syscom',
+    hardwareSyscomUrl: hardwareRows.length === 1 ? hardwareRows[0].url : quote.hardwareSyscomUrl || '',
+    hardwareCostPerDevice: hardwareRows.length === 1 ? Number(hardwareRows[0].cost || 0) : Number(quote.hardwareCostPerDevice || 0),
+    hardwareDiscountPercent: hardwareRows.length === 1 ? Number(hardwareRows[0].discount ?? syscomDiscountPercent) : Number(quote.hardwareDiscountPercent ?? syscomDiscountPercent),
+    hardwareNetCost: hardwareRows.length === 1 ? syscomNetCost(hardwareRows[0].cost, hardwareRows[0].discount) : syscomNetCost(quote.hardwareCostPerDevice, quote.hardwareDiscountPercent),
+    hardwareMarginPercent: hardwareRows.length === 1 ? Number(hardwareRows[0].margin ?? 30) : Number(quote.hardwareMarginPercent ?? 30),
     hardwareBaseUnitPrice,
     hardwareUnitPrice: hardwareQuoteUnitPrice,
     installationMode,
@@ -5656,6 +5880,9 @@ function buildQuote() {
     travelNotes: quote.travelNotes || '',
     accessoryRows,
     accessorySubtotal,
+    accessoryInstallationSubtotal,
+    serviceRows,
+    serviceSubtotal,
     setupUnitPrice,
     recurringSubtotal,
     hardwareSubtotal,
@@ -6859,15 +7086,15 @@ function compactTemplateRows(rows, maxRows) {
 
 function quoteTemplateProductRows(quote) {
   const rows = [
-    {
+    ...quote.hardwareRows.map((row) => ({
       product: 'GPS',
-      quantity: quote.quantity,
-      description: quote.hardwareModel,
-      listPrice: quote.hardwareUnitPrice,
+      quantity: row.quantity,
+      description: row.model,
+      listPrice: row.unitPrice,
       discount: '',
-      unitPrice: quote.hardwareUnitPrice,
-      amount: quote.hardwareSubtotal
-    },
+      unitPrice: row.unitPrice,
+      amount: row.subtotal
+    })),
     ...quote.accessoryRows.map((row) => ({
       product: row.category || 'ACC',
       quantity: row.quantity,
@@ -6876,6 +7103,26 @@ function quoteTemplateProductRows(quote) {
       discount: row.discount || '',
       unitPrice: row.unitPrice,
       amount: row.subtotal
+    })),
+    ...quote.serviceRows.map((row) => ({
+      product: 'SERV',
+      quantity: row.quantity,
+      description: row.description,
+      listPrice: row.unitPrice,
+      discount: '',
+      unitPrice: row.unitPrice,
+      amount: row.subtotal
+    })),
+    ...quote.accessoryRows
+      .filter((row) => row.installationSubtotal > 0)
+      .map((row) => ({
+        product: 'INST',
+        quantity: row.quantity,
+        description: `Instalacion accesorio - ${row.label}`,
+        listPrice: row.installationPrice,
+        discount: '',
+        unitPrice: row.installationPrice,
+        amount: row.installationSubtotal
     }))
   ]
 
@@ -7069,7 +7316,7 @@ function buildQuotePdfBlob(quote, logo = null) {
   const margin = 36
   const productRows = quoteTemplateProductRows(quote)
   const recurringRows = quoteRecurringRows(quote)
-  const productSubtotal = quote.hardwareSubtotal + quote.accessorySubtotal + quote.installationSubtotal + quote.travelFee
+  const productSubtotal = quote.hardwareSubtotal + quote.accessorySubtotal + quote.installationSubtotal + quote.travelFee + quote.serviceSubtotal + quote.accessoryInstallationSubtotal
 
   const color = (rgb) => rgb.map((part) => Number(part).toFixed(3)).join(' ')
   const rect = (x, y, width, height, fill, stroke) => {
@@ -7236,7 +7483,7 @@ async function exportQuoteTemplateXlsx(quote) {
   const today = new Date()
   const productRows = quoteTemplateProductRows(quote)
   const recurringRows = quoteTemplateRecurringRows(quote)
-  const productSubtotal = quote.hardwareSubtotal + quote.accessorySubtotal + quote.installationSubtotal + quote.travelFee
+  const productSubtotal = quote.hardwareSubtotal + quote.accessorySubtotal + quote.installationSubtotal + quote.travelFee + quote.serviceSubtotal + quote.accessoryInstallationSubtotal
 
   sheetXmlText = sheetXmlText.replace(/<hyperlinks>[\s\S]*?<\/hyperlinks>/, '')
   sheetXmlText = setTemplateCells(sheetXmlText, [
@@ -7564,7 +7811,7 @@ async function exportNextMonthBillingSummaryXlsx() {
 
 async function exportQuoteXlsx() {
   const quote = buildQuote()
-  const quoteHasAmount = quote.quantity > 0 || quote.lineQuantity > 0 || quote.accessoryRows.length > 0 || quote.travelFee > 0
+  const quoteHasAmount = quote.quantity > 0 || quote.lineQuantity > 0 || quote.accessoryRows.length > 0 || quote.serviceRows.length > 0 || quote.travelFee > 0
   if (!quoteHasAmount || quote.total <= 0) {
     setState({ notice: 'Captura cantidad y precio para generar la cotizacion.', view: 'cotizaciones' })
     return
@@ -7613,12 +7860,14 @@ async function exportQuoteXlsx() {
     [],
     ['Concepto', 'Cantidad', 'Precio unitario', 'Subtotal'],
     ['Equipos'],
-    ['Equipo GPS', quote.quantity, quote.hardwareUnitPrice, quote.hardwareSubtotal],
+    ...quote.hardwareRows.map((row) => [`Equipo GPS - ${row.model}`, row.quantity, row.unitPrice, row.subtotal]),
     ['Accesorios'],
     ...quote.accessoryRows.map((row) => [`${row.label} (${row.margin}% ganancia)`, row.quantity, row.unitPrice, row.subtotal]),
-    ['Instalacion y viaticos'],
+    ['Servicios'],
     ...(quote.installationSubtotal > 0 ? [['Instalacion por equipo', quote.quantity, quote.installationUnitPrice, quote.installationSubtotal]] : []),
+    ...quote.accessoryRows.filter((row) => row.installationSubtotal > 0).map((row) => [`Instalacion accesorio - ${row.label}`, row.quantity, row.installationPrice, row.installationSubtotal]),
     ...(quote.travelFee > 0 ? [['Viaticos traslado tecnico', 1, quote.travelFee, quote.travelFee]] : []),
+    ...quote.serviceRows.map((row) => [row.description, row.quantity, row.unitPrice, row.subtotal]),
     ['Mensualidades'],
     ...quoteRecurringRows(quote).map((row) => [row.description, row.quantity, row.unitPrice, row.amount]),
     [],
@@ -7629,7 +7878,7 @@ async function exportQuoteXlsx() {
     ['Notas', quote.notes]
   ]
   const accessoryDetails = [
-    ['Tipo', 'Modelo', 'Proveedor', 'URL', 'Cantidad', 'Costo proveedor', 'Descuento %', 'Costo neto', 'Ganancia %', 'Precio venta', 'Subtotal', 'Notas'],
+    ['Tipo', 'Modelo', 'Proveedor', 'URL', 'Cantidad', 'Costo proveedor', 'Descuento %', 'Costo neto', 'Ganancia %', 'Precio venta', 'Instalacion', 'Subtotal venta', 'Notas'],
     ...normalizedQuoteAccessories(state.quote).map((row) => {
       const unitPrice = accessorySalePrice(row.cost, row.discount, row.margin, row.unitPrice)
       return [
@@ -7643,6 +7892,7 @@ async function exportQuoteXlsx() {
         syscomNetCost(row.cost, row.discount),
         row.margin,
         unitPrice,
+        row.installationPrice,
         row.quantity * unitPrice,
         row.notes
       ]
@@ -8731,7 +8981,7 @@ function renderAccessoryManager(quoteDraft, quote) {
     <div class="table-wrap accessory-table">
       <table>
         <thead>
-          <tr><th>Tipo</th><th>Modelo</th><th>Cantidad</th><th>Precio venta</th><th>Subtotal</th><th></th></tr>
+          <tr><th>Tipo</th><th>Modelo</th><th>Cantidad</th><th>Precio venta</th><th>Instalacion</th><th>Subtotal</th><th></th></tr>
         </thead>
         <tbody>
           ${accessories
@@ -8743,11 +8993,88 @@ function renderAccessoryManager(quoteDraft, quote) {
                   <td><input value="${attr(accessory.model)}" data-accessory-id="${attr(accessory.id)}" data-accessory-field="model"></td>
                   <td><input type="number" min="0" step="1" value="${attr(accessory.quantity)}" data-accessory-id="${attr(accessory.id)}" data-accessory-field="quantity"></td>
                   <td><input type="number" min="0" step="0.01" value="${attr(unitPrice)}" data-accessory-id="${attr(accessory.id)}" data-accessory-field="unitPrice"></td>
-                  <td><strong>${money(accessory.quantity * unitPrice, quote.currency)}</strong></td>
+                  <td><input type="number" min="0" step="0.01" value="${attr(accessory.installationPrice || 0)}" data-accessory-id="${attr(accessory.id)}" data-accessory-field="installationPrice"></td>
+                  <td><strong>${money(accessory.quantity * unitPrice + accessory.quantity * Number(accessory.installationPrice || 0), quote.currency)}</strong></td>
                   <td><button class="icon-button danger" title="Quitar accesorio" data-remove-accessory="${attr(accessory.id)}">${icon('trash-2')}</button></td>
                 </tr>
               `
             })
+            .join('')}
+        </tbody>
+      </table>
+    </div>
+  `
+}
+
+function renderHardwareManager(quoteDraft, quote) {
+  const hardwareItems = normalizedQuoteHardwareItems(quoteDraft)
+  if (!hardwareItems.length) {
+    return `<div class="accessory-empty">Sin equipos agregados. Usa el combo para sumar cada modelo GPS con su cantidad.</div>`
+  }
+
+  return `
+    <div class="table-wrap accessory-table quote-hardware-table">
+      <table>
+        <thead>
+          <tr><th>Modelo</th><th>Cantidad</th><th>Proveedor</th><th>Costo proveedor</th><th>Desc. %</th><th>Ganancia %</th><th>Venta</th><th>Subtotal</th><th></th></tr>
+        </thead>
+        <tbody>
+          ${hardwareItems
+            .map((item) => {
+              const unitPrice = Number(item.unitPrice || 0)
+              return `
+                <tr>
+                  <td>
+                    <select data-hardware-id="${attr(item.id)}" data-hardware-field="preset">
+                      ${hardwarePresetOptions(item.model)}
+                      <option value="custom" ${hardwarePresets.some((preset) => preset.model === item.model) ? '' : 'selected'}>Otro proveedor/modelo</option>
+                    </select>
+                    <input value="${attr(item.model)}" data-hardware-id="${attr(item.id)}" data-hardware-field="model" placeholder="Modelo GPS">
+                  </td>
+                  <td><input type="number" min="0" step="1" value="${attr(item.quantity)}" data-hardware-id="${attr(item.id)}" data-hardware-field="quantity"></td>
+                  <td><input value="${attr(item.supplier)}" data-hardware-id="${attr(item.id)}" data-hardware-field="supplier"></td>
+                  <td><input type="number" min="0" step="0.01" value="${attr(item.cost)}" data-hardware-id="${attr(item.id)}" data-hardware-field="cost"></td>
+                  <td><input type="number" min="0" step="0.01" value="${attr(item.discount)}" data-hardware-id="${attr(item.id)}" data-hardware-field="discount"></td>
+                  <td><input type="number" min="0" step="0.01" value="${attr(item.margin)}" data-hardware-id="${attr(item.id)}" data-hardware-field="margin"></td>
+                  <td><input type="number" min="0" step="0.01" value="${attr(unitPrice)}" data-hardware-id="${attr(item.id)}" data-hardware-field="unitPrice"></td>
+                  <td><strong>${money(item.quantity * unitPrice, quote.currency)}</strong></td>
+                  <td><button class="icon-button danger" title="Quitar equipo" data-remove-hardware="${attr(item.id)}">${icon('trash-2')}</button></td>
+                </tr>
+              `
+            })
+            .join('')}
+        </tbody>
+      </table>
+    </div>
+  `
+}
+
+function renderServiceManager(quoteDraft, quote) {
+  const services = normalizedQuoteServices(quoteDraft)
+  if (!services.length) {
+    return `<div class="accessory-empty">Sin servicios agregados. Puedes cotizar instalacion, retiro, migracion o viaticos sin agregar equipo GPS.</div>`
+  }
+
+  return `
+    <div class="table-wrap accessory-table quote-service-table">
+      <table>
+        <thead>
+          <tr><th>Servicio</th><th>Cantidad</th><th>Precio unitario</th><th>Subtotal</th><th>Notas</th><th></th></tr>
+        </thead>
+        <tbody>
+          ${services
+            .map(
+              (service) => `
+                <tr>
+                  <td><input value="${attr(service.description)}" data-service-id="${attr(service.id)}" data-service-field="description"></td>
+                  <td><input type="number" min="0" step="1" value="${attr(service.quantity)}" data-service-id="${attr(service.id)}" data-service-field="quantity"></td>
+                  <td><input type="number" min="0" step="0.01" value="${attr(service.unitPrice)}" data-service-id="${attr(service.id)}" data-service-field="unitPrice"></td>
+                  <td><strong>${money(service.quantity * service.unitPrice, quote.currency)}</strong></td>
+                  <td><input value="${attr(service.notes)}" data-service-id="${attr(service.id)}" data-service-field="notes"></td>
+                  <td><button class="icon-button danger" title="Quitar servicio" data-remove-service="${attr(service.id)}">${icon('trash-2')}</button></td>
+                </tr>
+              `
+            )
             .join('')}
         </tbody>
       </table>
@@ -8888,21 +9215,22 @@ function renderCotizaciones(companies) {
 
       <div class="quote-section">
         <div class="quote-section-head">
-          <div><span>Equipos</span><h2>Equipo GPS principal</h2></div>
+          <div><span>Equipos</span><h2>Equipos GPS</h2></div>
           <div class="quote-total-chip"><span>Subtotal</span><strong>${money(quote.hardwareSubtotal, quote.currency)}</strong></div>
         </div>
         <div class="quote-section-grid">
           <label>
-            <span>GPS</span>
+            <span>Agregar GPS</span>
             <select data-quote="hardwarePreset">
               ${hardwarePresetOptions(q.hardwareModel)}
               <option value="custom" ${hardwarePresets.some((preset) => preset.model === q.hardwareModel) ? '' : 'selected'}>Otro proveedor/modelo</option>
             </select>
           </label>
-          <label><span>Cantidad equipos</span><input type="number" min="0" step="1" value="${attr(q.equipmentCount)}" data-quote="equipmentCount" placeholder="0"></label>
-          <label><span>Venta GPS</span><input type="number" min="0" step="0.01" value="${attr(hardwareSalePriceFromQuote(q))}" data-quote="hardwarePricePerDevice"></label>
-          <div class="quote-total-chip"><span>Venta aplicada</span><strong>${money(quote.hardwareUnitPrice, quote.currency)}</strong></div>
+          <label><span>Cantidad</span><input type="number" min="1" step="1" value="${attr(q.equipmentCount || 1)}" data-quote="equipmentCount" placeholder="1"></label>
+          <button class="button" id="addHardwareQuote">${icon('plus')}Agregar equipo</button>
+          <div class="quote-total-chip"><span>Equipos cotizados</span><strong>${Number(quote.quantity || 0).toLocaleString('es-MX')}</strong></div>
         </div>
+        ${renderHardwareManager(q, quote)}
       </div>
 
       <div class="quote-section">
@@ -8940,8 +9268,8 @@ function renderCotizaciones(companies) {
 
       <div class="quote-section">
         <div class="quote-section-head">
-          <div><span>Instalacion</span><h2>Instalacion y viaticos</h2></div>
-          <div class="quote-total-chip"><span>Subtotal</span><strong>${money(quote.installationSubtotal + quote.travelFee, quote.currency)}</strong></div>
+          <div><span>Servicios</span><h2>Instalacion, viaticos y servicios</h2></div>
+          <div class="quote-total-chip"><span>Subtotal</span><strong>${money(quote.installationSubtotal + quote.travelFee + quote.serviceSubtotal + quote.accessoryInstallationSubtotal, quote.currency)}</strong></div>
         </div>
         <div class="quote-section-grid">
           <label>
@@ -8964,7 +9292,17 @@ function renderCotizaciones(companies) {
           <label><span>Viaticos traslado</span><input type="number" min="0" step="0.01" value="${attr(q.travelFee)}" data-quote="travelFee"></label>
           <div class="quote-total-chip"><span>${quote.installationMode === 'included' ? 'Absorbida en GPS' : quote.installationMode === 'none' ? 'Instalacion apagada' : 'Instalacion visible'}</span><strong>${money(quote.installationMode === 'included' ? quote.installationIncludedAmount * quote.quantity : quote.installationSubtotal, quote.currency)}</strong></div>
           <label class="wide"><span>Notas traslado</span><input value="${attr(q.travelNotes)}" data-quote="travelNotes" placeholder="Traslado ida y vuelta del tecnico segun ubicacion"></label>
+          <label>
+            <span>Agregar servicio</span>
+            <select data-quote="servicePreset">
+              <option value="" ${!q.servicePreset ? 'selected' : ''}>Sin servicio</option>
+              ${quoteServicePresetOptions(q.servicePreset)}
+            </select>
+          </label>
+          <label><span>Cantidad servicio</span><input type="number" min="1" step="1" value="${attr(q.serviceQuantity || 1)}" data-quote="serviceQuantity"></label>
+          <button class="button" id="addServiceQuote" ${!q.servicePreset ? 'disabled' : ''}>${icon('plus')}Agregar servicio</button>
         </div>
+        ${renderServiceManager(q, quote)}
       </div>
 
       <div class="quote-section">
@@ -8986,12 +9324,21 @@ function renderCotizaciones(companies) {
           </thead>
           <tbody>
             <tr class="section-row"><td colspan="4">Equipos</td></tr>
-            <tr>
-              <td>Equipo GPS${quote.hardwareModel ? ` - ${esc(quote.hardwareModel)}` : ''}</td>
-              <td>${quote.quantity}</td>
-              <td>${money(quote.hardwareUnitPrice, quote.currency)}</td>
-              <td>${money(quote.hardwareSubtotal, quote.currency)}</td>
-            </tr>
+            ${
+              quote.hardwareRows.length
+                ? quote.hardwareRows
+                    .map(
+                      (row) => `
+                        <tr>
+                          <td>Equipo GPS - ${esc(row.model)}</td>
+                          <td>${row.quantity}</td>
+                          <td>${money(row.unitPrice, quote.currency)}</td>
+                          <td>${money(row.subtotal, quote.currency)}</td>
+                        </tr>`
+                    )
+                    .join('')
+                : `<tr><td>Sin equipo GPS cotizado</td><td>-</td><td>${money(0, quote.currency)}</td><td>${money(0, quote.currency)}</td></tr>`
+            }
             <tr class="section-row"><td colspan="4">Accesorios</td></tr>
             ${quote.accessoryRows
               .map(
@@ -9010,13 +9357,36 @@ function renderCotizaciones(companies) {
                 ? `<tr><td>Instalacion incluida en precio GPS</td><td>${quote.quantity}</td><td>${money(0, quote.currency)}</td><td>${money(0, quote.currency)}</td></tr>`
                 : quote.installationSubtotal > 0
                   ? `<tr><td>Instalacion por equipo</td><td>${quote.quantity}</td><td>${money(quote.installationUnitPrice, quote.currency)}</td><td>${money(quote.installationSubtotal, quote.currency)}</td></tr>`
-                  : `<tr><td>Sin instalacion cotizada</td><td>-</td><td>${money(0, quote.currency)}</td><td>${money(0, quote.currency)}</td></tr>`
+                  : ''
             }
             ${
               quote.travelFee > 0
                 ? `<tr><td>Viaticos traslado tecnico</td><td>1</td><td>${money(quote.travelFee, quote.currency)}</td><td>${money(quote.travelFee, quote.currency)}</td></tr>`
                 : ''
             }
+            ${quote.accessoryRows
+              .filter((row) => row.installationSubtotal > 0)
+              .map(
+                (row) => `
+                  <tr>
+                    <td>Instalacion accesorio - ${esc(row.label)}</td>
+                    <td>${row.quantity}</td>
+                    <td>${money(row.installationPrice, quote.currency)}</td>
+                    <td>${money(row.installationSubtotal, quote.currency)}</td>
+                  </tr>`
+              )
+              .join('')}
+            ${quote.serviceRows
+              .map(
+                (row) => `
+                  <tr>
+                    <td>${esc(row.description)}</td>
+                    <td>${row.quantity}</td>
+                    <td>${money(row.unitPrice, quote.currency)}</td>
+                    <td>${money(row.subtotal, quote.currency)}</td>
+                  </tr>`
+              )
+              .join('')}
             <tr class="section-row"><td colspan="4">Mensualidades</td></tr>
             ${quoteRecurringRows(quote)
               .map(
@@ -10139,7 +10509,9 @@ function bindEvents() {
   document.getElementById('uploadPaymentFile')?.addEventListener('click', () => document.getElementById('paymentFileInput')?.click())
   document.getElementById('exportQuoteXlsx')?.addEventListener('click', exportQuoteXlsx)
   document.getElementById('addCompanyFromQuote')?.addEventListener('click', addCompanyFromQuote)
+  document.getElementById('addHardwareQuote')?.addEventListener('click', addHardwareToQuote)
   document.getElementById('addAccessoryQuote')?.addEventListener('click', addAccessoryToQuote)
+  document.getElementById('addServiceQuote')?.addEventListener('click', addServiceToQuote)
 
   document.getElementById('quoteCompany')?.addEventListener('change', (event) => {
     applyQuoteCompanySelection(event.target.value)
@@ -10172,7 +10544,8 @@ function bindEvents() {
       'setupPricePerDevice',
       'ivaRate',
       'validityDays',
-      'accessoryQuantity'
+      'accessoryQuantity',
+      'serviceQuantity'
     ])
     const saveQuote = (shouldRender) => {
       const field = input.dataset.quote
@@ -10235,8 +10608,52 @@ function bindEvents() {
     button.addEventListener('click', () => removeAccessoryFromQuote(button.dataset.removeAccessory))
   })
 
-  document.querySelectorAll('[data-accessory-field]').forEach((input) => {
+  document.querySelectorAll('[data-remove-hardware]').forEach((button) => {
+    button.addEventListener('click', () => removeHardwareFromQuote(button.dataset.removeHardware))
+  })
+
+  document.querySelectorAll('[data-remove-service]').forEach((button) => {
+    button.addEventListener('click', () => removeServiceFromQuote(button.dataset.removeService))
+  })
+
+  document.querySelectorAll('[data-hardware-field]').forEach((input) => {
     const numericFields = new Set(['quantity', 'cost', 'discount', 'margin', 'unitPrice'])
+    const recalcFields = new Set(['cost', 'discount', 'margin'])
+    const saveHardware = (shouldRender) => {
+      const hardwareId = input.dataset.hardwareId
+      const field = input.dataset.hardwareField
+      const rawValue = input.type === 'checkbox' ? input.checked : input.value
+      const value = numericFields.has(field) ? (rawValue === '' ? 0 : Number(rawValue)) : rawValue
+      state.quote = {
+        ...state.quote,
+        hardwareItems: normalizedQuoteHardwareItems(state.quote).map((item, index) => {
+          if (item.id !== hardwareId) return item
+          if (field === 'preset') {
+            if (value === 'custom') return item
+            const presetItem = hardwareItemFromPreset(value, item.quantity || 1)
+            return normalizeQuoteHardwareItem({ ...presetItem, id: item.id }, index)
+          }
+          const nextItem = { ...item, [field]: value }
+          if (field === 'unitPrice') nextItem.unitPriceManual = true
+          if (recalcFields.has(field) && !nextItem.unitPriceManual) {
+            nextItem.unitPrice = salePriceFromSyscom(nextItem.cost, nextItem.discount, nextItem.margin, nextItem.unitPrice)
+          }
+          return normalizeQuoteHardwareItem(nextItem, index)
+        })
+      }
+      persistState()
+      if (shouldRender) render()
+    }
+    if (input.tagName === 'SELECT') {
+      input.addEventListener('change', () => saveHardware(true))
+    } else {
+      input.addEventListener('input', () => saveHardware(false))
+      input.addEventListener('change', () => saveHardware(true))
+    }
+  })
+
+  document.querySelectorAll('[data-accessory-field]').forEach((input) => {
+    const numericFields = new Set(['quantity', 'cost', 'discount', 'margin', 'unitPrice', 'installationPrice'])
     const recalcFields = new Set(['cost', 'discount', 'margin'])
     const saveAccessory = (shouldRender) => {
       const accessoryId = input.dataset.accessoryId
@@ -10247,7 +10664,8 @@ function bindEvents() {
         accessories: normalizedQuoteAccessories(state.quote).map((accessory, index) => {
           if (accessory.id !== accessoryId) return accessory
           const nextAccessory = { ...accessory, [field]: value }
-          if (recalcFields.has(field)) {
+          if (field === 'unitPrice') nextAccessory.unitPriceManual = true
+          if (recalcFields.has(field) && !nextAccessory.unitPriceManual) {
             nextAccessory.unitPrice = salePriceFromSyscom(nextAccessory.cost, nextAccessory.discount, nextAccessory.margin, nextAccessory.unitPrice)
           }
           return normalizeQuoteAccessory(nextAccessory, index)
@@ -10260,6 +10678,23 @@ function bindEvents() {
     }
     input.addEventListener('input', () => saveAccessory(false))
     input.addEventListener('change', () => saveAccessory(true))
+  })
+
+  document.querySelectorAll('[data-service-field]').forEach((input) => {
+    const numericFields = new Set(['quantity', 'unitPrice'])
+    const saveService = (shouldRender) => {
+      const serviceId = input.dataset.serviceId
+      const field = input.dataset.serviceField
+      const value = numericFields.has(field) ? (input.value === '' ? 0 : Number(input.value)) : input.value
+      state.quote = {
+        ...state.quote,
+        services: normalizedQuoteServices(state.quote).map((service, index) => (service.id === serviceId ? normalizeQuoteService({ ...service, [field]: value }, index) : service))
+      }
+      persistState()
+      if (shouldRender) render()
+    }
+    input.addEventListener('input', () => saveService(false))
+    input.addEventListener('change', () => saveService(true))
   })
 
   document.getElementById('selectedCompany')?.addEventListener('change', (event) => {
