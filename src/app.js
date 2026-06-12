@@ -7505,10 +7505,10 @@ function buildQuotePdfBlob(quote, logo = null) {
   text(pdfTrim(quote.email || '', 34), 400, 614, 10)
 
   const columns = [
-    { label: 'Producto', x: 36, width: 58 },
+    { label: 'Concepto', x: 36, width: 58 },
     { label: 'Cantidad', x: 94, width: 48, align: 'right' },
-    { label: 'Descripcion', x: 142, width: 204 },
-    { label: 'Precio lista', x: 346, width: 82, align: 'right' },
+    { label: 'Detalle', x: 142, width: 204 },
+    { label: 'Precio base', x: 346, width: 82, align: 'right' },
     { label: 'Precio unit.', x: 428, width: 82, align: 'right' },
     { label: 'Importe', x: 510, width: 66, align: 'right' }
   ]
@@ -7535,12 +7535,12 @@ function buildQuotePdfBlob(quote, logo = null) {
 
   y -= 10
   rect(36, y, 540, 22, [0.86, 0.86, 0.86], border)
-  text('TOTAL EQUIPO INSTALADO', 320, y + 7, 10, true, black, 'center')
+  text('TOTAL CARGOS UNICOS', 320, y + 7, 10, true, black, 'center')
   text(pdfMoney(productSubtotal, quote.currency), 558, y + 7, 9.5, true, black, 'right')
 
   y -= 30
   rect(36, y, 540, 20, [1, 1, 1], border)
-  text('CARGOS RECURRENTES', 42, y + 6, 10, true)
+  text('CARGOS DEL PERIODO', 42, y + 6, 10, true)
   y -= 20
   recurringRows.forEach((row) => {
     drawRow(row, y)
@@ -7550,11 +7550,11 @@ function buildQuotePdfBlob(quote, logo = null) {
   y -= 34
   rect(36, y - 96, 540, 118, [1, 1, 1], border)
   rect(36, y, 540, 22, [1, 1, 1], border)
-  text('RESUMEN DE PAGO DE CONTADO', 42, y + 7, 10, true)
+  text('RESUMEN DE PRE FACTURA', 42, y + 7, 10, true)
   const summaryY = y - 18
   const summaryRows = [
-    ['SUBTOTAL EQUIPO', productSubtotal],
-    ['SUBTOTAL CARGOS RECURRENTES', quote.recurringSubtotal],
+    ['SUBTOTAL CARGOS UNICOS', productSubtotal],
+    ['SUBTOTAL CARGOS DEL PERIODO', quote.recurringSubtotal],
     ['SUBTOTAL', quote.subtotal],
     ['I.V.A.', quote.tax],
     ['TOTAL', quote.total]
@@ -7625,11 +7625,25 @@ async function buildQuoteTemplateXlsxBlob(quote) {
   const productSubtotal = quote.hardwareSubtotal + quote.accessorySubtotal + quote.installationSubtotal + quote.travelFee + quote.serviceSubtotal + quote.accessoryInstallationSubtotal
   const documentTitle = quote.documentTitle || quoteDocumentTitle
   const documentNumber = quote.documentNumber || quoteNumber()
+  const templateTextReplacements = [
+    ['COTIZACION', documentTitle],
+    ['Cotizacion', documentTitle],
+    ['Producto', 'Concepto'],
+    ['Descripcion', 'Detalle'],
+    ['Precio lista', 'Precio base'],
+    ['TOTAL EQUIPO INSTALADO', 'TOTAL CARGOS UNICOS'],
+    ['CARGOS RECURRENTES', 'CARGOS DEL PERIODO'],
+    ['RESUMEN DE PAGO DE CONTADO', 'RESUMEN DE PRE FACTURA'],
+    ['SUBTOTAL EQUIPO', 'SUBTOTAL CARGOS UNICOS'],
+    ['SUBTOTAL CARGOS RECURRENTES', 'SUBTOTAL CARGOS DEL PERIODO']
+  ]
+  const replaceTemplateText = (xmlText) => templateTextReplacements.reduce(
+    (textValue, [from, to]) => textValue.replaceAll(from, xmlEscape(to)),
+    xmlText
+  )
 
   sheetXmlText = sheetXmlText.replace(/<hyperlinks>[\s\S]*?<\/hyperlinks>/, '')
-  sheetXmlText = sheetXmlText
-    .replace(/COTIZACION/g, xmlEscape(documentTitle))
-    .replace(/Cotizacion/g, xmlEscape(documentTitle))
+  sheetXmlText = replaceTemplateText(sheetXmlText)
   sheetXmlText = setTemplateCells(sheetXmlText, [
     ['H3', documentNumber],
     ['H4', excelSerialDate(today)],
@@ -7668,9 +7682,7 @@ async function buildQuoteTemplateXlsxBlob(quote) {
   const sharedStrings = zip.file('xl/sharedStrings.xml')
   if (sharedStrings) {
     const xmlText = await sharedStrings.async('string')
-    zip.file('xl/sharedStrings.xml', xmlText
-      .replace(/COTIZACION/g, xmlEscape(documentTitle))
-      .replace(/Cotizacion/g, xmlEscape(documentTitle)))
+    zip.file('xl/sharedStrings.xml', replaceTemplateText(xmlText))
   }
   zip.remove('xl/calcChain.xml')
 
@@ -8165,7 +8177,7 @@ async function exportQuoteXlsx() {
     ['RFC', quote.rfc],
     ['Atiende', quote.attendant],
     ['Empresa registrada', quote.company || 'Prospecto'],
-    ['Descripcion', quote.description],
+    ['Detalle', quote.description],
     ['Email', quote.email],
     ['Moneda', quote.currency],
     ['Primer mes gratis', quote.firstMonthFree ? 'Si' : 'No'],
@@ -8185,7 +8197,7 @@ async function exportQuoteXlsx() {
     ['Notas traslado', quote.travelNotes],
     [],
     ['Concepto', 'Cantidad', 'Precio unitario', 'Subtotal'],
-    ['Equipos'],
+    ['Cargos unicos'],
     ...quote.hardwareRows.map((row) => [`Equipo GPS - ${row.model}`, row.quantity, row.unitPrice, row.subtotal]),
     ['Accesorios'],
     ...quote.accessoryRows.map((row) => [`${row.label} (${row.margin}% ganancia)`, row.quantity, row.unitPrice, row.subtotal]),
@@ -8194,7 +8206,7 @@ async function exportQuoteXlsx() {
     ...quote.accessoryRows.filter((row) => row.installationSubtotal > 0).map((row) => [`Instalacion accesorio - ${row.label}`, row.quantity, row.installationPrice, row.installationSubtotal]),
     ...(quote.travelFee > 0 ? [['Viaticos traslado tecnico', 1, quote.travelFee, quote.travelFee]] : []),
     ...quote.serviceRows.map((row) => [row.description, row.quantity, row.unitPrice, row.subtotal]),
-    ['Mensualidades'],
+    ['Cargos del periodo'],
     ...quoteRecurringRows(quote).map((row) => [row.description, row.quantity, row.unitPrice, row.amount]),
     [],
     ['Subtotal', '', '', quote.subtotal],
