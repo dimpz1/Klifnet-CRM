@@ -1491,6 +1491,51 @@ function billingEntityNameForCompany(companyName) {
   return billingEntityForCompany(companyName).name
 }
 
+function billingGroupEntitiesForCompany(companyName) {
+  const cleanCompany = textValue(companyName)
+  const linkedProfiles = invoiceProfilesForCompany(cleanCompany)
+  if (linkedProfiles.length) return linkedProfiles.map((profile) => normalizeInvoiceProfile(profile).razonSocial).filter(Boolean)
+  return [billingEntityNameForCompany(cleanCompany)]
+}
+
+function billingGroupOwnerEntityNameForCompany(companyName, billingGroup = defaultBillingGroupName) {
+  const cleanCompany = textValue(companyName)
+  const groupName = cleanBillingGroupName(billingGroup)
+  if (!cleanCompany || groupName === defaultBillingGroupName) return ''
+  const linkedProfiles = invoiceProfilesForCompany(cleanCompany).map(normalizeInvoiceProfile)
+  const matchedProfile = linkedProfiles.find((profile) => {
+    const rawGroups = getCompanyMeta(profile.razonSocial).billingGroups
+    const groups = Array.isArray(rawGroups) ? rawGroups.map(cleanBillingGroupName) : []
+    return groups.some((group) => normalizeHeader(group) === normalizeHeader(groupName))
+  })
+  return matchedProfile?.razonSocial || ''
+}
+
+function billingEntityForCompanyGroup(companyName, billingGroup = defaultBillingGroupName) {
+  const cleanCompany = textValue(companyName)
+  const groupName = cleanBillingGroupName(billingGroup)
+  const ownerEntity = billingGroupOwnerEntityNameForCompany(cleanCompany, groupName)
+  if (ownerEntity) {
+    const matchedProfile = invoiceProfileByRazonSocial(ownerEntity)
+    if (matchedProfile) {
+      const meta = getCompanyMeta(matchedProfile.razonSocial)
+      return {
+        name: matchedProfile.razonSocial,
+        legalName: matchedProfile.razonSocial,
+        rfc: matchedProfile.rfc || meta.rfc || '',
+        email: meta.email || matchedProfile.contactEmail || '',
+        isFiscalProfile: true,
+        profile: matchedProfile
+      }
+    }
+  }
+  return billingEntityForCompany(cleanCompany)
+}
+
+function billingEntityNameForCompanyGroup(companyName, billingGroup = defaultBillingGroupName) {
+  return billingEntityForCompanyGroup(companyName, billingGroup).name
+}
+
 function billingCompanyFilterKey() {
   if (!state.billingCompany) return ''
   return normalizeHeader(billingEntityNameForCompany(state.billingCompany) || state.billingCompany)
@@ -1588,7 +1633,9 @@ function billingGroupsForEntity(entityName) {
   const metaGroups = Array.isArray(rawMetaGroups) ? rawMetaGroups : []
   groups.push(...metaGroups)
   state.devices.forEach((device) => {
-    if (normalizeHeader(billingEntityNameForCompany(device.company)) === entityKey) groups.push(deviceBillingGroup(device))
+    const groupName = deviceBillingGroup(device)
+    const ownerEntity = billingGroupOwnerEntityNameForCompany(device.company, groupName) || billingEntityNameForCompany(device.company)
+    if (normalizeHeader(ownerEntity) === entityKey) groups.push(groupName)
   })
   const result = sortBillingGroupNames(groups)
   billingGroupsForEntityCache.map.set(entityKey, result)
@@ -1728,7 +1775,7 @@ function addEquipmentBillingGroup() {
   })
 }
 
-function addCompanyBillingGroup(companyName, rawGroupName) {
+function addCompanyBillingGroup(companyName, rawGroupName, targetEntityName = '') {
   const cleanCompany = textValue(companyName)
   const groupName = cleanBillingGroupName(rawGroupName)
   if (!cleanCompany) return
@@ -1736,7 +1783,9 @@ function addCompanyBillingGroup(companyName, rawGroupName) {
     setState({ notice: 'Principal ya existe como grupo base.', view: 'empresas' })
     return
   }
-  const entityName = billingEntityNameForCompany(cleanCompany)
+  const allowedEntities = billingGroupEntitiesForCompany(cleanCompany)
+  const requestedEntity = textValue(targetEntityName)
+  const entityName = allowedEntities.find((entity) => normalizeHeader(entity) === normalizeHeader(requestedEntity)) || allowedEntities[0] || billingEntityNameForCompany(cleanCompany)
   const result = registerBillingGroupForEntity(entityName, groupName)
   setState({
     companyMeta: state.companyMeta,
@@ -5690,7 +5739,7 @@ function cobrosGroups(companies) {
 function billingFilterMatches(device) {
   const query = normalizeHeader(state.billingQuery)
   const deviceGroups = device.groups.length ? device.groups : ['Sin grupo']
-  const billingEntityName = billingEntityNameForCompany(device.company)
+  const billingEntityName = billingEntityNameForCompanyGroup(device.company, deviceBillingGroup(device))
   const companyMatches = !state.billingCompany || normalizeHeader(billingEntityName) === billingCompanyFilterKey()
   const groupMatches = !state.billingGroup || normalizeHeader(deviceBillingGroup(device)) === normalizeHeader(state.billingGroup)
   const queryMatches =
@@ -5716,7 +5765,7 @@ function billingGroups() {
   const groups = [defaultBillingGroupName]
   if (state.billingCompany) groups.push(...billingGroupsForEntity(billingEntityNameForCompany(state.billingCompany)))
   state.devices.forEach((device) => {
-    if (state.billingCompany && normalizeHeader(billingEntityNameForCompany(device.company)) !== companyKey) return
+    if (state.billingCompany && normalizeHeader(billingEntityNameForCompanyGroup(device.company, deviceBillingGroup(device))) !== companyKey) return
     groups.push(deviceBillingGroup(device))
   })
   if (!state.billingCompany) {
@@ -6154,9 +6203,9 @@ function billingLineFilterMatches(line, match = null) {
   const query = normalizeHeader(state.billingQuery)
   const device = match ? match.device : matchLineDevice(line)
   const companyName = device?.company || line.company
-  const billingEntityName = billingEntityNameForCompany(companyName)
   const groups = Array.isArray(device?.groups) ? device.groups : []
   const billingGroup = device ? deviceBillingGroup(device) : cleanBillingGroupName(line.billingGroup)
+  const billingEntityName = billingEntityNameForCompanyGroup(companyName, billingGroup)
   const companyMatches = !state.billingCompany || normalizeHeader(billingEntityName) === billingCompanyFilterKey()
   const groupMatches = !state.billingGroup || normalizeHeader(billingGroup) === normalizeHeader(state.billingGroup)
   const queryMatches =
@@ -6171,8 +6220,8 @@ function billingLineFilterMatches(line, match = null) {
 
 function ensureBillingRow(rows, companyName, period, billingGroup = defaultBillingGroupName) {
   if (!companyName || companyName === 'Sin empresa') return null
-  const entity = billingEntityForCompany(companyName)
   const groupName = cleanBillingGroupName(billingGroup)
+  const entity = billingEntityForCompanyGroup(companyName, groupName)
   const recipients = billingRecipientsForEntityGroup(entity.name, groupName, entity.email)
   const rowKey = `${normalizeHeader(entity.name)}::${normalizeHeader(groupName)}`
   if (!rows.has(rowKey)) {
@@ -8833,8 +8882,7 @@ function renderEmpresas(companies) {
           const linkedProfiles = invoiceProfilesForCompany(company.name)
           const meta = getCompanyMeta(company.name)
           const contacts = companyContacts(meta)
-          const billingEntity = billingEntityNameForCompany(company.name)
-          const billingGroupList = billingGroupsForEntity(billingEntity)
+          const billingGroupEntities = billingGroupEntitiesForCompany(company.name)
           const companyIsOpen = normalizeHeader(state.selectedCompany) === normalizeHeader(company.name)
           return `
             <details class="company-row" data-company-detail="${attr(company.name)}" ${companyIsOpen ? 'open' : ''}>
@@ -8910,12 +8958,24 @@ function renderEmpresas(companies) {
                     </label>
                     <div class="company-billing-groups">
                       <span>Grupos de facturacion</span>
-                      ${renderBillingGroupChipList(billingEntity, billingGroupList, { view: 'empresas', openCompany: company.name })}
+                      ${billingGroupEntities
+                        .map((entityName) => {
+                          const billingGroupList = billingGroupsForEntity(entityName)
+                          return `
+                            <div class="company-billing-entity-groups">
+                              <strong>${esc(entityName)}</strong>
+                              ${renderBillingGroupChipList(entityName, billingGroupList, { view: 'empresas', openCompany: company.name })}
+                            </div>`
+                        })
+                        .join('')}
                       <div class="invoice-link-add-row">
+                        <select data-company-billing-group-entity="${attr(company.name)}">
+                          ${billingGroupEntities.map((entityName) => `<option value="${attr(entityName)}">${esc(entityName)}</option>`).join('')}
+                        </select>
                         <input data-company-billing-group-input="${attr(company.name)}" placeholder="Nombre del grupo: Obra, sucursal, flotilla...">
                         <button class="button small-button" data-company-billing-group-add="${attr(company.name)}">${icon('plus')}Crear grupo</button>
                       </div>
-                      <small>Se guarda en ${esc(billingEntity)} y despues puedes asignar equipos a ese grupo.</small>
+                      <small>Elige la razon social donde vive el grupo; no se mezclan grupos entre razones sociales ligadas.</small>
                     </div>
                     <span>Razones sociales ligadas</span>
                     <div class="company-fiscal-tags">
@@ -10533,12 +10593,15 @@ function bindEvents() {
       const input =
         button.closest('.company-billing-groups')?.querySelector('[data-company-billing-group-input]') ||
         Array.from(document.querySelectorAll('[data-company-billing-group-input]')).find((node) => node.dataset.companyBillingGroupInput === companyName)
+      const entitySelect =
+        button.closest('.company-billing-groups')?.querySelector('[data-company-billing-group-entity]') ||
+        Array.from(document.querySelectorAll('[data-company-billing-group-entity]')).find((node) => node.dataset.companyBillingGroupEntity === companyName)
       const groupName = textValue(input?.value)
       if (!groupName) {
         setState({ notice: 'Escribe el nombre del grupo de facturacion.', view: 'empresas' })
         return
       }
-      addCompanyBillingGroup(companyName, groupName)
+      addCompanyBillingGroup(companyName, groupName, entitySelect?.value)
     })
   })
 
