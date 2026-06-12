@@ -7287,6 +7287,7 @@ function quoteTemplateProductRows(quote) {
 }
 
 function quoteRecurringRows(quote) {
+  if (Array.isArray(quote.recurringRows)) return quote.recurringRows.filter((row) => Number(row.amount || 0) !== 0)
   const serviceName =
     quote.cycle === 'anual' ? 'Servicio anual por equipo' : quote.cycle === 'semestral' ? 'Servicio semestral por equipo' : 'Servicio mensual por equipo'
   const lineServiceName =
@@ -7610,7 +7611,7 @@ async function exportQuotePdf(quote) {
   download(`cotizacion-${slug(quote.clientName)}-${quote.date}.pdf`, blob, 'application/pdf')
 }
 
-async function exportQuoteTemplateXlsx(quote) {
+async function buildQuoteTemplateXlsxBlob(quote) {
   const zip = await JSZip.loadAsync(await fetchPrivateFile('cotizacion'))
   let sheetXmlText = await zip.file('xl/worksheets/sheet1.xml').async('string')
   const today = new Date()
@@ -7668,11 +7669,181 @@ async function exportQuoteTemplateXlsx(quote) {
     zip.file('xl/_rels/workbook.xml.rels', xmlText.replace(/<Relationship[^>]*Target="calcChain\.xml"[^>]*\/>/, ''))
   }
 
-  const blob = await zip.generateAsync({
+  return zip.generateAsync({
     type: 'blob',
     mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
   })
+}
+
+async function exportQuoteTemplateXlsx(quote) {
+  const blob = await buildQuoteTemplateXlsxBlob(quote)
   download(`cotizacion-${slug(quote.clientName)}-${quote.date}.xlsx`, blob, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+}
+
+function billingDetailDescription(detail = {}, row = {}) {
+  const sourceType = detail.sourceType || 'Equipo Wialon'
+  const cycle = normalizeCycle(detail.cycle || 'mensual')
+  const cycleLabel = cycle === 'anual' ? 'anual' : cycle === 'semestral' ? 'semestral' : 'mensual'
+  const unitName = textValue(detail.unitName) || sourceType
+  const group = cleanBillingGroupName(detail.billingGroup || row.billingGroup)
+  const identifiers = [detail.uid, detail.imeiLong || detail.imei, detail.phone].map(textValue).filter(Boolean)
+  const suffix = identifiers.length ? ` (${identifiers.join(' / ')})` : ''
+  return `${sourceType} ${cycleLabel} - ${unitName}${group && group !== defaultBillingGroupName ? ` - ${group}` : ''}${suffix}`
+}
+
+function billingRowToQuote(row, period = getBillingPeriod()) {
+  const details = (row.details || []).filter((detail) => Number(detail.unitPrice || 0) > 0)
+  const groups = new Map()
+  details.forEach((detail) => {
+    const sourceType = detail.sourceType || 'Equipo Wialon'
+    const cycle = normalizeCycle(detail.cycle || 'mensual')
+    const unitPrice = Number(detail.unitPrice || 0)
+    const groupName = cleanBillingGroupName(detail.billingGroup || row.billingGroup)
+    const key = `${sourceType}|${cycle}|${unitPrice}|${groupName}`
+    if (!groups.has(key)) {
+      const cycleLabel = cycle === 'anual' ? 'anual' : cycle === 'semestral' ? 'semestral' : 'mensual'
+      groups.set(key, {
+        product: sourceType.toLowerCase().includes('linea') ? 'LIN' : 'REC',
+        quantity: 0,
+        description: `${sourceType} ${cycleLabel}${groupName !== defaultBillingGroupName ? ` - ${groupName}` : ''}`,
+        listPrice: unitPrice,
+        discount: '',
+        unitPrice,
+        amount: 0
+      })
+    }
+    const group = groups.get(key)
+    group.quantity += 1
+    group.amount += unitPrice
+  })
+  const recurringRows = Array.from(groups.values())
+  return {
+    clientName: row.legalName || row.company,
+    company: row.company,
+    rfc: row.rfc || '',
+    email: row.email || row.recipients?.to?.[0] || '',
+    attendant: 'KLIFNET',
+    cycle: 'mensual',
+    quantity: 0,
+    description: `Prefactura ${period.label}`,
+    firstMonthFree: false,
+    firstMonthDiscountUnit: 0,
+    firstMonthDiscount: 0,
+    equipmentRecurringSubtotal: row.subtotal,
+    recurringUnitPrice: 0,
+    recurringGrossSubtotal: row.subtotal,
+    lineQuantity: 0,
+    lineCycle: 'mensual',
+    lineDescription: '',
+    lineRecurringUnitPrice: 0,
+    lineRecurringGrossSubtotal: 0,
+    lineFirstMonthDiscountUnit: 0,
+    lineFirstMonthDiscount: 0,
+    lineRecurringSubtotal: 0,
+    hardwareItems: [],
+    hardwareRows: [],
+    hardwareModel: '',
+    hardwareSupplier: '',
+    hardwareSyscomUrl: '',
+    hardwareCostPerDevice: 0,
+    hardwareDiscountPercent: 0,
+    hardwareNetCost: 0,
+    hardwareMarginPercent: 0,
+    hardwareBaseUnitPrice: 0,
+    hardwareUnitPrice: 0,
+    installationMode: 'none',
+    installationZone: 'city',
+    installationBaseUnitPrice: 0,
+    installationIncludedAmount: 0,
+    installationUnitPrice: 0,
+    travelFee: 0,
+    travelNotes: '',
+    accessoryRows: [],
+    accessorySubtotal: 0,
+    accessoryInstallationSubtotal: 0,
+    serviceRows: [],
+    serviceSubtotal: 0,
+    setupUnitPrice: 0,
+    recurringRows,
+    recurringSubtotal: row.subtotal,
+    hardwareSubtotal: 0,
+    installationSubtotal: 0,
+    setupSubtotal: 0,
+    subtotal: row.subtotal,
+    tax: row.tax,
+    total: row.total,
+    currency: state.billing.currency,
+    notes: `Prefactura correspondiente a ${period.label}. ${row.message || ''}`.trim(),
+    date: new Date().toISOString().slice(0, 10),
+    expires: period.end || new Date().toISOString().slice(0, 10)
+  }
+}
+
+async function quotePdfBlobWithLogo(quote, logo = null) {
+  if (logo) return buildQuotePdfBlob(quote, logo)
+  let loadedLogo = null
+  try {
+    const response = await fetch('/public/assets/klifnet-logo.jpg')
+    if (response.ok) {
+      const bytes = new Uint8Array(await response.arrayBuffer())
+      loadedLogo = { bytes, ...jpegDimensions(bytes) }
+    }
+  } catch (error) {
+    console.warn('No se pudo cargar el logo para el PDF.', error)
+  }
+  return buildQuotePdfBlob(quote, loadedLogo)
+}
+
+async function exportBillingPrefactPackage() {
+  const { period, rows } = buildBillingRowsForPeriod(state.billing.periodMode || 'next', true)
+  const billableRows = rows.filter((row) => Number(row.total || 0) > 0)
+  if (!billableRows.length) {
+    setState({ notice: 'No hay prefacturas con total para empaquetar.', view: 'facturacion' })
+    return
+  }
+
+  const zip = new JSZip()
+  let logo = null
+  try {
+    const response = await fetch('/public/assets/klifnet-logo.jpg')
+    if (response.ok) {
+      const bytes = new Uint8Array(await response.arrayBuffer())
+      logo = { bytes, ...jpegDimensions(bytes) }
+    }
+  } catch (error) {
+    console.warn('No se pudo cargar el logo para las prefacturas PDF.', error)
+  }
+
+  for (const row of billableRows) {
+    const quote = billingRowToQuote(row, period)
+    const baseName = `${slug(row.company)}-${slug(cleanBillingGroupName(row.billingGroup)) || 'principal'}-${period.key}`
+    const pdfBlob = await quotePdfBlobWithLogo(quote, logo)
+    zip.file(`${baseName}.pdf`, await pdfBlob.arrayBuffer())
+    try {
+      const xlsxBlob = await buildQuoteTemplateXlsxBlob(quote)
+      zip.file(`${baseName}.xlsx`, await xlsxBlob.arrayBuffer())
+    } catch (error) {
+      console.error(error)
+      const fallbackRows = [
+        ['KLIFNET', 'Prefactura'],
+        ['Periodo', period.label],
+        ['Cliente', quote.clientName],
+        ['RFC', quote.rfc],
+        [],
+        ['Concepto', 'Cantidad', 'Precio unitario', 'Subtotal'],
+        ...quote.recurringRows.map((item) => [item.description, item.quantity, item.unitPrice, item.amount]),
+        [],
+        ['Subtotal', '', '', quote.subtotal],
+        ['IVA', '', '', quote.tax],
+        ['Total', '', '', quote.total]
+      ]
+      zip.file(`${baseName}-respaldo.csv`, fallbackRows.map((csvRow) => csvRow.map(escapeCsv).join(',')).join('\n'))
+    }
+  }
+
+  const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/zip' })
+  download(`prefacturas-${period.key}.zip`, blob, 'application/zip')
+  setState({ notice: `Paquete generado: ${billableRows.length} prefacturas para ${period.label}.`, view: 'facturacion' })
 }
 
 async function exportBillingXlsx() {
@@ -9089,6 +9260,7 @@ function renderFacturacion(stats, companies) {
         <button class="button primary" id="createInvoiceApiDraftsMain">${icon('send')}Crear facturas API</button>
         <button class="button" id="sendBillingEmails">${icon('mail')}Enviar por correo</button>
         <button class="button" id="exportNextMonthBillingSummary">${icon('calendar-days')}Resumen mes siguiente</button>
+        <button class="button" id="exportBillingPrefactPackage">${icon('package')}Paquete prefacturas</button>
         <button class="button" id="exportBillingXlsx">${icon('download')}Exportar XLSX</button>
       </div>
       <div class="billing-summary">
@@ -10647,6 +10819,7 @@ function bindEvents() {
   document.getElementById('downloadInvoiceApiDraft')?.addEventListener('click', downloadInvoiceApiDraftJson)
   document.getElementById('sendBillingEmails')?.addEventListener('click', sendBillingEmails)
   document.getElementById('exportNextMonthBillingSummary')?.addEventListener('click', exportNextMonthBillingSummaryXlsx)
+  document.getElementById('exportBillingPrefactPackage')?.addEventListener('click', exportBillingPrefactPackage)
   document.getElementById('exportBillingXlsx')?.addEventListener('click', exportBillingXlsx)
   document.getElementById('loadPaymentSeed')?.addEventListener('click', loadPaymentSeed)
   document.getElementById('uploadPaymentFile')?.addEventListener('click', () => document.getElementById('paymentFileInput')?.click())
