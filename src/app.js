@@ -644,7 +644,8 @@ function normalizeBillableFlag(value, fallback = true) {
 }
 
 function deviceBillingGroup(device = {}) {
-  return cleanBillingGroupName(device.billingGroup || device.invoiceGroup || device.grupoFacturacion || device.grupo_facturacion)
+  if (Object.prototype.hasOwnProperty.call(device, 'billingGroup')) return textValue(device.billingGroup)
+  return cleanBillingGroupName(device.invoiceGroup || device.grupoFacturacion || device.grupo_facturacion)
 }
 
 function isDeviceBillingEnabled(device = {}) {
@@ -1611,8 +1612,7 @@ function sortBillingGroupNames(groups = []) {
 
 function billingGroupsForEntity(entityName) {
   const cleanEntity = textValue(entityName)
-  const groups = [defaultBillingGroupName]
-  if (!cleanEntity) return groups
+  if (!cleanEntity) return [defaultBillingGroupName]
   if (
     billingGroupsForEntityCache.devices !== state.devices ||
     billingGroupsForEntityCache.lines !== state.lines ||
@@ -1631,9 +1631,11 @@ function billingGroupsForEntity(entityName) {
   if (billingGroupsForEntityCache.map.has(entityKey)) return billingGroupsForEntityCache.map.get(entityKey)
   const rawMetaGroups = getCompanyMeta(cleanEntity).billingGroups
   const metaGroups = Array.isArray(rawMetaGroups) ? rawMetaGroups : []
+  const groups = Array.isArray(rawMetaGroups) ? [] : [defaultBillingGroupName]
   groups.push(...metaGroups)
   state.devices.forEach((device) => {
     const groupName = deviceBillingGroup(device)
+    if (!groupName) return
     const ownerEntity = billingGroupOwnerEntityNameForCompany(device.company, groupName) || billingEntityNameForCompany(device.company)
     if (normalizeHeader(ownerEntity) === entityKey) groups.push(groupName)
   })
@@ -1671,8 +1673,7 @@ function registerBillingGroupForEntity(entityName, rawGroupName) {
 function deleteBillingGroupForEntity(entityName, rawGroupName, view = state.view) {
   const cleanEntity = textValue(entityName)
   const groupName = cleanBillingGroupName(rawGroupName)
-  if (!cleanEntity || groupName === defaultBillingGroupName) {
-    setState({ notice: 'El grupo Principal no se puede borrar.', view })
+  if (!cleanEntity) {
     return
   }
   const entityKey = normalizeHeader(cleanEntity)
@@ -1681,12 +1682,13 @@ function deleteBillingGroupForEntity(entityName, rawGroupName, view = state.view
   const recipients = { ...(existing.billingGroupRecipients || {}) }
   delete recipients[groupName]
   const nextGroups = sortBillingGroupNames((existing.billingGroups || []).filter((group) => normalizeHeader(group) !== groupKey))
+  const fallbackGroup = nextGroups[0] || ''
   let movedDevices = 0
   const nextDevices = state.devices.map((device) => {
     const deviceEntityKey = normalizeHeader(billingEntityNameForCompany(device.company))
     if (deviceEntityKey !== entityKey || normalizeHeader(deviceBillingGroup(device)) !== groupKey) return device
     movedDevices += 1
-    return { ...device, billingGroup: defaultBillingGroupName }
+    return { ...device, billingGroup: fallbackGroup }
   })
   setState({
     devices: nextDevices,
@@ -1700,10 +1702,10 @@ function deleteBillingGroupForEntity(entityName, rawGroupName, view = state.view
       }
     },
     billingGroup: normalizeHeader(state.billingGroup) === groupKey ? '' : state.billingGroup,
-    newDevice: normalizeHeader(state.newDevice.billingGroup) === groupKey ? { ...state.newDevice, billingGroup: defaultBillingGroupName } : state.newDevice,
+    newDevice: normalizeHeader(state.newDevice.billingGroup) === groupKey ? { ...state.newDevice, billingGroup: fallbackGroup } : state.newDevice,
     selectedCompany: state.selectedCompany,
     view,
-    notice: `Grupo de facturacion borrado: ${groupName}${movedDevices ? `. ${movedDevices} equipo(s) regresaron a Principal.` : ''}`
+    notice: `Grupo de facturacion borrado: ${groupName}${movedDevices ? `. ${movedDevices} equipo(s) se movieron a ${fallbackGroup || 'sin grupo'}.` : ''}`
   })
 }
 
@@ -1721,7 +1723,7 @@ function renderBillingGroupChipList(entityName, groups = [], options = {}) {
             <span class="pill billing-group-pill ${isDefault || isActive ? 'ok' : ''}">
               ${esc(group)}
               ${
-                !isDefault && cleanEntity
+                cleanEntity
                   ? `<button class="chip-remove-button" title="Borrar grupo" data-delete-billing-group="${attr(cleanEntity)}" data-group="${attr(group)}" data-view="${attr(view)}" data-open-company="${attr(openCompany)}">${icon('x')}</button>`
                   : ''
               }
