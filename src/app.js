@@ -1032,17 +1032,42 @@ function formatRecipientSummary(recipients = {}) {
   return parts.join(' | ')
 }
 
-function recipientContactSelectOptions(contacts = [], selected = '') {
+function recipientContactSelectOptions(contacts = [], selected = '', valueMode = 'reference') {
   return [
     '<option value="">Seleccionar responsable</option>',
     ...contacts
       .filter((contact) => isValidEmail(contact.email))
       .map((contact) => {
-        const ref = contactReference(contact)
+        const ref = valueMode === 'email' ? textValue(contact.email).toLowerCase() : contactReference(contact)
         const label = `${contact.name || contact.email} - ${contact.email}`
         return `<option value="${attr(ref)}" ${normalizeHeader(selected) === normalizeHeader(ref) ? 'selected' : ''}>${esc(label)}</option>`
       })
   ].join('')
+}
+
+function selectedRecipientReferenceForBucket(entityName, groupName, bucket) {
+  const settings = billingGroupRecipientSettings(entityName, groupName)
+  return settings[normalizeRecipientBucket(bucket)]?.[0] || ''
+}
+
+function renderCompanyBillingGroupRecipientCombos(companyContactsList = [], entityName = '', groupName = '') {
+  const contacts = companyContactsList.filter((contact) => isValidEmail(contact.email))
+  if (!contacts.length) return '<small class="muted">Sin responsables con correo para seleccionar.</small>'
+  return `
+    <div class="company-group-recipient-row">
+      ${['to', 'cc', 'bcc']
+        .map((bucket) => {
+          const selected = selectedRecipientReferenceForBucket(entityName, groupName, bucket)
+          return `
+            <label>
+              <span>${esc(recipientBucketLabel(bucket))}</span>
+              <select data-billing-recipient-add="${attr(entityName)}" data-billing-recipient-group="${attr(groupName)}" data-recipient-bucket="${bucket}">
+                ${recipientContactSelectOptions(contacts, selected, 'email')}
+              </select>
+            </label>`
+        })
+        .join('')}
+    </div>`
 }
 
 function invoiceProfileNameSet(profiles = state.invoiceProfiles) {
@@ -8993,6 +9018,17 @@ function renderEmpresas(companies) {
                             <div class="company-billing-entity-groups">
                               <strong>${esc(entityName)}</strong>
                               ${renderBillingGroupChipList(entityName, billingGroupList, { view: 'empresas', openCompany: company.name })}
+                              <div class="company-group-recipient-list">
+                                ${billingGroupList
+                                  .map(
+                                    (groupName) => `
+                                      <div class="company-group-recipient-card">
+                                        <span>${esc(groupName)}</span>
+                                        ${renderCompanyBillingGroupRecipientCombos(contacts, entityName, groupName)}
+                                      </div>`
+                                  )
+                                  .join('')}
+                              </div>
                             </div>`
                         })
                         .join('')}

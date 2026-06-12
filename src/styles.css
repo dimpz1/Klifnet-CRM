@@ -856,6 +856,46 @@ tbody tr:focus-within {
   text-transform: uppercase;
 }
 
+.company-group-recipient-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.company-group-recipient-card {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.company-group-recipient-card > span {
+  font-size: 0.74rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.company-group-recipient-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(130px, 1fr));
+  gap: 7px;
+}
+
+.company-group-recipient-row label {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.company-group-recipient-row span {
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
 .contact-grid,
 .recipient-grid {
   min-width: 760px;
