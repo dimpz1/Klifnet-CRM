@@ -871,10 +871,23 @@ tbody tr:focus-within {
   background: #fff;
 }
 
-.company-group-recipient-card > span {
+.company-group-recipient-head {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.6fr) minmax(180px, 1fr);
+  gap: 8px;
+  align-items: end;
+}
+
+.company-group-recipient-head > span {
   font-size: 0.74rem;
   font-weight: 900;
   text-transform: uppercase;
+}
+
+.company-group-recipient-head label {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
 }
 
 .company-group-recipient-row {

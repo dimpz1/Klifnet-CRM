@@ -1708,6 +1708,73 @@ function registerBillingGroupForEntity(entityName, rawGroupName) {
   return { ok: true, entityName: cleanEntity, groupName, created }
 }
 
+function setBillingGroupOnEntity(entityName, rawGroupName) {
+  const cleanEntity = textValue(entityName)
+  const groupName = cleanBillingGroupName(rawGroupName)
+  if (!cleanEntity) return false
+  const existing = getCompanyMeta(cleanEntity)
+  const previousGroups = Array.isArray(existing.billingGroups) ? existing.billingGroups.map(cleanBillingGroupName) : []
+  const nextGroups = sortBillingGroupNames([...previousGroups, groupName])
+  state.companyMeta = {
+    ...state.companyMeta,
+    [cleanEntity]: {
+      ...existing,
+      legalName: existing.legalName || cleanEntity,
+      billingGroups: nextGroups
+    }
+  }
+  return true
+}
+
+function moveCompanyBillingGroup(companyName, rawGroupName, fromEntityName, toEntityName) {
+  const cleanCompany = textValue(companyName)
+  const groupName = cleanBillingGroupName(rawGroupName)
+  const fromEntity = textValue(fromEntityName)
+  const toEntity = textValue(toEntityName)
+  if (!cleanCompany || !groupName || !fromEntity || !toEntity || normalizeHeader(fromEntity) === normalizeHeader(toEntity)) return false
+  const allowedEntities = billingGroupEntitiesForCompany(cleanCompany)
+  if (!allowedEntities.some((entity) => normalizeHeader(entity) === normalizeHeader(toEntity))) return false
+
+  const fromMeta = getCompanyMeta(fromEntity)
+  const fromRecipients = { ...(fromMeta.billingGroupRecipients || {}) }
+  const movedRecipients = fromRecipients[groupName]
+  delete fromRecipients[groupName]
+  const fromGroups = Array.isArray(fromMeta.billingGroups) ? fromMeta.billingGroups.map(cleanBillingGroupName) : [defaultBillingGroupName]
+  const nextFromGroups = sortBillingGroupNames(fromGroups.filter((group) => normalizeHeader(group) !== normalizeHeader(groupName)))
+
+  state.companyMeta = {
+    ...state.companyMeta,
+    [fromEntity]: {
+      ...fromMeta,
+      legalName: fromMeta.legalName || fromEntity,
+      billingGroups: nextFromGroups,
+      billingGroupRecipients: fromRecipients
+    }
+  }
+
+  setBillingGroupOnEntity(toEntity, groupName)
+  if (movedRecipients) {
+    const toMeta = getCompanyMeta(toEntity)
+    state.companyMeta = {
+      ...state.companyMeta,
+      [toEntity]: {
+        ...toMeta,
+        billingGroupRecipients: {
+          ...(toMeta.billingGroupRecipients || {}),
+          [groupName]: normalizeBillingGroupRecipients(movedRecipients)
+        }
+      }
+    }
+  }
+  setState({
+    companyMeta: state.companyMeta,
+    selectedCompany: cleanCompany,
+    view: 'empresas',
+    notice: `Grupo ${groupName} movido a ${toEntity}.`
+  })
+  return true
+}
+
 function deleteBillingGroupForEntity(entityName, rawGroupName, view = state.view) {
   const cleanEntity = textValue(entityName)
   const groupName = cleanBillingGroupName(rawGroupName)
@@ -9023,7 +9090,15 @@ function renderEmpresas(companies) {
                                   .map(
                                     (groupName) => `
                                       <div class="company-group-recipient-card">
-                                        <span>${esc(groupName)}</span>
+                                        <div class="company-group-recipient-head">
+                                          <span>${esc(groupName)}</span>
+                                          <label>
+                                            <span>Razon social</span>
+                                            <select data-company-group-entity-move="${attr(company.name)}" data-group="${attr(groupName)}" data-current-entity="${attr(entityName)}">
+                                              ${billingGroupEntities.map((optionEntity) => `<option value="${attr(optionEntity)}" ${normalizeHeader(optionEntity) === normalizeHeader(entityName) ? 'selected' : ''}>${esc(optionEntity)}</option>`).join('')}
+                                            </select>
+                                          </label>
+                                        </div>
                                         ${renderCompanyBillingGroupRecipientCombos(contacts, entityName, groupName)}
                                       </div>`
                                   )
@@ -10666,6 +10741,13 @@ function bindEvents() {
         return
       }
       addCompanyBillingGroup(companyName, groupName, entitySelect?.value)
+    })
+  })
+
+  document.querySelectorAll('[data-company-group-entity-move]').forEach((select) => {
+    select.addEventListener('change', () => {
+      const moved = moveCompanyBillingGroup(select.dataset.companyGroupEntityMove, select.dataset.group, select.dataset.currentEntity, select.value)
+      if (!moved) render()
     })
   })
 
