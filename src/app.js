@@ -7451,6 +7451,9 @@ function buildQuotePdfBlob(quote, logo = null) {
   const productRows = quoteTemplateProductRows(quote)
   const recurringRows = quoteRecurringRows(quote)
   const productSubtotal = quote.hardwareSubtotal + quote.accessorySubtotal + quote.installationSubtotal + quote.travelFee + quote.serviceSubtotal + quote.accessoryInstallationSubtotal
+  const documentTitle = pdfTrim(quote.documentTitle || 'COTIZACION', 22)
+  const documentNumberLabel = quote.documentNumberLabel || 'Numero:'
+  const documentNumber = quote.documentNumber || quoteNumber()
 
   const color = (rgb) => rgb.map((part) => Number(part).toFixed(3)).join(' ')
   const rect = (x, y, width, height, fill, stroke) => {
@@ -7481,9 +7484,9 @@ function buildQuotePdfBlob(quote, logo = null) {
   }
 
   rect(314, 740, 262, 26, red, red)
-  text('COTIZACION', 445, 748, 14, true, [1, 1, 1], 'center')
-  text('Numero:', 324, 719, 10)
-  text(quoteNumber(), 444, 719, 10, false, black, 'right')
+  text(documentTitle, 445, 748, 14, true, [1, 1, 1], 'center')
+  text(documentNumberLabel, 324, 719, 10)
+  text(documentNumber, 444, 719, 10, false, black, 'right')
   text('Fecha:', 324, 702, 10)
   text(pdfDateLabel(quote.date), 444, 702, 10, false, black, 'right')
   text('Elaboro:', 324, 685, 10)
@@ -7618,10 +7621,15 @@ async function buildQuoteTemplateXlsxBlob(quote) {
   const productRows = quoteTemplateProductRows(quote)
   const recurringRows = quoteTemplateRecurringRows(quote)
   const productSubtotal = quote.hardwareSubtotal + quote.accessorySubtotal + quote.installationSubtotal + quote.travelFee + quote.serviceSubtotal + quote.accessoryInstallationSubtotal
+  const documentTitle = quote.documentTitle || 'COTIZACION'
+  const documentNumber = quote.documentNumber || quoteNumber()
 
   sheetXmlText = sheetXmlText.replace(/<hyperlinks>[\s\S]*?<\/hyperlinks>/, '')
+  sheetXmlText = sheetXmlText
+    .replace(/COTIZACION/g, xmlEscape(documentTitle))
+    .replace(/Cotizacion/g, xmlEscape(documentTitle))
   sheetXmlText = setTemplateCells(sheetXmlText, [
-    ['H3', quoteNumber()],
+    ['H3', documentNumber],
     ['H4', excelSerialDate(today)],
     ['H5', 'KLIFNET'],
     ['H11', ''],
@@ -7655,6 +7663,13 @@ async function buildQuoteTemplateXlsxBlob(quote) {
   })
 
   zip.file('xl/worksheets/sheet1.xml', sheetXmlText)
+  const sharedStrings = zip.file('xl/sharedStrings.xml')
+  if (sharedStrings) {
+    const xmlText = await sharedStrings.async('string')
+    zip.file('xl/sharedStrings.xml', xmlText
+      .replace(/COTIZACION/g, xmlEscape(documentTitle))
+      .replace(/Cotizacion/g, xmlEscape(documentTitle)))
+  }
   zip.remove('xl/calcChain.xml')
 
   const contentTypes = zip.file('[Content_Types].xml')
@@ -7717,7 +7732,11 @@ function billingRowToQuote(row, period = getBillingPeriod()) {
     group.amount += unitPrice
   })
   const recurringRows = Array.from(groups.values())
+  const documentSlug = slug(row.company).slice(0, 18).toUpperCase() || 'CLIENTE'
   return {
+    documentTitle: 'PRE FACTURA',
+    documentNumberLabel: 'Pre factura:',
+    documentNumber: `PF-${period.key}-${documentSlug}`,
     clientName: row.legalName || row.company,
     company: row.company,
     rfc: row.rfc || '',
@@ -7816,7 +7835,7 @@ async function exportBillingPrefactPackage() {
 
   for (const row of billableRows) {
     const quote = billingRowToQuote(row, period)
-    const baseName = `${slug(row.company)}-${slug(cleanBillingGroupName(row.billingGroup)) || 'principal'}-${period.key}`
+    const baseName = `prefactura-${slug(row.company)}-${slug(cleanBillingGroupName(row.billingGroup)) || 'principal'}-${period.key}`
     const pdfBlob = await quotePdfBlobWithLogo(quote, logo)
     zip.file(`${baseName}.pdf`, await pdfBlob.arrayBuffer())
     try {
@@ -7825,7 +7844,7 @@ async function exportBillingPrefactPackage() {
     } catch (error) {
       console.error(error)
       const fallbackRows = [
-        ['KLIFNET', 'Prefactura'],
+        ['KLIFNET', 'PRE FACTURA'],
         ['Periodo', period.label],
         ['Cliente', quote.clientName],
         ['RFC', quote.rfc],
