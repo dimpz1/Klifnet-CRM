@@ -259,8 +259,11 @@ function passwordHash(password, salt = crypto.randomBytes(16).toString('base64')
 }
 
 function verifyPassword(password, user) {
+  if (!user?.salt || !user?.passwordHash) return false
   const current = passwordHash(password, user.salt).hash
-  return crypto.timingSafeEqual(Buffer.from(current), Buffer.from(user.passwordHash))
+  const currentBuffer = Buffer.from(current)
+  const savedBuffer = Buffer.from(user.passwordHash)
+  return currentBuffer.length === savedBuffer.length && crypto.timingSafeEqual(currentBuffer, savedBuffer)
 }
 
 function setUserPassword(user, password) {
@@ -659,10 +662,11 @@ async function sendBillingEmailBatch(messages = []) {
 function invoiceApiConfig() {
   const apiUrl = String(process.env.KLIFNET_INVOICE_API_URL || '').trim()
   if (!apiUrl) return null
+  const timeoutMs = Number(process.env.KLIFNET_INVOICE_API_TIMEOUT_MS || 60000)
   return {
     url: apiUrl,
     token: String(process.env.KLIFNET_INVOICE_API_TOKEN || '').trim(),
-    timeoutMs: Number(process.env.KLIFNET_INVOICE_API_TIMEOUT_MS || 60000)
+    timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 60000
   }
 }
 

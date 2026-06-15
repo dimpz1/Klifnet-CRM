@@ -568,6 +568,11 @@ function slug(value) {
   return normalizeHeader(value).replace(/\s+/g, '-')
 }
 
+function stableRecordId(prefix, parts = [], index = 0) {
+  const raw = [...parts, index + 1].map(textValue).filter(Boolean).join('-')
+  return `${prefix}-${slug(raw) || `item-${index + 1}`}`
+}
+
 function icon(name) {
   return `<i data-lucide="${name}"></i>`
 }
@@ -644,7 +649,7 @@ function normalizeBillableFlag(value, fallback = true) {
 }
 
 function deviceBillingGroup(device = {}) {
-  if (Object.prototype.hasOwnProperty.call(device, 'billingGroup')) return textValue(device.billingGroup)
+  if (Object.prototype.hasOwnProperty.call(device, 'billingGroup')) return cleanBillingGroupName(device.billingGroup)
   return cleanBillingGroupName(device.invoiceGroup || device.grupoFacturacion || device.grupo_facturacion)
 }
 
@@ -874,7 +879,9 @@ function getCompanyMeta(company) {
 function normalizeCompanyContact(contact = {}, index = 0) {
   const sendAsKey = normalizeHeader(contact.sendAs || contact.tipoEnvio || contact.envio)
   return {
-    id: textValue(contact.id) || `contact-${Date.now()}-${index}`,
+    id:
+      textValue(contact.id) ||
+      stableRecordId('contact', [contact.email || contact.correo || contact.contactEmail || contact.mail, contact.name || contact.nombre || contact.responsable, contact.phone || contact.telefono], index),
     name: textValue(contact.name || contact.nombre || contact.contact || contact.responsable),
     email: textValue(contact.email || contact.correo || contact.contactEmail || contact.mail),
     phone: textValue(contact.phone || contact.telefono || contact.number),
@@ -2058,8 +2065,7 @@ function hardwareSalePriceFromQuote(quote) {
 }
 
 function createHardwareItemId(item = {}, index = 0) {
-  const raw = `${item.model || item.hardwareModel || 'gps'}-${Date.now()}-${index}`
-  return `gps-${slug(raw) || index}`
+  return stableRecordId('gps', [item.model || item.hardwareModel || 'gps', item.supplier || item.hardwareSupplier, item.url || item.hardwareSyscomUrl], index)
 }
 
 function hardwareItemFromQuote(quote = state.quote, index = 0) {
@@ -2327,8 +2333,7 @@ function accessoryPresetOptions(selectedId) {
 }
 
 function createAccessoryId(accessory = {}, index = 0) {
-  const raw = `${accessory.category || 'accesorio'}-${accessory.model || accessory.name || index}`
-  return `acc-${slug(raw) || index}-${index}`
+  return stableRecordId('acc', [accessory.category || 'accesorio', accessory.model || accessory.name || 'custom'], index)
 }
 
 function normalizeQuoteAccessory(accessory = {}, index = 0) {
@@ -2541,7 +2546,7 @@ function normalizeQuoteService(service = {}, index = 0) {
   const preset = quoteServicePresets.find((item) => item.id === service.presetId)
   const description = textValue(service.description) || preset?.description || 'Servicio personalizado'
   return {
-    id: textValue(service.id) || `srv-${slug(description) || 'servicio'}-${Date.now()}-${index}`,
+    id: textValue(service.id) || stableRecordId('srv', [service.presetId || preset?.id || 'custom', description], index),
     presetId: textValue(service.presetId) || preset?.id || 'custom',
     description,
     quantity: Number(service.quantity ?? service.count ?? 0) || 0,
