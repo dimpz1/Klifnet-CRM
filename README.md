@@ -14,6 +14,14 @@ Abre `http://127.0.0.1:8787`.
 
 Para usarlo desde otros equipos de la misma red WiFi, ejecuta el script y abre la URL LAN que muestra PowerShell, por ejemplo `http://192.168.1.183:8787/`.
 
+Antes de subir cambios a GitHub, corre:
+
+```powershell
+npm run verify
+```
+
+Ese comando revisa sintaxis, archivos operativos esperados, allowlist de estaticos y posibles archivos sensibles trackeados por Git.
+
 El CRM pide login por correo. En una instalacion nueva, primero crea tu cuenta desde la pantalla de login con correo autorizado + token.
 
 Solo se aceptan estos correos para crear cuenta: `felipe.gomez@klifnet.com` e `isaacgestrada94@gmail.com`. El primer correo creado queda como admin; los siguientes quedan como usuarios normales.
@@ -95,7 +103,7 @@ En `Cobros`, puedes filtrar por empresa, grupo y buscar por equipo, UID o IMEI. 
 - `Semestral`
 - `Anual por equipo`, con fecha de renovacion
 
-Cada equipo puede tener precio pactado, fecha de venta y nota del acuerdo. Si lo dejas vacio, usa el precio general mensual de `$297.50` o el anual definido en `Facturacion`.
+Cada equipo puede tener precio pactado, fecha de venta y nota del acuerdo. Si lo dejas vacio, usa el precio general mensual de `$297.36` o el anual definido en `Facturacion`.
 
 ## Lineas
 
@@ -103,7 +111,6 @@ En `Lineas`, el CRM permite importar bases de lineas celulares activas, buscar p
 
 - `Emprenet`
 - `Telcel prepago`
-- `Telcel post pago`
 - `M2M`
 - `Emnify`
 
@@ -156,3 +163,15 @@ Usa `Generar cotizacion XLSX + PDF` para descargar la propuesta lista para envia
 `Facturacion` cuenta estrictamente equipos importados desde Wialon para equipos GPS. Las lineas celulares salen de la base cifrada de `Lineas`.
 
 Los cambios editables del CRM se guardan en el servidor cifrado. Las bases en claro no deben guardarse dentro del repo.
+
+## Seguridad operativa
+
+El servidor solo publica `index.html`, `src/`, `public/assets/` y `public/vendor/`. Carpetas como `data/`, `server/`, `scripts/`, `.env`, `outputs/` y archivos internos no se sirven por HTTP.
+
+Si `npm run audit:project` reporta archivos dentro de `data/` como trackeados por Git, no los borres directo en produccion. Primero migra la carpeta fuera del repo:
+
+```powershell
+npm run data:migrate
+```
+
+Ese comando copia `data/` a una carpeta local de sistema, actualiza `DATA_DIR` en `.env` y conserva la carpeta original como respaldo. Reinicia el CRM y valida que abre tus bases antes de desversionar `data/` de Git.

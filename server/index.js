@@ -80,6 +80,17 @@ const binaryTypes = {
 
 const sessions = new Map()
 
+function securityHeaders(extraHeaders = {}) {
+  return {
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'same-origin',
+    'X-Frame-Options': 'SAMEORIGIN',
+    'Content-Security-Policy': "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'",
+    'Permissions-Policy': 'geolocation=(), microphone=(), camera=()',
+    ...extraHeaders
+  }
+}
+
 function ensureDataDirs() {
   fs.mkdirSync(uploadsDir, { recursive: true })
   fs.mkdirSync(privateFilesDir, { recursive: true })
@@ -101,7 +112,11 @@ function getEncryptionKey() {
   if (!fs.existsSync(encryptionKeyFile)) {
     fs.writeFileSync(encryptionKeyFile, crypto.randomBytes(32).toString('base64'), { mode: 0o600 })
   }
-  return Buffer.from(fs.readFileSync(encryptionKeyFile, 'utf8').trim(), 'base64')
+  const key = Buffer.from(fs.readFileSync(encryptionKeyFile, 'utf8').trim(), 'base64')
+  if (key.length !== 32) {
+    throw new Error('data/secret.key no es una llave valida de 32 bytes. Restaura el respaldo correcto antes de iniciar el CRM.')
+  }
+  return key
 }
 
 function encryptBuffer(buffer) {
@@ -169,7 +184,7 @@ function sendJson(res, status, payload, extraHeaders = {}) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store, max-age=0',
-    ...extraHeaders
+    ...securityHeaders(extraHeaders)
   })
   res.end(JSON.stringify(payload))
 }
@@ -177,7 +192,8 @@ function sendJson(res, status, payload, extraHeaders = {}) {
 function sendBuffer(res, status, buffer, contentType) {
   res.writeHead(status, {
     'Content-Type': contentType || 'application/octet-stream',
-    'Cache-Control': 'no-store, max-age=0'
+    'Cache-Control': 'no-store, max-age=0',
+    ...securityHeaders()
   })
   res.end(buffer)
 }
@@ -918,6 +934,22 @@ function writeEncryptedUpload(category, fileName, data) {
   return outputPath
 }
 
+function isPathInside(basePath, targetPath) {
+  const relative = path.relative(basePath, targetPath)
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+function isPublicStaticPath(pathname) {
+  return (
+    pathname === '/' ||
+    pathname === '/index.html' ||
+    pathname === '/favicon.ico' ||
+    pathname.startsWith('/src/') ||
+    pathname.startsWith('/public/assets/') ||
+    pathname.startsWith('/public/vendor/')
+  )
+}
+
 async function handleAuth(req, res, url) {
   const usersPayload = loadUsers()
 
@@ -1155,6 +1187,17 @@ async function handleAuth(req, res, url) {
 
 async function handleApi(req, res, url) {
   try {
+    if (url.pathname === '/api/health' && req.method === 'GET') {
+      sendJson(res, 200, {
+        ok: true,
+        app: 'klifnet-crm',
+        uptimeSeconds: Math.round(process.uptime()),
+        dataDirInsideRepo: isPathInside(rootDir, dataDir),
+        timestamp: new Date().toISOString()
+      })
+      return
+    }
+
     if (await handleAuth(req, res, url)) return
     const session = requireSession(req, res)
     if (!session) return
@@ -1250,8 +1293,14 @@ function serveStatic(req, res) {
     return
   }
 
+  if (!isPublicStaticPath(url.pathname)) {
+    res.writeHead(404, securityHeaders())
+    res.end('Not found')
+    return
+  }
+
   if (url.pathname.startsWith('/public/data/') || url.pathname.startsWith('/public/templates/')) {
-    res.writeHead(403)
+    res.writeHead(403, securityHeaders())
     res.end('Forbidden')
     return
   }
@@ -1259,14 +1308,14 @@ function serveStatic(req, res) {
   const requestPath = url.pathname === '/' ? '/index.html' : decodeURIComponent(url.pathname)
   const absolutePath = path.resolve(rootDir, `.${requestPath}`)
 
-  if (!absolutePath.startsWith(rootDir)) {
-    res.writeHead(403)
+  if (!isPathInside(rootDir, absolutePath)) {
+    res.writeHead(403, securityHeaders())
     res.end('Forbidden')
     return
   }
 
   if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
-    res.writeHead(404)
+    res.writeHead(404, securityHeaders())
     res.end('Not found')
     return
   }
@@ -1274,7 +1323,8 @@ function serveStatic(req, res) {
   const extension = path.extname(absolutePath).toLowerCase()
   res.writeHead(200, {
     'Content-Type': mimeTypes[extension] || 'application/octet-stream',
-    'Cache-Control': 'no-store, max-age=0'
+    'Cache-Control': 'no-store, max-age=0',
+    ...securityHeaders()
   })
   fs.createReadStream(absolutePath).pipe(res)
 }

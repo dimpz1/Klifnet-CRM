@@ -5,6 +5,11 @@
   "type": "module",
   "scripts": {
     "start": "node server/index.js",
+    "check": "node scripts/audit-project.mjs --syntax-only",
+    "audit:project": "node scripts/audit-project.mjs",
+    "audit:strict": "node scripts/audit-project.mjs --strict",
+    "verify": "npm run check && npm run audit:project",
+    "data:migrate": "node scripts/migrate-data-out-of-repo.mjs --write-env",
     "extraer:facturas-enviadas": "node scripts/extraer-facturas-enviadas.mjs"
   },
   "dependencies": {
