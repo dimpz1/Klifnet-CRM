@@ -116,7 +116,7 @@ En `Lineas`, el CRM permite importar bases de lineas celulares activas, buscar p
 
 La clasificacion automatica por ICCID usa estas reglas: `8934` y `8949` son Emnify; `8952` sin telefono es Emprenet; `8952` con telefono es Telcel.
 
-Las lineas pueden ligarse a equipos por IMEI o manejarse como venta independiente de linea celular con renovacion anual. Tambien reconoce renovaciones escritas como `bernardo 15 mayo 2026`.
+Las lineas pueden ligarse a equipos por IMEI, telefono o por el sufijo del ICCID capturado en el campo `Telefono` de Wialon. Para este ultimo caso, Wialon puede guardar el identificador como `+` seguido de 6 a 9 digitos; el CRM ignora el signo y exige una coincidencia unica contra el final del ICCID. Tambien pueden manejarse como venta independiente de linea celular con renovacion anual y reconoce renovaciones escritas como `bernardo 15 mayo 2026`.
 
 ## Prefacturacion
 

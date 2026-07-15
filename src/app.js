@@ -3114,7 +3114,6 @@ function mergeDevices(previous, incoming) {
       oldDevice.imeiLong !== device.imeiLong ||
       oldDevice.imeiShort !== device.imeiShort ||
       oldDevice.deactivatedAt !== device.deactivatedAt ||
-      oldDevice.lastMessage !== device.lastMessage ||
       oldDevice.groups.join('|') !== device.groups.join('|')
 
     return {
@@ -3427,22 +3426,20 @@ async function loadSeedFile() {
     const normalized = normalizeRows(parsed.rows, parsed.mapping, 'vigente')
     const devices = state.devices.length ? mergeDevices(state.devices, normalized) : normalized
     const lineMerge = mergeLineRows(state.lines, parsed.rows, 'DispositivosWialon_Abril2026.xlsx', { requireIcc: true, markMissing: false, devices })
+    const sourceLines = lineMerge.imported.length ? lineMerge.lines : state.lines
+    const lineRefresh = await refreshLinesAfterWialonImport(devices, 'DispositivosWialon_Abril2026.xlsx', sourceLines)
     setState({
       rawRows: parsed.rows,
       columns: parsed.columns,
       mapping: parsed.mapping,
       devices,
-      ...(lineMerge.imported.length
-        ? {
-            lines: lineMerge.lines,
-            lineImport: lineImportState('DispositivosWialon_Abril2026.xlsx', parsed.rows.length, lineMerge.imported, lineMerge.stats, {
-              autoVersion: lineAutoImportVersion
-            })
-          }
-        : {}),
+      lines: lineRefresh.lines,
+      lineImport: lineImportState('DispositivosWialon_Abril2026.xlsx', parsed.rows.length, lineRefresh.lines, lineRefresh.stats, {
+        autoVersion: lineAutoImportVersion
+      }),
       sourceLabel: 'DispositivosWialon_Abril2026.xlsx',
       lastImportAt: new Date().toISOString(),
-      notice: `Base cargada: ${normalized.length} equipos de Wialon.${lineMerge.imported.length ? ` Lineas detectadas: ${lineMerge.imported.length} (${lineMerge.imported.filter((line) => line.iccid).length} con ICC).` : ''}`
+      notice: `Base cargada: ${normalized.length} equipos de Wialon. Emnify +1xxxxxxxx activadas: ${lineRefresh.activatedByIcc}; anteriores desactivadas por cambio de linea: ${lineRefresh.deactivatedReplaced}.${lineMerge.imported.length ? ` Lineas detectadas: ${lineMerge.imported.length} (${lineMerge.imported.filter((line) => line.iccid).length} con ICC).` : ''}`
     })
   } catch (error) {
     setState({ notice: error.message || 'Carga tu archivo Wialon para comenzar.' })
@@ -3456,6 +3453,8 @@ async function handleFile(file) {
   const normalized = normalizeRows(parsed.rows, parsed.mapping, 'vigente')
   const merged = mergeDevices(state.devices, normalized)
   const lineMerge = mergeLineRows(state.lines, parsed.rows, file.name, { requireIcc: true, markMissing: false, devices: merged })
+  const sourceLines = lineMerge.imported.length ? lineMerge.lines : state.lines
+  const lineRefresh = await refreshLinesAfterWialonImport(merged, file.name, sourceLines)
   const stats = {
     nuevos: merged.filter((device) => device.recordState === 'nuevo').length,
     actualizados: merged.filter((device) => device.recordState === 'actualizado').length,
@@ -3467,17 +3466,13 @@ async function handleFile(file) {
     columns: parsed.columns,
     mapping: parsed.mapping,
     devices: merged,
-    ...(lineMerge.imported.length
-      ? {
-          lines: lineMerge.lines,
-          lineImport: lineImportState(file.name, parsed.rows.length, lineMerge.imported, lineMerge.stats, {
-            autoVersion: lineAutoImportVersion
-          })
-        }
-      : {}),
+    lines: lineRefresh.lines,
+    lineImport: lineImportState(file.name, parsed.rows.length, lineRefresh.lines, lineRefresh.stats, {
+      autoVersion: lineAutoImportVersion
+    }),
     sourceLabel: file.name,
     lastImportAt: new Date().toISOString(),
-    notice: `Actualizado: ${normalized.length} equipos leidos, ${stats.nuevos} nuevos, ${stats.actualizados} actualizados, ${stats.noEncontrados} no encontrados.${lineMerge.imported.length ? ` Lineas/chips detectados: ${lineMerge.imported.length} (${lineMerge.imported.filter((line) => line.iccid).length} con ICC).` : ''}`
+    notice: `Actualizado: ${normalized.length} equipos leidos, ${stats.nuevos} nuevos, ${stats.actualizados} actualizados, ${stats.noEncontrados} no encontrados. Emnify +1xxxxxxxx activadas: ${lineRefresh.activatedByIcc}; anteriores desactivadas por cambio de linea: ${lineRefresh.deactivatedReplaced}.${lineMerge.imported.length ? ` Lineas/chips detectados: ${lineMerge.imported.length} (${lineMerge.imported.filter((line) => line.iccid).length} con ICC).` : ''}`
   })
 }
 
@@ -3724,6 +3719,39 @@ function normalizePhoneCandidate(value) {
   if (clean.length === 10) return clean
 
   return clean.length >= 10 && clean.length <= 15 ? clean : ''
+}
+
+function normalizeWialonIccSuffix(value) {
+  const raw = normalizeIdentifierText(value).trim()
+  // Wialon guarda algunos ICCID como telefono con formato +1xxxxxxxx.
+  // El 1 forma parte de los ultimos 9 digitos del ICCID, no es lada.
+  if (!/^\+1\d{8}$/.test(raw)) return ''
+  return raw.slice(1)
+}
+
+function luhnCheckDigit(value) {
+  const clean = textValue(value).replace(/\D/g, '')
+  if (!clean) return ''
+  let sum = 0
+  let doubleDigit = true
+  for (let index = clean.length - 1; index >= 0; index -= 1) {
+    let digit = Number(clean[index])
+    if (doubleDigit) {
+      digit *= 2
+      if (digit > 9) digit -= 9
+    }
+    sum += digit
+    doubleDigit = !doubleDigit
+  }
+  return String((10 - (sum % 10)) % 10)
+}
+
+function iccidMatchValues(value) {
+  const clean = textValue(value).replace(/\D/g, '')
+  if (!clean) return []
+  const values = [clean]
+  if (/^89\d{17,18}$/.test(clean)) values.push(`${clean}${luhnCheckDigit(clean)}`)
+  return unique(values)
 }
 
 function phoneMatchValues(value) {
@@ -3985,6 +4013,11 @@ function isBernardoLine(line) {
 
 function lineCanMatchWialon(line) {
   return Boolean(line && isActiveLine(line) && !isBernardoLine(line))
+}
+
+function lineCanMatchWialonByEmnifyIccSuffix(line) {
+  const lineType = normalizeLineType(line?.lineType || line?.providerOverride || line?.carrier)
+  return Boolean(line && !isBernardoLine(line) && lineType === 'emnify' && lineIdentifierParts(line).iccid)
 }
 
 function parseLineCustomerText(value) {
@@ -4376,6 +4409,8 @@ function deviceMatchIndex(devices = state.devices) {
     exact: new Map(),
     phone: new Map(),
     streamaxPhone: new Map(),
+    iccSuffix: new Map(),
+    iccSuffixLengths: [],
     name: new Map(),
     suffix: new Map(),
     suffixLengths: []
@@ -4387,10 +4422,21 @@ function deviceMatchIndex(devices = state.devices) {
   const addSuffix = (key, device) => {
     if (key && !index.suffix.has(key)) index.suffix.set(key, device)
   }
+  const addUnique = (map, key, device) => {
+    if (!key) return
+    if (!map.has(key)) map.set(key, device)
+    else if (map.get(key)?.id !== device.id) map.set(key, null)
+  }
   const suffixLengths = new Set()
+  const iccSuffixLengths = new Set()
   devices.forEach((device) => {
     deviceIdentifierValues(device).forEach((value) => add(index.exact, normalizeIdentifier(value), device))
     phoneMatchValues(device.phone).forEach((value) => add(isStreamaxDevice(device) ? index.streamaxPhone : index.phone, value, device))
+    const iccSuffix = normalizeWialonIccSuffix(device.phone)
+    if (iccSuffix) {
+      addUnique(index.iccSuffix, iccSuffix, device)
+      iccSuffixLengths.add(iccSuffix.length)
+    }
     const deviceName = normalizeHeader(device.unitName)
     if (deviceName) {
       if (index.name.has(deviceName)) duplicateNames.add(deviceName)
@@ -4409,24 +4455,43 @@ function deviceMatchIndex(devices = state.devices) {
     }
   })
   duplicateNames.forEach((name) => index.name.delete(name))
+  index.iccSuffixLengths = Array.from(iccSuffixLengths).sort((a, b) => b - a)
   index.suffixLengths = Array.from(suffixLengths).sort((a, b) => b - a)
   deviceMatchIndexCache = { devices, index }
   return index
 }
 
 function matchLineDeviceWithMethod(line, devices = state.devices) {
-  if (!lineCanMatchWialon(line)) return { device: null, method: '' }
+  const canMatchNormally = lineCanMatchWialon(line)
+  const canMatchByEmnifyIcc = lineCanMatchWialonByEmnifyIccSuffix(line)
+  if (!canMatchNormally && !canMatchByEmnifyIcc) return { device: null, method: '' }
   const index = deviceMatchIndex(devices)
   const phone = lineIdentifierParts(line).phone
-  for (const phoneKey of phoneMatchValues(phone)) {
-    const device = index.streamaxPhone.get(phoneKey)
-    if (device) return { device, method: 'telefono' }
+  const iccid = lineIdentifierParts(line).iccid
+  const lineType = normalizeLineType(line.lineType || line.providerOverride || line.carrier)
+  if (canMatchNormally) {
+    for (const phoneKey of phoneMatchValues(phone)) {
+      const device = index.streamaxPhone.get(phoneKey)
+      if (device) return { device, method: 'telefono' }
+    }
   }
-  for (const value of lineImeiValues(line)) {
-    const key = normalizeIdentifier(value)
-    const device = key ? index.exact.get(key) : null
-    if (device) return { device, method: 'imei' }
+  if (iccid && lineType === 'emnify') {
+    for (const iccidValue of iccidMatchValues(iccid)) {
+      for (const length of index.iccSuffixLengths) {
+        const suffix = iccidValue.slice(-length)
+        const device = suffix ? index.iccSuffix.get(suffix) : null
+        if (device) return { device, method: 'iccid_wialon' }
+      }
+    }
   }
+  if (canMatchNormally) {
+    for (const value of lineImeiValues(line)) {
+      const key = normalizeIdentifier(value)
+      const device = key ? index.exact.get(key) : null
+      if (device) return { device, method: 'imei' }
+    }
+  }
+  if (!canMatchNormally) return { device: null, method: '' }
   const lineIdentifiers = unique([...lineImeiValues(line), ...lineTextIdentifierValues(line)])
     .map((value) => textValue(value).replace(/\D/g, ''))
     .filter(Boolean)
@@ -4457,7 +4522,14 @@ function buildLineMatchInfo(line, devices = state.devices) {
   if (isBernardoLine(line)) {
     label = 'Solo linea celular'
   } else if (match.device) {
-    const suffix = match.method === 'telefono' ? ' / telefono Wialon' : match.method === 'nombre' ? ' / nombre Wialon' : ''
+    const suffix =
+      match.method === 'telefono'
+        ? ' / telefono Wialon'
+        : match.method === 'iccid_wialon'
+          ? ' / ICCID Wialon'
+          : match.method === 'nombre'
+            ? ' / nombre Wialon'
+            : ''
     label = `${match.device.unitName || 'Equipo'} / ${match.device.company || 'Sin empresa'}${suffix}`
   } else if (type === 'no_asignada') {
     label = lineWialonExemptLabel(line)
@@ -4628,6 +4700,7 @@ function deviceLineMatchLabel(device, line = lineForDevice(device)) {
   if (line) {
     const method = lineForDeviceMatchMethod(device, line)
     if (method === 'telefono') return 'Match por telefono'
+    if (method === 'iccid_wialon') return 'Match por ICCID Wialon'
     if (method === 'nombre') return 'Match por nombre'
     return 'Match por IMEI'
   }
@@ -4820,6 +4893,85 @@ function lineStats(lines = state.lines, devices = state.devices) {
     exempt: 0,
     unmatched: 0
   })
+}
+
+function lineIsActivatedByWialonIcc(line, devices = state.devices) {
+  const normalized = normalizeLine(line)
+  const match = matchLineDeviceWithMethod(normalized, devices)
+  return match.method === 'iccid_wialon' && Boolean(match.device)
+}
+
+function deviceStableUid(device) {
+  return normalizeIdentifier(device?.uid || device?.imeiLong || device?.imei || device?.id)
+}
+
+function lineLinkedDeviceUid(line) {
+  return normalizeIdentifier(line?.linkedDeviceUid || line?.imeiLong || line?.imei || line?.deactivatedImei || line?.previousImei)
+}
+
+function deactivateReplacedEmnifyLines(lines, devices = state.devices) {
+  const currentLineByDevice = new Map()
+  lines.forEach((line) => {
+    const normalized = normalizeLine(line)
+    const match = matchLineDeviceWithMethod(normalized, devices)
+    if (match.method !== 'iccid_wialon' || !match.device) return
+    const uid = deviceStableUid(match.device)
+    if (uid) currentLineByDevice.set(uid, normalized.id)
+  })
+
+  let deactivated = 0
+  const output = lines.map((line, index) => {
+    const normalized = normalizeLine(line, index)
+    if (normalizeLineType(normalized.lineType) !== 'emnify') return normalized
+    if (!isActiveLine(normalized) || normalized.statusManual) return normalized
+    const linkedUid = lineLinkedDeviceUid(normalized)
+    const currentLineId = linkedUid ? currentLineByDevice.get(linkedUid) : ''
+    if (!currentLineId || currentLineId === normalized.id) return normalized
+
+    const ownMatch = matchLineDeviceWithMethod(normalized, devices)
+    const ownMatchUid = deviceStableUid(ownMatch.device)
+    if (ownMatch.method === 'iccid_wialon' && ownMatchUid && ownMatchUid !== linkedUid) return normalized
+
+    deactivated += 1
+    return normalizeLine(
+      {
+        ...normalized,
+        status: 'desactivada',
+        previousImei: normalized.previousImei || lineCurrentImei(normalized),
+        deactivatedImei: normalized.deactivatedImei || lineCurrentImei(normalized),
+        deactivatedAt: normalized.deactivatedAt || todayIsoDate(),
+        notes: [normalized.notes, 'Desactivada automaticamente: el equipo cambio a otra linea Emnify por Wialon +1xxxxxxxx']
+          .filter(Boolean)
+          .join(' | ')
+      },
+      index
+    )
+  })
+  return { lines: output, deactivated }
+}
+
+async function refreshLinesAfterWialonImport(devices, label = 'Wialon', sourceLines = state.lines) {
+  const before = sourceLines.map((line, index) => normalizeLine(line, index))
+  const beforeInactiveById = new Set(before.filter((line) => !isActiveLine(line)).map((line) => line.id))
+  const enrichedBase = enrichLinesFromBridge(before, mergedLineBridge(before, devices), devices).map((line, index) => normalizeLine(line, index))
+  const replaced = deactivateReplacedEmnifyLines(enrichedBase, devices)
+  const enriched = replaced.lines
+  const activatedByIcc = enriched.filter((line) => beforeInactiveById.has(line.id) && isActiveLine(line) && lineIsActivatedByWialonIcc(line, devices)).length
+  const stats = lineStats(enriched, devices)
+
+  if (enriched.length) {
+    try {
+      await savePrivateJson('lineas', {
+        source: `${label} + lineas revalidadas`,
+        updatedAt: new Date().toISOString(),
+        lines: enriched
+      })
+    } catch (error) {
+      console.warn(error)
+    }
+  }
+
+  return { lines: enriched, stats, activatedByIcc, deactivatedReplaced: replaced.deactivated }
 }
 
 function linePaginationState(total) {
@@ -5077,13 +5229,15 @@ function enrichLinesFromBridge(lines, bridge, devices = state.devices) {
     const normalized = normalizeLine(line, index)
     const lineImei = normalizeIdentifier(normalized.imei)
     const source = lineImei ? bridge.get(`imei:${lineImei}`) : null
-    const device = matchLineDevice(source ? { ...normalized, imei: normalized.imei || source.imei } : normalized, devices)
+    const lineMatch = matchLineDeviceWithMethod(source ? { ...normalized, imei: normalized.imei || source.imei } : normalized, devices)
+    const device = lineMatch.device
     const linkedCompany = sanitizeLineCompany(device?.company) || sanitizeLineCompany(source?.company) || normalized.company
     const linkedImei = isSuntechDevice(device)
       ? deviceImeiLong(device || {}) || normalized.imei || source?.imei
       : normalized.imei || source?.imei || deviceImeiLong(device || {})
     const streamax = isStreamaxDevice(device)
     if (!source && !device) return normalized
+    const activatedByIccid = lineMatch.method === 'iccid_wialon'
     return normalizeLine(
       {
         ...normalized,
@@ -5098,8 +5252,19 @@ function enrichLinesFromBridge(lines, bridge, devices = state.devices) {
             }
           : {}),
         imei: linkedImei,
+        imeiLong: normalized.imeiLong || linkedImei,
+        imeiShort: normalized.imeiShort || deriveShortImei(linkedImei),
+        linkedDeviceUid: normalized.linkedDeviceUid || device?.uid || '',
+        status: activatedByIccid && !normalized.statusManual ? 'activa' : normalized.status,
+        deactivatedAt: activatedByIccid ? '' : normalized.deactivatedAt,
         clientOnly: normalized.clientOnly && !linkedImei,
-        notes: normalized.notes || (linkedImei ? `IMEI ligado desde ${device ? 'Wialon' : source.source}` : normalized.notes)
+        notes:
+          normalized.notes ||
+          (activatedByIccid
+            ? 'Activada y ligada desde Wialon por telefono +1xxxxxxxx / ICCID Emnify'
+            : linkedImei
+              ? `IMEI ligado desde ${device ? 'Wialon' : source.source}`
+              : normalized.notes)
       },
       index
     )
@@ -5396,7 +5561,7 @@ async function revalidateLineasPage(options = {}) {
   state.linePage = Math.min(state.linePage, linePaginationState(filteredLines().length).pageCount)
   state.view = 'lineas'
   if (options.notice) {
-    state.notice = `Lineas revalidadas: ${stats.matched} con equipo por IMEI o telefono Wialon, ${stats.clientOnly} solo linea, ${stats.exempt} no asignables, ${stats.unmatched} sin match accionable.`
+    state.notice = `Lineas revalidadas: ${stats.matched} con equipo por IMEI, telefono o telefono Wialon +1xxxxxxxx contra ultimos 9 del ICCID Emnify, ${stats.clientOnly} solo linea, ${stats.exempt} no asignables, ${stats.unmatched} sin match accionable.`
   }
   persistState()
   render()
@@ -5483,7 +5648,7 @@ async function handleLineFile(file) {
       lineTypeFilter: '',
       linePage: 1,
       view: 'lineas',
-      notice: `Base de relacion cargada limpia: ${imported.length} lineas; se respeto Proveedor y Operador de cada fila. Cruce con Wialon por IMEI o Telefono.`
+      notice: `Base de relacion cargada limpia: ${imported.length} lineas; se respeto Proveedor y Operador de cada fila. Cruce con Wialon por IMEI, telefono o telefono Wialon +1xxxxxxxx contra ultimos 9 del ICCID Emnify.`
     })
     return
   }
@@ -6482,7 +6647,16 @@ function buildBillingRows() {
           renewalDate: line.renewalDate || '',
           saleDate: '',
           soldBy,
-          priceNote: [line.notes, matchedDevice && lineMatch.method === 'telefono' ? 'Ligada a Wialon por telefono' : ''].filter(Boolean).join(' | '),
+          priceNote: [
+            line.notes,
+            matchedDevice && lineMatch.method === 'telefono'
+              ? 'Ligada a Wialon por telefono'
+              : matchedDevice && lineMatch.method === 'iccid_wialon'
+                ? 'Ligada a Wialon por telefono +1xxxxxxxx / ultimos 9 ICCID Emnify'
+                : ''
+          ]
+            .filter(Boolean)
+            .join(' | '),
           unitPrice
         })
       }
@@ -9388,9 +9562,9 @@ function renderLineas(companies) {
         ${
           state.lineImport
             ? `<div class="notice">Ultima base de lineas: ${esc(state.lineImport.source)} (${state.lineImport.imported} lineas, ${state.lineImport.iccDetected || 0} con ICC), ${state.lineImport.matched} con equipo, ${state.lineImport.clientOnly} solo linea, ${state.lineImport.exempt || 0} no asignables, ${state.lineImport.unmatched} sin match accionable.</div>`
-            : '<div class="notice">Importa la base de lineas activas para cruzarlas contra IMEI o contra el telefono Wialon. Para Bernardo tambien lee renovaciones escritas como: bernardo 15 mayo 2026.</div>'
+            : '<div class="notice">Importa la base de lineas activas para cruzarlas contra IMEI, telefono o telefono Wialon +1xxxxxxxx que representa los ultimos 9 digitos del ICCID Emnify. Para Bernardo tambien lee renovaciones escritas como: bernardo 15 mayo 2026.</div>'
         }
-        <div class="notice">Clasificacion automatica: archivo/base con proveedor explicito manda; si no hay proveedor, 8934 y 8949 = Emnify, 8952 sin telefono = Emprenet y 8952 con telefono = Telcel. El cruce con Wialon usa IMEI, UID y telefono; Bernardo/Berna se conserva como solo linea, y las Emnify desactivadas/deleted/disponibles sin asignar no cuentan como sin match.</div>
+        <div class="notice">Clasificacion automatica: archivo/base con proveedor explicito manda; si no hay proveedor, 8934 y 8949 = Emnify, 8952 sin telefono = Emprenet y 8952 con telefono = Telcel. El cruce con Wialon usa IMEI, UID, telefono y, solo para Emnify, telefono Wialon +1xxxxxxxx contra ultimos 9 del ICCID; Bernardo/Berna se conserva como solo linea, y las Emnify desactivadas/deleted/disponibles sin asignar no cuentan como sin match.</div>
         <div class="billing-settings">
           <label><span>Empresa / Cliente</span><input list="lineCompanyList" value="${attr(d.company)}" data-new-line="company" placeholder="Cliente"></label>
           <label><span>Linea celular</span><input value="${attr(d.phone)}" data-new-line="phone" placeholder="Numero"></label>
