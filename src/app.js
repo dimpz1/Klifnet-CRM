@@ -27,9 +27,13 @@ const lineAutoImportVersion = 14
 const lineSeedImportVersion = 0
 const lineResetVersion = 1
 const lineRelationBaseVersion = 25
-const standardMonthlyPriceVersion = 2
+const standardMonthlyPriceVersion = 3
 const quoteDefaultsVersion = 9
 const standardMonthlyPrice = 297.36
+const companyMonthlyGpsPriceRules = [
+  { company: 'AMRCLogistica', price: 275 },
+  { company: 'Traper', price: 254.04 }
+]
 const standardHardwarePrice = 1152.66
 const cityInstallationPrice = 350
 const outsideInstallationPrice = 600
@@ -721,7 +725,7 @@ function createManualDevice() {
     billable: normalizeBillableFlag(draft.billable, true),
     annualMonth: String(new Date().getMonth() + 1),
     renewalDate: '',
-    agreedPrice: textValue(draft.agreedPrice) || standardMonthlyPriceText(),
+    agreedPrice: textValue(draft.agreedPrice) || monthlyDevicePriceValue({ ...draft, company, billingCycle: 'mensual' }),
     saleDate: textValue(draft.saleDate),
     priceNote: textValue(draft.priceNote),
     recordState: 'manual',
@@ -2032,6 +2036,44 @@ function normalizeStandardMonthlyPriceValue(value) {
   return isLegacyStandardMonthlyPrice(value) ? standardMonthlyPriceText() : value
 }
 
+function isStandardMonthlyPriceLike(value) {
+  const price = Number(value)
+  return (
+    Number.isFinite(price) &&
+    (Math.abs(price - standardMonthlyPrice) < 0.005 || isLegacyStandardMonthlyPrice(price))
+  )
+}
+
+function normalizedCompanyKey(value) {
+  return normalizeHeader(value).replace(/\s+/g, '')
+}
+
+function companyMonthlyGpsPriceForDevice(device = {}) {
+  const companyKey = normalizedCompanyKey(device.company)
+  const rule = companyMonthlyGpsPriceRules.find((item) => normalizedCompanyKey(item.company) === companyKey)
+  return rule ? Number(rule.price || 0) : 0
+}
+
+function isGpsBillingDevice(device = {}) {
+  const text = normalizeHeader([device.deviceType, device.type, device.unitName, device.hardwareModel].filter(Boolean).join(' '))
+  if (!text) return true
+  return !/(accesorio|accessory|dashcam|camara|camera|sensor|combustible|fuel|mdvr|dvr)/.test(text)
+}
+
+function monthlyGpsCompanyPriceText(device = {}) {
+  const price = isGpsBillingDevice(device) ? companyMonthlyGpsPriceForDevice(device) : 0
+  return price > 0 ? price.toFixed(2) : ''
+}
+
+function monthlyDevicePriceValue(device = {}, options = {}) {
+  const agreedPrice = device.agreedPrice ?? device.pricePerDeviceOverride
+  const companyPrice = monthlyGpsCompanyPriceText(device)
+  if (companyPrice && (options.preferCompanyRule || !Number(agreedPrice) || isStandardMonthlyPriceLike(agreedPrice))) return companyPrice
+  if (options.resetForMonthly) return standardMonthlyPriceText()
+  if (Number(agreedPrice) > 0) return String(normalizeStandardMonthlyPriceValue(agreedPrice))
+  return standardMonthlyPriceText()
+}
+
 function installationPriceForZone(zone) {
   return zone === 'outside' ? outsideInstallationPrice : cityInstallationPrice
 }
@@ -2585,8 +2627,9 @@ function serviceFromPreset(presetId, quantity = 1) {
 
 function deviceAgreedPriceValue(device) {
   const agreedPrice = device.agreedPrice ?? device.pricePerDeviceOverride
+  if (deviceBillingCycle(device) === 'mensual') return monthlyDevicePriceValue(device)
   if (Number(agreedPrice) > 0) return String(normalizeStandardMonthlyPriceValue(agreedPrice))
-  return deviceBillingCycle(device) === 'mensual' ? standardMonthlyPriceText() : ''
+  return ''
 }
 
 function escapeCsv(value) {
@@ -3598,7 +3641,7 @@ function applyPaymentRows(rows, label, options = {}) {
         ...device,
         billingCycle: 'mensual',
         paymentMonths: [],
-        agreedPrice: deviceAgreedPriceValue({ ...device, billingCycle: 'mensual' }),
+        agreedPrice: monthlyDevicePriceValue({ ...device, billingCycle: 'mensual' }, { preferCompanyRule: true, resetForMonthly: deviceBillingCycle(device) !== 'mensual' }),
         paymentSource: label,
         paymentMatchedBy: 'sin coincidencia'
       }
@@ -3618,7 +3661,12 @@ function applyPaymentRows(rows, label, options = {}) {
       billingCycle: rule.cycle,
       paymentMonths,
       annualMonth: paymentMonths[0] || device.annualMonth || String(new Date().getMonth() + 1),
-      agreedPrice: rule.price > 0 ? String(rule.price) : deviceAgreedPriceValue({ ...device, billingCycle: rule.cycle }),
+      agreedPrice:
+        rule.price > 0
+          ? String(rule.price)
+          : rule.cycle === 'mensual'
+            ? monthlyDevicePriceValue({ ...device, billingCycle: 'mensual' }, { preferCompanyRule: true, resetForMonthly: deviceBillingCycle(device) !== 'mensual' })
+            : deviceAgreedPriceValue({ ...device, billingCycle: rule.cycle }),
       priceNote: rule.price > 0 ? rule.note || `Pago pactado importado de ${label}` : device.priceNote || '',
       paymentSource: label,
       paymentMatchedBy: matchedBy,
@@ -6540,6 +6588,7 @@ function lineSeller(line) {
 
 function deviceUnitPrice(device) {
   const agreedPrice = device.agreedPrice ?? device.pricePerDeviceOverride
+  if (deviceBillingCycle(device) === 'mensual') return Number(monthlyDevicePriceValue(device))
   if (Number(agreedPrice) > 0) return Number(normalizeStandardMonthlyPriceValue(agreedPrice))
   if (deviceBillingCycle(device) === 'anual') {
     return Number(state.billing.annualPricePerDevice || 0) || Number(state.billing.monthlyPricePerDevice || 0) * 12
@@ -11578,7 +11627,14 @@ function bindEvents() {
         }
         if (field === 'groups') return { ...device, groups: splitGroups(value) }
         if (field === 'paymentMonths') return { ...device, paymentMonths: parsePaymentMonths(value) }
-        if (field === 'billingCycle' && value === 'mensual') return { ...device, billingCycle: value, paymentMonths: [], agreedPrice: deviceAgreedPriceValue({ ...device, billingCycle: 'mensual' }) }
+        if (field === 'billingCycle' && value === 'mensual') {
+          return {
+            ...device,
+            billingCycle: value,
+            paymentMonths: [],
+            agreedPrice: monthlyDevicePriceValue({ ...device, billingCycle: 'mensual' }, { preferCompanyRule: true, resetForMonthly: deviceBillingCycle(device) !== 'mensual' })
+          }
+        }
         if (field === 'billingGroup') {
           const groupName = cleanBillingGroupName(value)
           if (shouldRender) registerBillingGroupForEntity(billingEntityNameForCompany(device.company), groupName)
@@ -12002,7 +12058,14 @@ function bindEvents() {
         }
         if (field === 'groups') return { ...device, groups: splitGroups(value) }
         if (field === 'paymentMonths') return { ...device, paymentMonths: parsePaymentMonths(value) }
-        if (field === 'billingCycle' && value === 'mensual') return { ...device, billingCycle: value, paymentMonths: [], agreedPrice: deviceAgreedPriceValue({ ...device, billingCycle: 'mensual' }) }
+        if (field === 'billingCycle' && value === 'mensual') {
+          return {
+            ...device,
+            billingCycle: value,
+            paymentMonths: [],
+            agreedPrice: monthlyDevicePriceValue({ ...device, billingCycle: 'mensual' }, { preferCompanyRule: true, resetForMonthly: deviceBillingCycle(device) !== 'mensual' })
+          }
+        }
         if (field === 'billingGroup') {
           const groupName = cleanBillingGroupName(value)
           if (shouldRender) registerBillingGroupForEntity(billingEntityNameForCompany(device.company), groupName)
@@ -12178,7 +12241,13 @@ function migrateStandardMonthlyPrices() {
 
   state.devices = state.devices.map((device) => {
     const agreedPrice = device.agreedPrice ?? device.pricePerDeviceOverride
-    if (deviceBillingCycle(device) !== 'mensual' || !isLegacyStandardMonthlyPrice(agreedPrice)) return device
+    if (deviceBillingCycle(device) !== 'mensual') return device
+    const companyPrice = monthlyGpsCompanyPriceText(device)
+    if (companyPrice && (!Number(agreedPrice) || isStandardMonthlyPriceLike(agreedPrice))) {
+      changed = true
+      return { ...device, agreedPrice: companyPrice }
+    }
+    if (!isLegacyStandardMonthlyPrice(agreedPrice)) return device
     changed = true
     return { ...device, agreedPrice: standardMonthlyPriceText() }
   })
@@ -12212,7 +12281,7 @@ async function initDataAfterAuth() {
 
     if (state.standardMonthlyPriceVersion !== standardMonthlyPriceVersion) {
       const changed = migrateStandardMonthlyPrices()
-      state.notice = changed ? 'Precio mensual estandar actualizado a $297.36.' : state.notice
+      state.notice = changed ? 'Precios mensuales pactados actualizados para facturacion.' : state.notice
       persistState()
     }
 
