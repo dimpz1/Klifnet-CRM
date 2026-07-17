@@ -5067,7 +5067,7 @@ function tableSortState(tableId) {
   const current = state.tableSort?.[tableId] || {}
   return {
     key: current.key || '',
-    direction: current.direction === 'desc' ? 'desc' : 'asc'
+    direction: current.direction === 'asc' ? 'asc' : 'desc'
   }
 }
 
@@ -5110,7 +5110,13 @@ function sortableTh(tableId, key, label) {
   const active = sort.key === key
   const direction = active ? sort.direction : ''
   const title = active && direction === 'asc' ? 'Orden ascendente. Clic para descendente.' : 'Ordenar columna'
-  return `<th class="sortable-th ${active ? 'active' : ''}" data-sort-table="${attr(tableId)}" data-sort-key="${attr(key)}" title="${attr(title)}"><span>${esc(label)}</span><small>${active ? (direction === 'asc' ? 'Asc' : 'Desc') : ''}</small></th>`
+  return `<th class="sortable-th ${active ? 'active' : ''}" data-sort-table="${attr(tableId)}" data-sort-key="${attr(key)}" title="${attr(title)}"><span>${esc(label)}</span><small aria-hidden="true">${active ? (direction === 'asc' ? '&uarr;' : '&darr;') : ''}</small></th>`
+}
+
+function sortDirectionIcon(tableId, key) {
+  const sort = tableSortState(tableId)
+  if (sort.key !== key) return ''
+  return sort.direction === 'asc' ? '&uarr;' : '&darr;'
 }
 
 function sortPageReset(tableId) {
@@ -5133,7 +5139,7 @@ function sortPageReset(tableId) {
 
 function setTableSort(tableId, key) {
   const current = tableSortState(tableId)
-  const direction = current.key === key && current.direction === 'asc' ? 'desc' : 'asc'
+  const direction = current.key === key && current.direction === 'desc' ? 'asc' : 'desc'
   state.tableSort = {
     ...(state.tableSort || {}),
     [tableId]: { key, direction }
@@ -9472,7 +9478,7 @@ function renderEmpresas(companies) {
         ['groups', 'Grupos'],
         ['devices', 'Equipos'],
         ['billable', 'Facturables']
-      ].map(([key, label]) => `<button class="sort-chip ${tableSortState('companies').key === key ? 'active' : ''}" data-sort-table="companies" data-sort-key="${attr(key)}">${esc(label)} ${tableSortState('companies').key === key ? tableSortState('companies').direction : ''}</button>`).join('')}
+      ].map(([key, label]) => `<button class="sort-chip ${tableSortState('companies').key === key ? 'active' : ''}" data-sort-table="companies" data-sort-key="${attr(key)}">${esc(label)} <span aria-hidden="true">${sortDirectionIcon('companies', key)}</span></button>`).join('')}
     </div>
     ${renderTablePagination(sortedCompanies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas', sticky: true })}
     <section class="company-list">
