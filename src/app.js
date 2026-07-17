@@ -5067,7 +5067,7 @@ function tableSortState(tableId) {
   const current = state.tableSort?.[tableId] || {}
   return {
     key: current.key || '',
-    direction: current.direction === 'asc' ? 'asc' : 'desc'
+    direction: current.direction === 'desc' ? 'desc' : 'asc'
   }
 }
 
@@ -5139,7 +5139,7 @@ function sortPageReset(tableId) {
 
 function setTableSort(tableId, key) {
   const current = tableSortState(tableId)
-  const direction = current.key === key && current.direction === 'desc' ? 'asc' : 'desc'
+  const direction = current.key === key && current.direction === 'asc' ? 'desc' : 'asc'
   state.tableSort = {
     ...(state.tableSort || {}),
     [tableId]: { key, direction }
