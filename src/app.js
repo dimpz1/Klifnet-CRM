@@ -381,6 +381,7 @@ const state = {
   invoiceImport: null,
   invoiceProfileQuery: '',
   invoiceProfilePage: 1,
+  tableSort: {},
   fiscalParentContactSelection: '',
   billing: { ...defaultBilling },
   billingRows: [],
@@ -428,6 +429,7 @@ const state = {
   billingReportSummaryPage: 1,
   billingReportEquipmentPage: 1,
   billingReportBernardoPage: 1,
+  quoteSummaryPage: 1,
   invoiceApiDraft: null,
   lineQuery: '',
   lineIccQuery: '',
@@ -2606,6 +2608,7 @@ function stateSnapshot() {
     invoiceImport: state.invoiceImport,
     invoiceProfileQuery: state.invoiceProfileQuery,
     invoiceProfilePage: state.invoiceProfilePage,
+    tableSort: state.tableSort,
     fiscalParentContactSelection: state.fiscalParentContactSelection,
     billing: state.billing,
     billingRows: state.billingRows,
@@ -2636,7 +2639,8 @@ function stateSnapshot() {
     billingReportTab: state.billingReportTab,
     billingReportSummaryPage: state.billingReportSummaryPage,
     billingReportEquipmentPage: state.billingReportEquipmentPage,
-    billingReportBernardoPage: state.billingReportBernardoPage
+    billingReportBernardoPage: state.billingReportBernardoPage,
+    quoteSummaryPage: state.quoteSummaryPage
   }
 }
 
@@ -5057,6 +5061,86 @@ function renderTablePagination(total, pagination, options = {}) {
       </div>
     </div>
   `
+}
+
+function tableSortState(tableId) {
+  const current = state.tableSort?.[tableId] || {}
+  return {
+    key: current.key || '',
+    direction: current.direction === 'desc' ? 'desc' : 'asc'
+  }
+}
+
+function normalizeSortValue(value) {
+  if (value === null || value === undefined) return ''
+  if (Array.isArray(value)) return value.join(' ')
+  if (value instanceof Date) return value.getTime()
+  if (typeof value === 'number') return Number.isFinite(value) ? value : ''
+  const text = String(value).trim()
+  if (!text) return ''
+  const numericText = text.replace(/[$,\s]/g, '').replace(/^MXN/i, '')
+  if (/^-?\d+(\.\d+)?$/.test(numericText)) return Number(numericText)
+  const dateMs = Date.parse(text)
+  if (/^\d{4}-\d{2}-\d{2}/.test(text) && Number.isFinite(dateMs)) return dateMs
+  return normalizeHeader(text)
+}
+
+function compareSortValues(left, right) {
+  const a = normalizeSortValue(left)
+  const b = normalizeSortValue(right)
+  const aEmpty = a === ''
+  const bEmpty = b === ''
+  if (aEmpty && bEmpty) return 0
+  if (aEmpty) return 1
+  if (bEmpty) return -1
+  if (typeof a === 'number' && typeof b === 'number') return a - b
+  return String(a).localeCompare(String(b), 'es-MX', { numeric: true, sensitivity: 'base' })
+}
+
+function sortedByTable(rows, tableId, accessors = {}) {
+  const sort = tableSortState(tableId)
+  const accessor = accessors[sort.key]
+  if (!sort.key || typeof accessor !== 'function') return rows
+  const direction = sort.direction === 'desc' ? -1 : 1
+  return [...rows].sort((left, right) => compareSortValues(accessor(left), accessor(right)) * direction)
+}
+
+function sortableTh(tableId, key, label) {
+  const sort = tableSortState(tableId)
+  const active = sort.key === key
+  const direction = active ? sort.direction : ''
+  const title = active && direction === 'asc' ? 'Orden ascendente. Clic para descendente.' : 'Ordenar columna'
+  return `<th class="sortable-th ${active ? 'active' : ''}" data-sort-table="${attr(tableId)}" data-sort-key="${attr(key)}" title="${attr(title)}"><span>${esc(label)}</span><small>${active ? (direction === 'asc' ? 'Asc' : 'Desc') : ''}</small></th>`
+}
+
+function sortPageReset(tableId) {
+  const pageByTable = {
+    companiesSummary: 'companyPage',
+    companies: 'companyPage',
+    equipment: 'equipmentPage',
+    lineas: 'linePage',
+    billing: 'billingPage',
+    prefactSummary: 'billingReportSummaryPage',
+    prefactEquipment: 'billingReportEquipmentPage',
+    prefactBernardo: 'billingReportBernardoPage',
+    invoiceProfiles: 'invoiceProfilePage',
+    cobros: 'cobrosPage',
+    quoteSummary: 'quoteSummaryPage'
+  }
+  const pageKey = pageByTable[tableId]
+  if (pageKey) state[pageKey] = 1
+}
+
+function setTableSort(tableId, key) {
+  const current = tableSortState(tableId)
+  const direction = current.key === key && current.direction === 'asc' ? 'desc' : 'asc'
+  state.tableSort = {
+    ...(state.tableSort || {}),
+    [tableId]: { key, direction }
+  }
+  sortPageReset(tableId)
+  persistState()
+  render()
 }
 
 function renderPagination(total, pagination, options = {}) {
@@ -8646,14 +8730,22 @@ function compactProviderChip(group) {
 }
 
 function companyTable(companies) {
-  const pagination = tablePaginationState(companies.length, state.companyPage)
-  const pageCompanies = companies.slice(pagination.start, pagination.end)
+  const sortedCompanies = sortedByTable(companies, 'companiesSummary', {
+    name: (company) => company.name,
+    fiscal: (company) => invoiceProfilesForCompany(company.name).map((profile) => profile.razonSocial).join(' '),
+    groups: (company) => company.groups.size,
+    devices: (company) => company.devices.length,
+    billable: (company) => company.billableCount,
+    billing: (company) => company.devices.filter(isBillableDevice).map(deviceBillingCycle).join(' ')
+  })
+  const pagination = tablePaginationState(sortedCompanies.length, state.companyPage)
+  const pageCompanies = sortedCompanies.slice(pagination.start, pagination.end)
   return `
-    ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas', sticky: true })}
+    ${renderTablePagination(sortedCompanies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas', sticky: true })}
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Empresa</th><th>Razon social</th><th>Grupos</th><th>Equipos</th><th>Facturables</th><th>Cobro</th><th></th></tr>
+          <tr>${sortableTh('companiesSummary', 'name', 'Empresa')}${sortableTh('companiesSummary', 'fiscal', 'Razon social')}${sortableTh('companiesSummary', 'groups', 'Grupos')}${sortableTh('companiesSummary', 'devices', 'Equipos')}${sortableTh('companiesSummary', 'billable', 'Facturables')}${sortableTh('companiesSummary', 'billing', 'Cobro')}<th></th></tr>
         </thead>
         <tbody>
           ${pageCompanies
@@ -8676,7 +8768,7 @@ function companyTable(companies) {
         </tbody>
       </table>
     </div>
-    ${renderTablePagination(companies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas' })}
+    ${renderTablePagination(sortedCompanies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas' })}
   `
 }
 
@@ -8686,7 +8778,31 @@ function deviceTable(devices) {
       <table>
         <thead>
           <tr>
-            <th>Empresa</th><th>Grupos Wialon</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>ICCID</th><th>Operadora</th><th>Linea / MSISDN</th><th>Telefono Wialon</th><th>Tipo</th><th>Vendido por</th><th>Facturable</th><th>Grupo facturacion</th><th>Cobro</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Origen</th><th>Ultimo mensaje</th><th>Estado</th>
+            ${[
+              ['company', 'Empresa'],
+              ['groups', 'Grupos Wialon'],
+              ['unitName', 'Equipo'],
+              ['uid', 'UID'],
+              ['imei', 'IMEI'],
+              ['imeiLong', 'IMEI largo'],
+              ['imeiShort', 'IMEI corto'],
+              ['iccid', 'ICCID'],
+              ['operator', 'Operadora'],
+              ['line', 'Linea / MSISDN'],
+              ['phone', 'Telefono Wialon'],
+              ['type', 'Tipo'],
+              ['seller', 'Vendido por'],
+              ['billable', 'Facturable'],
+              ['billingGroup', 'Grupo facturacion'],
+              ['cycle', 'Cobro'],
+              ['months', 'Meses pago'],
+              ['price', 'Precio pactado'],
+              ['saleDate', 'Fecha venta'],
+              ['priceNote', 'Nota precio'],
+              ['origin', 'Origen'],
+              ['lastMessage', 'Ultimo mensaje'],
+              ['state', 'Estado']
+            ].map(([key, label]) => sortableTh('equipment', key, label)).join('')}
           </tr>
         </thead>
         <tbody>
@@ -8753,14 +8869,51 @@ function deviceTable(devices) {
 
 function billingTable(rows = state.billingRows) {
   if (!rows.length) return '<div class="empty-state">Sin lista generada.</div>'
-  const pagination = tablePaginationState(rows.length, state.billingPage)
-  const pageRows = rows.slice(pagination.start, pagination.end)
+  const sortedRows = sortedByTable(rows, 'billing', {
+    company: (row) => row.company,
+    billingGroup: (row) => row.billingGroup,
+    sourceCompanies: (row) => (row.sourceCompanies || []).join(' '),
+    recipients: (row) => formatRecipientSummary(billingRecipientsForRow(row)),
+    period: (row) => row.periodLabel,
+    monthly: (row) => row.monthlyCount,
+    annual: (row) => row.annualCount,
+    semestral: (row) => row.semestralCount,
+    equipment: (row) => row.equipmentCount,
+    lines: (row) => row.lineCount,
+    items: (row) => row.billableCount || row.equipmentCount,
+    felipe: (row) => row.sellerMonthlyTotals?.[quoteAttendantOptions[0]] || 0,
+    isaac: (row) => row.sellerMonthlyTotals?.[quoteAttendantOptions[1]] || 0,
+    subtotal: (row) => row.subtotal,
+    tax: (row) => row.tax,
+    total: (row) => row.total,
+    status: (row) => row.status
+  })
+  const pagination = tablePaginationState(sortedRows.length, state.billingPage)
+  const pageRows = sortedRows.slice(pagination.start, pagination.end)
   return `
-    ${renderTablePagination(rows.length, pagination, { label: 'prefacturas', dataAttr: 'data-billing-page', ariaLabel: 'Paginacion de prefacturas', sticky: true })}
+    ${renderTablePagination(sortedRows.length, pagination, { label: 'prefacturas', dataAttr: 'data-billing-page', ariaLabel: 'Paginacion de prefacturas', sticky: true })}
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Razon social / Empresa</th><th>Grupo facturacion</th><th>Empresas CRM</th><th>Destinatarios</th><th>Periodo</th><th>Mensuales</th><th>Anuales</th><th>Semestrales</th><th>Equipos</th><th>Lineas</th><th>Total partidas</th><th>Mensualidad Felipe</th><th>Mensualidad Isaac</th><th>Subtotal</th><th>IVA</th><th>Total</th><th>Estado</th></tr>
+          <tr>${[
+            ['company', 'Razon social / Empresa'],
+            ['billingGroup', 'Grupo facturacion'],
+            ['sourceCompanies', 'Empresas CRM'],
+            ['recipients', 'Destinatarios'],
+            ['period', 'Periodo'],
+            ['monthly', 'Mensuales'],
+            ['annual', 'Anuales'],
+            ['semestral', 'Semestrales'],
+            ['equipment', 'Equipos'],
+            ['lines', 'Lineas'],
+            ['items', 'Total partidas'],
+            ['felipe', 'Mensualidad Felipe'],
+            ['isaac', 'Mensualidad Isaac'],
+            ['subtotal', 'Subtotal'],
+            ['tax', 'IVA'],
+            ['total', 'Total'],
+            ['status', 'Estado']
+          ].map(([key, label]) => sortableTh('billing', key, label)).join('')}</tr>
         </thead>
         <tbody>
           ${pageRows
@@ -8790,13 +8943,27 @@ function billingTable(rows = state.billingRows) {
         </tbody>
       </table>
     </div>
-    ${renderTablePagination(rows.length, pagination, { label: 'prefacturas', dataAttr: 'data-billing-page', ariaLabel: 'Paginacion de prefacturas' })}
+    ${renderTablePagination(sortedRows.length, pagination, { label: 'prefacturas', dataAttr: 'data-billing-page', ariaLabel: 'Paginacion de prefacturas' })}
   `
 }
 
 function renderPrefactSummaryTab(report) {
-  const pagination = tablePaginationState(report.summaryRows.length, state.billingReportSummaryPage)
-  const pageRows = report.summaryRows.slice(pagination.start, pagination.end)
+  const rows = sortedByTable(report.summaryRows, 'prefactSummary', {
+    company: (row) => row.company,
+    type: (row) => row.billingType,
+    billingGroup: (row) => row.billingGroup,
+    sourceCompanies: (row) => (row.sourceCompanies || []).join(' '),
+    recipients: (row) => formatRecipientSummary(billingRecipientsForRow(row)),
+    equipment: (row) => row.equipmentCount,
+    monthly: (row) => row.monthlyCount,
+    annual: (row) => row.annualCount,
+    semestral: (row) => row.semestralCount,
+    subtotal: (row) => row.subtotal,
+    tax: (row) => row.tax,
+    total: (row) => row.total
+  })
+  const pagination = tablePaginationState(rows.length, state.billingReportSummaryPage)
+  const pageRows = rows.slice(pagination.start, pagination.end)
   return `
     <section class="prefact-tab-panel">
       <section class="metric-grid billing-metrics prefact-metrics">
@@ -8814,11 +8981,24 @@ function renderPrefactSummaryTab(report) {
         <div><span>Mensualidad Felipe</span><strong>${money(report.totals.sellerMonthlyTotals[quoteAttendantOptions[0]] || 0, state.billing.currency)}</strong></div>
         <div><span>Mensualidad Isaac</span><strong>${money(report.totals.sellerMonthlyTotals[quoteAttendantOptions[1]] || 0, state.billing.currency)}</strong></div>
       </div>
-      ${renderTablePagination(report.summaryRows.length, pagination, { label: 'razones', dataAttr: 'data-prefact-summary-page', ariaLabel: 'Paginacion de resumen de prefacturacion' })}
+      ${renderTablePagination(rows.length, pagination, { label: 'razones', dataAttr: 'data-prefact-summary-page', ariaLabel: 'Paginacion de resumen de prefacturacion' })}
       <div class="table-wrap prefact-table-wrap">
         <table>
           <thead>
-            <tr><th>Razon social / Empresa</th><th>Tipo</th><th>Grupo facturacion</th><th>Empresas CRM</th><th>Destinatarios</th><th>Equipos</th><th>Mensuales</th><th>Anuales</th><th>Semestrales</th><th>Subtotal</th><th>IVA</th><th>Total</th></tr>
+            <tr>${[
+              ['company', 'Razon social / Empresa'],
+              ['type', 'Tipo'],
+              ['billingGroup', 'Grupo facturacion'],
+              ['sourceCompanies', 'Empresas CRM'],
+              ['recipients', 'Destinatarios'],
+              ['equipment', 'Equipos'],
+              ['monthly', 'Mensuales'],
+              ['annual', 'Anuales'],
+              ['semestral', 'Semestrales'],
+              ['subtotal', 'Subtotal'],
+              ['tax', 'IVA'],
+              ['total', 'Total']
+            ].map(([key, label]) => sortableTh('prefactSummary', key, label)).join('')}</tr>
           </thead>
           <tbody>
             ${
@@ -8847,21 +9027,56 @@ function renderPrefactSummaryTab(report) {
           </tbody>
         </table>
       </div>
-      ${renderTablePagination(report.summaryRows.length, pagination, { label: 'razones', dataAttr: 'data-prefact-summary-page', ariaLabel: 'Paginacion de resumen de prefacturacion' })}
+      ${renderTablePagination(rows.length, pagination, { label: 'razones', dataAttr: 'data-prefact-summary-page', ariaLabel: 'Paginacion de resumen de prefacturacion' })}
     </section>
   `
 }
 
 function renderPrefactEquipmentTab(report) {
-  const pagination = tablePaginationState(report.equipmentDetails.length, state.billingReportEquipmentPage)
-  const pageRows = report.equipmentDetails.slice(pagination.start, pagination.end)
+  const rows = sortedByTable(report.equipmentDetails, 'prefactEquipment', {
+    company: (item) => item.row?.company,
+    sourceCompany: (item) => item.detail?.sourceCompany,
+    billingGroup: (item) => item.detail?.billingGroup || item.row?.billingGroup,
+    unitName: (item) => item.detail?.unitName,
+    uid: (item) => item.detail?.uid,
+    imei: (item) => item.detail?.imei,
+    imeiLong: (item) => item.detail?.imeiLong,
+    imeiShort: (item) => item.detail?.imeiShort,
+    phone: (item) => item.detail?.phone,
+    type: (item) => item.detail?.lineType || item.detail?.sourceType,
+    cycle: (item) => item.detail?.cycle,
+    months: (item) => formatPaymentMonths(item.detail?.paymentMonths),
+    renewalDate: (item) => item.detail?.renewalDate,
+    seller: (item) => item.detail?.soldBy,
+    price: (item) => item.detail?.unitPrice,
+    note: (item) => item.detail?.priceNote
+  })
+  const pagination = tablePaginationState(rows.length, state.billingReportEquipmentPage)
+  const pageRows = rows.slice(pagination.start, pagination.end)
   return `
     <section class="prefact-tab-panel">
-      ${renderTablePagination(report.equipmentDetails.length, pagination, { label: 'equipos', dataAttr: 'data-prefact-equipment-page', ariaLabel: 'Paginacion de equipos a facturar' })}
+      ${renderTablePagination(rows.length, pagination, { label: 'equipos', dataAttr: 'data-prefact-equipment-page', ariaLabel: 'Paginacion de equipos a facturar' })}
       <div class="table-wrap devices-table prefact-table-wrap">
         <table>
           <thead>
-            <tr><th>Razon social / Empresa</th><th>Empresa CRM</th><th>Grupo facturacion</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Telefono</th><th>Tipo</th><th>Cobro</th><th>Meses pago</th><th>Fecha renovacion</th><th>Vendido por</th><th>Precio pactado</th><th>Nota</th></tr>
+            <tr>${[
+              ['company', 'Razon social / Empresa'],
+              ['sourceCompany', 'Empresa CRM'],
+              ['billingGroup', 'Grupo facturacion'],
+              ['unitName', 'Equipo'],
+              ['uid', 'UID'],
+              ['imei', 'IMEI'],
+              ['imeiLong', 'IMEI largo'],
+              ['imeiShort', 'IMEI corto'],
+              ['phone', 'Telefono'],
+              ['type', 'Tipo'],
+              ['cycle', 'Cobro'],
+              ['months', 'Meses pago'],
+              ['renewalDate', 'Fecha renovacion'],
+              ['seller', 'Vendido por'],
+              ['price', 'Precio pactado'],
+              ['note', 'Nota']
+            ].map(([key, label]) => sortableTh('prefactEquipment', key, label)).join('')}</tr>
           </thead>
           <tbody>
             ${
@@ -8892,21 +9107,54 @@ function renderPrefactEquipmentTab(report) {
           </tbody>
         </table>
       </div>
-      ${renderTablePagination(report.equipmentDetails.length, pagination, { label: 'equipos', dataAttr: 'data-prefact-equipment-page', ariaLabel: 'Paginacion de equipos a facturar' })}
+      ${renderTablePagination(rows.length, pagination, { label: 'equipos', dataAttr: 'data-prefact-equipment-page', ariaLabel: 'Paginacion de equipos a facturar' })}
     </section>
   `
 }
 
 function renderPrefactBernardoTab(report) {
-  const pagination = tablePaginationState(report.bernardoLines.length, state.billingReportBernardoPage)
-  const pageRows = report.bernardoLines.slice(pagination.start, pagination.end)
+  const rows = sortedByTable(report.bernardoLines, 'prefactBernardo', {
+    company: (line) => line.company,
+    alias: (line) => line.alias,
+    phone: (line) => line.phone,
+    iccid: (line) => line.iccid,
+    imei: (line) => line.imei,
+    imeiLong: (line) => line.imeiLong,
+    imeiShort: (line) => line.imeiShort,
+    lineType: (line) => line.lineType,
+    cycle: (line) => line.cycle,
+    months: (line) => formatPaymentMonths(line.paymentMonths),
+    renewalDate: (line) => line.renewalDate,
+    price: (line) => line.unitPrice,
+    seller: (line) => line.soldBy,
+    status: (line) => line.status,
+    notes: (line) => line.notes
+  })
+  const pagination = tablePaginationState(rows.length, state.billingReportBernardoPage)
+  const pageRows = rows.slice(pagination.start, pagination.end)
   return `
     <section class="prefact-tab-panel">
-      ${renderTablePagination(report.bernardoLines.length, pagination, { label: 'lineas Bernardo', dataAttr: 'data-prefact-bernardo-page', ariaLabel: 'Paginacion de lineas Bernardo' })}
+      ${renderTablePagination(rows.length, pagination, { label: 'lineas Bernardo', dataAttr: 'data-prefact-bernardo-page', ariaLabel: 'Paginacion de lineas Bernardo' })}
       <div class="table-wrap prefact-table-wrap">
         <table>
           <thead>
-            <tr><th>Cliente</th><th>Alias / referencia</th><th>Linea / MSISDN</th><th>ICCID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Proveedora</th><th>Cobro</th><th>Meses pago</th><th>Renovacion</th><th>Precio anual</th><th>Vendido por</th><th>Estatus</th><th>Notas</th></tr>
+            <tr>${[
+              ['company', 'Cliente'],
+              ['alias', 'Alias / referencia'],
+              ['phone', 'Linea / MSISDN'],
+              ['iccid', 'ICCID'],
+              ['imei', 'IMEI'],
+              ['imeiLong', 'IMEI largo'],
+              ['imeiShort', 'IMEI corto'],
+              ['lineType', 'Proveedora'],
+              ['cycle', 'Cobro'],
+              ['months', 'Meses pago'],
+              ['renewalDate', 'Renovacion'],
+              ['price', 'Precio anual'],
+              ['seller', 'Vendido por'],
+              ['status', 'Estatus'],
+              ['notes', 'Notas']
+            ].map(([key, label]) => sortableTh('prefactBernardo', key, label)).join('')}</tr>
           </thead>
           <tbody>
             ${
@@ -8938,7 +9186,7 @@ function renderPrefactBernardoTab(report) {
           </tbody>
         </table>
       </div>
-      ${renderTablePagination(report.bernardoLines.length, pagination, { label: 'lineas Bernardo', dataAttr: 'data-prefact-bernardo-page', ariaLabel: 'Paginacion de lineas Bernardo' })}
+      ${renderTablePagination(rows.length, pagination, { label: 'lineas Bernardo', dataAttr: 'data-prefact-bernardo-page', ariaLabel: 'Paginacion de lineas Bernardo' })}
     </section>
   `
 }
@@ -9014,7 +9262,15 @@ function renderResumen(companies, stats) {
 }
 
 function renderRazonesSociales(companies) {
-  const invoiceProfiles = filteredInvoiceProfiles()
+  const invoiceProfiles = sortedByTable(filteredInvoiceProfiles(), 'invoiceProfiles', {
+    razonSocial: (profile) => profile.razonSocial,
+    parentGroup: (profile) => invoiceProfileParentGroup(profile),
+    rfc: (profile) => profile.rfc,
+    contactEmail: (profile) => profile.contactEmail || getCompanyMeta(profile.razonSocial).email,
+    lastInvoice: (profile) => `${profile.fechaEmision || ''} ${profile.folio || ''}`,
+    total: (profile) => Number(profile.total) || 0,
+    linkedCompanies: (profile) => invoiceProfileLinkedCompanies(profile).join(' ')
+  })
   const invoicePagination = tablePaginationState(invoiceProfiles.length, state.invoiceProfilePage)
   const pageInvoiceProfiles = invoiceProfiles.slice(invoicePagination.start, invoicePagination.end)
   const crmCompanyOptions = crmCompanyNamesForFiscalLinks(companies)
@@ -9087,7 +9343,15 @@ function renderRazonesSociales(companies) {
       <div class="table-wrap">
         <table class="invoice-profile-table">
           <thead>
-            <tr><th>Razon social</th><th>Grupo padre</th><th>RFC</th><th>Correo facturas</th><th>Ultima factura</th><th>Total</th><th>Empresas CRM ligadas</th></tr>
+            <tr>${[
+              ['razonSocial', 'Razon social'],
+              ['parentGroup', 'Grupo padre'],
+              ['rfc', 'RFC'],
+              ['contactEmail', 'Correo facturas'],
+              ['lastInvoice', 'Ultima factura'],
+              ['total', 'Total'],
+              ['linkedCompanies', 'Empresas CRM ligadas']
+            ].map(([key, label]) => sortableTh('invoiceProfiles', key, label)).join('')}</tr>
           </thead>
           <tbody>
             ${
@@ -9182,8 +9446,15 @@ function renderEmpresas(companies) {
         return searchText.includes(companyQuery)
       })
     : companies
-  const pagination = tablePaginationState(filteredCompanies.length, state.companyPage)
-  const pageCompanies = filteredCompanies.slice(pagination.start, pagination.end)
+  const sortedCompanies = sortedByTable(filteredCompanies, 'companies', {
+    name: (company) => company.name,
+    fiscal: (company) => invoiceProfilesForCompany(company.name).map((profile) => profile.razonSocial).join(' '),
+    groups: (company) => Array.from(company.groups.keys()).join(' '),
+    devices: (company) => company.devices.length,
+    billable: (company) => company.billableCount
+  })
+  const pagination = tablePaginationState(sortedCompanies.length, state.companyPage)
+  const pageCompanies = sortedCompanies.slice(pagination.start, pagination.end)
   const invoiceProfileOptions = state.invoiceProfiles.map(normalizeInvoiceProfile).filter((profile) => profile.razonSocial).sort((a, b) => a.razonSocial.localeCompare(b.razonSocial))
   return `
     <datalist id="invoiceProfileList">
@@ -9191,9 +9462,19 @@ function renderEmpresas(companies) {
     </datalist>
     <div class="table-toolbar company-table-toolbar">
       <label class="search-box">${icon('search')}<input id="companySearchInput" value="${attr(state.companyQuery)}" placeholder="Buscar empresa, razon social, RFC, grupo o contacto"></label>
-      <span>${filteredCompanies.length} de ${companies.length} empresas</span>
+      <span>${sortedCompanies.length} de ${companies.length} empresas</span>
     </div>
-    ${renderTablePagination(filteredCompanies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas', sticky: true })}
+    <div class="sort-strip">
+      <span>Ordenar</span>
+      ${[
+        ['name', 'Empresa'],
+        ['fiscal', 'Razon social'],
+        ['groups', 'Grupos'],
+        ['devices', 'Equipos'],
+        ['billable', 'Facturables']
+      ].map(([key, label]) => `<button class="sort-chip ${tableSortState('companies').key === key ? 'active' : ''}" data-sort-table="companies" data-sort-key="${attr(key)}">${esc(label)} ${tableSortState('companies').key === key ? tableSortState('companies').direction : ''}</button>`).join('')}
+    </div>
+    ${renderTablePagination(sortedCompanies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas', sticky: true })}
     <section class="company-list">
       ${pageCompanies
         .map((company) => {
@@ -9353,14 +9634,15 @@ function renderEmpresas(companies) {
         })
         .join('')}
     </section>
-    ${renderTablePagination(filteredCompanies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas' })}
+    ${renderTablePagination(sortedCompanies.length, pagination, { label: 'empresas', dataAttr: 'data-company-page', ariaLabel: 'Paginacion de empresas' })}
   `
 }
 
 function renderEquipos() {
   const devices = filteredDevices()
-  const pagination = equipmentPaginationState(devices.length)
-  const pageDevices = devices.slice(pagination.start, pagination.end)
+  const sortedDevices = sortedByTable(devices, 'equipment', deviceSortAccessors())
+  const pagination = equipmentPaginationState(sortedDevices.length)
+  const pageDevices = sortedDevices.slice(pagination.start, pagination.end)
   const companyOptions = equipmentCompanyOptions()
   const equipmentGroupCompany = textValue(state.equipmentBillingGroupCompany || state.equipmentCompanyFilter || state.newDevice.company)
   const equipmentGroupEntity = equipmentGroupCompany ? billingEntityNameForCompany(equipmentGroupCompany) : ''
@@ -9372,7 +9654,7 @@ function renderEquipos() {
     : [defaultBillingGroupName]
   return `
     <section>
-      ${renderEquipmentPagination(devices.length, pagination, { sticky: true })}
+      ${renderEquipmentPagination(sortedDevices.length, pagination, { sticky: true })}
       <datalist id="equipmentCompanyList">
         ${companyOptions.map((company) => `<option value="${attr(company)}"></option>`).join('')}
       </datalist>
@@ -9388,7 +9670,7 @@ function renderEquipos() {
           <option value="semestral" ${state.equipmentCycleFilter === 'semestral' ? 'selected' : ''}>Semestral</option>
           <option value="anual" ${state.equipmentCycleFilter === 'anual' ? 'selected' : ''}>Anual</option>
         </select>
-        <span>${devices.length} equipos</span>
+        <span>${sortedDevices.length} equipos</span>
       </div>
       <div class="equipment-billing-group-panel">
         <div>
@@ -9432,7 +9714,7 @@ function renderEquipos() {
         </div>
       </details>
       ${deviceTable(pageDevices)}
-      ${renderEquipmentPagination(devices.length, pagination)}
+      ${renderEquipmentPagination(sortedDevices.length, pagination)}
     </section>
   `
 }
@@ -9504,6 +9786,59 @@ function renderLineRows(lines) {
     .join('')
 }
 
+function deviceSortAccessors() {
+  return {
+    company: (device) => device.company,
+    groups: (device) => device.groups.join(', '),
+    unitName: (device) => device.unitName,
+    uid: (device) => device.uid,
+    imei: (device) => device.imei,
+    imeiLong: (device) => deviceImeiLong(device),
+    imeiShort: (device) => deviceImeiShort(device),
+    iccid: (device) => deviceLineIccid(device),
+    operator: (device) => deviceLineOperator(device),
+    line: (device) => deviceLinePhone(device),
+    phone: (device) => device.phone,
+    type: (device) => device.deviceType,
+    seller: (device) => deviceSeller(device),
+    billable: (device) => (isDeviceBillingEnabled(device) ? 1 : 0),
+    billingGroup: (device) => deviceBillingGroup(device),
+    cycle: (device) => deviceBillingCycle(device),
+    months: (device) => formatPaymentMonths(devicePaymentMonths(device)),
+    price: (device) => Number(deviceAgreedPriceValue(device)) || 0,
+    saleDate: (device) => device.saleDate,
+    priceNote: (device) => device.priceNote,
+    origin: (device) => (isImportedWialonDevice(device) ? 'Wialon' : 'Manual'),
+    lastMessage: (device) => device.lastMessage,
+    state: (device) => device.recordState
+  }
+}
+
+function lineSortAccessors() {
+  return {
+    company: (line) => line.company,
+    phone: (line) => line.phone,
+    lineType: (line) => lineTypeLabel(line.lineType),
+    iccid: (line) => line.iccid,
+    imei: (line) => lineCurrentImei(line),
+    imeiLong: (line) => line.imeiLong,
+    imeiShort: (line) => line.imeiShort,
+    previousImei: (line) => linePreviousImeiValue(line),
+    soldBy: (line) => line.soldBy,
+    match: (line) => lineMatchInfo(line).label,
+    detectedBy: (line) => line.matchMethod || line.providerDetectedBy || '',
+    clientOnly: (line) => (line.clientOnly ? 'Solo linea' : 'Equipo GPS'),
+    status: (line) => normalizeLineStatus(line.status),
+    deactivatedAt: (line) => line.deactivatedAt,
+    billingCycle: (line) => line.billingCycle,
+    renewalDate: (line) => line.renewalDate,
+    annualPrice: (line) => Number(line.annualPrice) || 0,
+    carrier: (line) => line.carrier,
+    plan: (line) => line.plan,
+    notes: (line) => line.notes
+  }
+}
+
 function renderLineTable(title, lines, tone = '') {
   return `
     <section class="line-section ${tone}">
@@ -9515,7 +9850,28 @@ function renderLineTable(title, lines, tone = '') {
         <table>
           <thead>
             <tr>
-              <th>Empresa</th><th>Linea</th><th>Tipo linea</th><th>ICCID / ICC</th><th>IMEI actual</th><th>IMEI largo</th><th>IMEI corto</th><th>IMEI anterior</th><th>Vendido por</th><th>Match</th><th>Detectado por</th><th>Tipo</th><th>Estatus</th><th>Baja</th><th>Cobro</th><th>Renovacion</th><th>Precio pactado</th><th>Operador</th><th>Plan</th><th>Notas</th>
+              ${[
+                ['company', 'Empresa'],
+                ['phone', 'Linea'],
+                ['lineType', 'Tipo linea'],
+                ['iccid', 'ICCID / ICC'],
+                ['imei', 'IMEI actual'],
+                ['imeiLong', 'IMEI largo'],
+                ['imeiShort', 'IMEI corto'],
+                ['previousImei', 'IMEI anterior'],
+                ['soldBy', 'Vendido por'],
+                ['match', 'Match'],
+                ['detectedBy', 'Detectado por'],
+                ['clientOnly', 'Tipo'],
+                ['status', 'Estatus'],
+                ['deactivatedAt', 'Baja'],
+                ['billingCycle', 'Cobro'],
+                ['renewalDate', 'Renovacion'],
+                ['annualPrice', 'Precio pactado'],
+                ['carrier', 'Operador'],
+                ['plan', 'Plan'],
+                ['notes', 'Notas']
+              ].map(([key, label]) => sortableTh('lineas', key, label)).join('')}
             </tr>
           </thead>
           <tbody>${renderLineRows(lines)}</tbody>
@@ -9535,13 +9891,14 @@ function renderLineProviderSections(lines) {
 
 function renderLineas(companies) {
   const lines = filteredLines()
-  const pagination = linePaginationState(lines.length)
-  const pageLines = lines.slice(pagination.start, pagination.end)
+  const sortedLines = sortedByTable(lines, 'lineas', lineSortAccessors())
+  const pagination = linePaginationState(sortedLines.length)
+  const pageLines = sortedLines.slice(pagination.start, pagination.end)
   const d = { ...state.newLine, status: normalizeLineStatus(state.newLine.status) }
   const options = lineCompanyOptions(companies)
   return `
     <section class="screen-fit-view lineas-fit">
-      ${renderPagination(lines.length, pagination, { sticky: true })}
+      ${renderPagination(sortedLines.length, pagination, { sticky: true })}
       <datalist id="lineCompanyList">
         ${options.map((company) => `<option value="${attr(company)}"></option>`).join('')}
       </datalist>
@@ -9566,7 +9923,7 @@ function renderLineas(companies) {
           <option value="no_asignada" ${state.lineMatchFilter === 'no_asignada' ? 'selected' : ''}>No asignables Wialon</option>
           <option value="sin_match" ${state.lineMatchFilter === 'sin_match' ? 'selected' : ''}>Sin match</option>
         </select>
-        <span>${lines.length} lineas</span>
+        <span>${sortedLines.length} lineas</span>
       </div>
       <details class="compact-panel line-meta-panel">
         <summary>${icon('plus')}Alta manual, importacion y reportes</summary>
@@ -9603,7 +9960,7 @@ function renderLineas(companies) {
           <button class="button primary" id="addManualLine">${icon('plus')}Agregar linea</button>
         </div>
       </details>
-      ${renderLineTable(`Lineas filtradas - ${lines.length} registros`, pageLines)}
+      ${renderLineTable(`Lineas filtradas - ${sortedLines.length} registros`, pageLines)}
     </section>
   `
 }
@@ -9872,6 +10229,15 @@ function renderCotizaciones(companies) {
   const options = companyOptions(companies)
   const q = state.quote
   const selectedFiscalData = q.company ? quoteFiscalDataForSelection(q.company) : null
+  const quoteRows = sortedByTable(quoteSummaryRows(quote), 'quoteSummary', {
+    section: (row) => row.section,
+    concept: (row) => row.concept,
+    quantity: (row) => row.quantity,
+    unitPrice: (row) => row.unitPrice,
+    subtotal: (row) => row.subtotal
+  })
+  const quotePagination = tablePaginationState(quoteRows.length, state.quoteSummaryPage)
+  const pageQuoteRows = quoteRows.slice(quotePagination.start, quotePagination.end)
 
   return `
     <section class="billing-layout quote-layout">
@@ -10075,111 +10441,48 @@ function renderCotizaciones(companies) {
         <strong>${money(quote.total, quote.currency)}</strong>
       </div>
 
+      ${renderTablePagination(quoteRows.length, quotePagination, { label: 'partidas', dataAttr: 'data-quote-summary-page', ariaLabel: 'Paginacion de resumen de cotizacion' })}
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Concepto</th><th>Cantidad</th><th>Precio unitario</th><th>Subtotal</th></tr>
+            <tr>${[
+              ['section', 'Seccion'],
+              ['concept', 'Concepto'],
+              ['quantity', 'Cantidad'],
+              ['unitPrice', 'Precio unitario'],
+              ['subtotal', 'Subtotal']
+            ].map(([key, label]) => sortableTh('quoteSummary', key, label)).join('')}</tr>
           </thead>
           <tbody>
-            <tr class="section-row"><td colspan="4">Equipos</td></tr>
-            ${
-              quote.hardwareRows.length
-                ? quote.hardwareRows
-                    .map(
-                      (row) => `
-                        <tr>
-                          <td>Equipo GPS - ${esc(row.model)}</td>
-                          <td>${row.quantity}</td>
-                          <td>${money(row.unitPrice, quote.currency)}</td>
-                          <td>${money(row.subtotal, quote.currency)}</td>
-                        </tr>`
-                    )
-                    .join('')
-                : `<tr><td>Sin equipo GPS cotizado</td><td>-</td><td>${money(0, quote.currency)}</td><td>${money(0, quote.currency)}</td></tr>`
-            }
-            <tr class="section-row"><td colspan="4">Accesorios</td></tr>
-            ${quote.accessoryRows
+            ${pageQuoteRows
               .map(
                 (row) => `
-                  <tr>
-                    <td>${esc(row.label)}</td>
-                    <td>${row.quantity}</td>
-                    <td>${money(row.unitPrice, quote.currency)}</td>
-                    <td>${money(row.subtotal, quote.currency)}</td>
+                  <tr class="${row.section === 'Totales' ? 'total-row' : ''}">
+                    <td>${esc(row.section)}</td>
+                    <td>${esc(row.concept)}</td>
+                    <td>${esc(row.quantity)}</td>
+                    <td>${typeof row.unitPrice === 'number' ? money(row.unitPrice, quote.currency) : esc(row.unitPrice)}</td>
+                    <td><strong>${money(row.subtotal, quote.currency)}</strong></td>
                   </tr>`
               )
               .join('')}
-            <tr class="section-row"><td colspan="4">Instalacion y viaticos</td></tr>
-            ${
-              quote.installationMode === 'included' && quote.installationIncludedAmount > 0
-                ? `<tr><td>Instalacion incluida en precio GPS</td><td>${quote.quantity}</td><td>${money(0, quote.currency)}</td><td>${money(0, quote.currency)}</td></tr>`
-                : quote.installationSubtotal > 0
-                  ? `<tr><td>Instalacion por equipo</td><td>${quote.quantity}</td><td>${money(quote.installationUnitPrice, quote.currency)}</td><td>${money(quote.installationSubtotal, quote.currency)}</td></tr>`
-                  : ''
-            }
-            ${
-              quote.travelFee > 0
-                ? `<tr><td>Viaticos traslado tecnico</td><td>1</td><td>${money(quote.travelFee, quote.currency)}</td><td>${money(quote.travelFee, quote.currency)}</td></tr>`
-                : ''
-            }
-            ${quote.accessoryRows
-              .filter((row) => row.installationSubtotal > 0)
-              .map(
-                (row) => `
-                  <tr>
-                    <td>Instalacion accesorio - ${esc(row.label)}</td>
-                    <td>${row.quantity}</td>
-                    <td>${money(row.installationPrice, quote.currency)}</td>
-                    <td>${money(row.installationSubtotal, quote.currency)}</td>
-                  </tr>`
-              )
-              .join('')}
-            ${quote.serviceRows
-              .map(
-                (row) => `
-                  <tr>
-                    <td>${esc(row.description)}</td>
-                    <td>${row.quantity}</td>
-                    <td>${money(row.unitPrice, quote.currency)}</td>
-                    <td>${money(row.subtotal, quote.currency)}</td>
-                  </tr>`
-              )
-              .join('')}
-            <tr class="section-row"><td colspan="4">Mensualidades</td></tr>
-            ${quoteRecurringRows(quote)
-              .map(
-                (row) => `
-                  <tr>
-                    <td>${esc(row.description)}</td>
-                    <td>${row.quantity}</td>
-                    <td>${money(row.unitPrice, quote.currency)}</td>
-                    <td>${money(row.amount, quote.currency)}</td>
-                  </tr>`
-              )
-              .join('')}
-            <tr>
-              <td colspan="3"><strong>IVA</strong></td>
-              <td>${money(quote.tax, quote.currency)}</td>
-            </tr>
-            <tr>
-              <td colspan="3"><strong>Total</strong></td>
-              <td><strong>${money(quote.total, quote.currency)}</strong></td>
-            </tr>
           </tbody>
         </table>
       </div>
+      ${renderTablePagination(quoteRows.length, quotePagination, { label: 'partidas', dataAttr: 'data-quote-summary-page', ariaLabel: 'Paginacion de resumen de cotizacion' })}
     </section>
   `
 }
 
 function renderCobros(companies) {
   const devices = filteredCobrosDevices()
-  const pagination = tablePaginationState(devices.length, state.cobrosPage)
-  const pageDevices = devices.slice(pagination.start, pagination.end)
+  const sortedDevices = sortedByTable(devices, 'cobros', deviceSortAccessors())
+  const pagination = tablePaginationState(sortedDevices.length, state.cobrosPage)
+  const pageDevices = sortedDevices.slice(pagination.start, pagination.end)
   const groups = cobrosGroups()
   return `
     <section class="client-layout">
-      ${renderTablePagination(devices.length, pagination, { label: 'equipos', dataAttr: 'data-cobros-page', ariaLabel: 'Paginacion de cobros', sticky: true })}
+      ${renderTablePagination(sortedDevices.length, pagination, { label: 'equipos', dataAttr: 'data-cobros-page', ariaLabel: 'Paginacion de cobros', sticky: true })}
       <div class="billing-filters">
         <label>
           <span>Empresa</span>
@@ -10205,12 +10508,31 @@ function renderCobros(companies) {
             <option value="anual" ${state.cobrosCycleFilter === 'anual' ? 'selected' : ''}>Anual</option>
           </select>
         </label>
-        <div class="filter-count"><span>Equipos visibles</span><strong>${devices.length}</strong></div>
+        <div class="filter-count"><span>Equipos visibles</span><strong>${sortedDevices.length}</strong></div>
       </div>
       <div class="table-wrap devices-table">
         <table>
           <thead>
-            <tr><th>Empresa</th><th>Grupos Wialon</th><th>Equipo</th><th>UID</th><th>IMEI</th><th>IMEI largo</th><th>IMEI corto</th><th>Origen</th><th>Vendido por</th><th>Facturable</th><th>Grupo facturacion</th><th>Cobro</th><th>Fecha renovacion</th><th>Meses pago</th><th>Precio pactado</th><th>Fecha venta</th><th>Nota precio</th><th>Estado</th></tr>
+            <tr>${[
+              ['company', 'Empresa'],
+              ['groups', 'Grupos Wialon'],
+              ['unitName', 'Equipo'],
+              ['uid', 'UID'],
+              ['imei', 'IMEI'],
+              ['imeiLong', 'IMEI largo'],
+              ['imeiShort', 'IMEI corto'],
+              ['origin', 'Origen'],
+              ['seller', 'Vendido por'],
+              ['billable', 'Facturable'],
+              ['billingGroup', 'Grupo facturacion'],
+              ['cycle', 'Cobro'],
+              ['renewalDate', 'Fecha renovacion'],
+              ['months', 'Meses pago'],
+              ['price', 'Precio pactado'],
+              ['saleDate', 'Fecha venta'],
+              ['priceNote', 'Nota precio'],
+              ['state', 'Estado']
+            ].map(([key, label]) => sortableTh('cobros', key, label)).join('')}</tr>
           </thead>
           <tbody>
             ${pageDevices
@@ -10259,9 +10581,34 @@ function renderCobros(companies) {
           </tbody>
         </table>
       </div>
-      ${renderTablePagination(devices.length, pagination, { label: 'equipos', dataAttr: 'data-cobros-page', ariaLabel: 'Paginacion de cobros' })}
+      ${renderTablePagination(sortedDevices.length, pagination, { label: 'equipos', dataAttr: 'data-cobros-page', ariaLabel: 'Paginacion de cobros' })}
     </section>
   `
+}
+
+function quoteSummaryRows(quote) {
+  const rows = []
+  quote.hardwareRows.forEach((row) =>
+    rows.push({ section: 'Equipos', concept: `Equipo GPS - ${row.model}`, quantity: row.quantity, unitPrice: row.unitPrice, subtotal: row.subtotal })
+  )
+  if (!quote.hardwareRows.length) rows.push({ section: 'Equipos', concept: 'Sin equipo GPS cotizado', quantity: '-', unitPrice: 0, subtotal: 0 })
+  quote.accessoryRows.forEach((row) => rows.push({ section: 'Accesorios', concept: row.label, quantity: row.quantity, unitPrice: row.unitPrice, subtotal: row.subtotal }))
+  if (quote.installationMode === 'included' && quote.installationIncludedAmount > 0) {
+    rows.push({ section: 'Instalacion y viaticos', concept: 'Instalacion incluida en precio GPS', quantity: quote.quantity, unitPrice: 0, subtotal: 0 })
+  } else if (quote.installationSubtotal > 0) {
+    rows.push({ section: 'Instalacion y viaticos', concept: 'Instalacion por equipo', quantity: quote.quantity, unitPrice: quote.installationUnitPrice, subtotal: quote.installationSubtotal })
+  }
+  if (quote.travelFee > 0) rows.push({ section: 'Instalacion y viaticos', concept: 'Viaticos traslado tecnico', quantity: 1, unitPrice: quote.travelFee, subtotal: quote.travelFee })
+  quote.accessoryRows
+    .filter((row) => row.installationSubtotal > 0)
+    .forEach((row) =>
+      rows.push({ section: 'Instalacion y viaticos', concept: `Instalacion accesorio - ${row.label}`, quantity: row.quantity, unitPrice: row.installationPrice, subtotal: row.installationSubtotal })
+    )
+  quote.serviceRows.forEach((row) => rows.push({ section: 'Instalacion y viaticos', concept: row.description, quantity: row.quantity, unitPrice: row.unitPrice, subtotal: row.subtotal }))
+  quoteRecurringRows(quote).forEach((row) => rows.push({ section: 'Mensualidades', concept: row.description, quantity: row.quantity, unitPrice: row.unitPrice, subtotal: row.amount }))
+  rows.push({ section: 'Totales', concept: 'IVA', quantity: '', unitPrice: '', subtotal: quote.tax })
+  rows.push({ section: 'Totales', concept: 'Total', quantity: '', unitPrice: '', subtotal: quote.total })
+  return rows
 }
 
 function renderLogin() {
@@ -10700,6 +11047,10 @@ function bindEvents() {
   document.getElementById('exportCsv')?.addEventListener('click', exportCsv)
   document.getElementById('exportJson')?.addEventListener('click', exportJson)
   document.getElementById('reloadSeed')?.addEventListener('click', loadSeedFile)
+
+  document.querySelectorAll('[data-sort-table][data-sort-key]').forEach((button) => {
+    button.addEventListener('click', () => setTableSort(button.dataset.sortTable, button.dataset.sortKey))
+  })
 
   document.querySelectorAll('[data-mapping]').forEach((select) => {
     select.addEventListener('change', () => {
@@ -11199,6 +11550,12 @@ function bindEvents() {
     })
   })
 
+  document.querySelectorAll('[data-quote-summary-page]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setUiState({ quoteSummaryPage: Math.max(1, Number(button.dataset.quoteSummaryPage || 1)) })
+    })
+  })
+
   document.querySelectorAll('[data-device]').forEach((input) => {
     const saveDeviceEdit = (shouldRender) => {
       const id = input.dataset.device
@@ -11678,6 +12035,7 @@ function applySavedState(parsed = {}) {
       invoiceImport: parsed.invoiceImport || null,
       invoiceProfileQuery: parsed.invoiceProfileQuery || '',
       invoiceProfilePage: Math.max(1, Number(parsed.invoiceProfilePage || 1)),
+      tableSort: parsed.tableSort && typeof parsed.tableSort === 'object' ? parsed.tableSort : {},
       fiscalParentContactSelection: parsed.fiscalParentContactSelection || '',
       billing: {
         ...defaultBilling,
@@ -11738,6 +12096,7 @@ function applySavedState(parsed = {}) {
       billingReportSummaryPage: Math.max(1, Number(parsed.billingReportSummaryPage || 1)),
       billingReportEquipmentPage: Math.max(1, Number(parsed.billingReportEquipmentPage || 1)),
       billingReportBernardoPage: Math.max(1, Number(parsed.billingReportBernardoPage || 1)),
+      quoteSummaryPage: Math.max(1, Number(parsed.quoteSummaryPage || 1)),
       invoiceApiDraft: null
     })
     if (state.invoiceProfiles.length) syncInvoiceProfilesToCompanyMeta()

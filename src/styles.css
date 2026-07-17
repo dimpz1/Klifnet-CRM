@@ -605,6 +605,69 @@ th {
   text-transform: uppercase;
 }
 
+.sortable-th {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sortable-th span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sortable-th small {
+  display: inline-flex;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--brand);
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.sortable-th.active {
+  color: var(--black);
+  background: #fff2f2;
+}
+
+.sort-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.sort-strip > span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.sort-chip {
+  min-height: 30px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: #fff;
+  color: var(--black);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.sort-chip.active {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: #fff;
+}
+
 .table-wrap tbody tr:first-child td {
   border-top: 0;
 }
