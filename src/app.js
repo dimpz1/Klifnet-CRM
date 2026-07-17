@@ -3791,6 +3791,21 @@ function normalizeImeiCandidate(value) {
   return clean.length >= 6 && clean.length <= 20 ? clean : ''
 }
 
+function extractImeiFromText(value) {
+  const raw = importTextValue(value)
+  if (!raw) return ''
+  const candidates = raw.match(/\b\d{6,20}\b/g) || []
+  const preferred = candidates
+    .map(normalizeImeiCandidate)
+    .filter((candidate) => candidate && !candidate.startsWith('423') && !candidate.startsWith('52'))
+  return (
+    preferred.find((candidate) => candidate.length >= 14) ||
+    preferred.find((candidate) => candidate.length >= 9 && candidate.length <= 10) ||
+    preferred.find((candidate) => candidate.length === 6) ||
+    ''
+  )
+}
+
 function extractImeiFromRow(row) {
   const exact = rowCandidateValues(row, ['IMEI largo', 'IMEI completo', 'Long IMEI', 'IMEI equipo', 'IMEI dispositivo', 'Device IMEI', 'IMEI'], false)
     .map(normalizeImeiCandidate)
@@ -3814,6 +3829,10 @@ function extractImeiFromRow(row) {
   }
   const headerlessImei = normalizeImeiCandidate(row['Columna 4']) || normalizeImeiCandidate(row['Columna 6'])
   if (headerlessImei) return headerlessImei
+  const taggedImei = rowCandidateValues(row, ['Tags', 'Tag', 'Etiquetas', 'Etiqueta', 'Device', 'Device name', 'Endpoint name', 'Name', 'Nombre'], true)
+    .map(extractImeiFromText)
+    .find(Boolean)
+  if (taggedImei) return taggedImei
   const longCandidates = Object.values(row)
     .map(importTextValue)
     .map(normalizeImeiCandidate)
